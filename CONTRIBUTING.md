@@ -112,6 +112,7 @@ pytest
 pytest -v  # verbose
 pytest --cov=mcp_security_scanner  # with coverage
 ```
+  CI uploads coverage via the Codecov CLI (not a GitHub Action wrapper), and test output intentionally suppresses only the known `Event loop is closed` unraisable warning.
 
 ### 4. Update Documentation
 
