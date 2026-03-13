@@ -7,13 +7,13 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8F)
+## Current Scope (Sprint 1-8G)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
-- Advanced persistent OAuth cache backend v1 (`auth.cache.backend=aws_secrets_manager`) for config-based OAuth flows
+- Advanced persistent OAuth cache backends (`auth.cache.backend=aws_secrets_manager|gcp_secret_manager`) for config-based OAuth flows
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
@@ -157,6 +157,23 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-gcp-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "gcp_secret_manager",
+          "gcp_secret_name": "projects/my-project/secrets/mcp-security-scanner-oauth-cache",
+          "gcp_endpoint_url": "https://secretmanager.googleapis.com"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -224,9 +241,11 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local` or `aws_secrets_manager`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, or `gcp_secret_manager`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing
+  - `gcp_secret_name` (required when `backend=gcp_secret_manager`, format `projects/<project>/secrets/<secret>`)
+  - optional `gcp_endpoint_url` for GCP client endpoint routing (ADC auth)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -247,6 +266,11 @@ Notes:
   - `backend=aws_secrets_manager`:
     - cache payload is stored as a single JSON envelope in the configured AWS secret (`auth.cache.aws_secret_id`)
     - optional `aws_region` and `aws_endpoint_url` tune client resolution
+  - `backend=gcp_secret_manager`:
+    - cache payload is stored as a single JSON envelope in the configured GCP secret (`auth.cache.gcp_secret_name`)
+    - writes use new secret versions via `projects/.../secrets/.../versions/latest` read + `add_secret_version` write
+    - secret must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
+    - optional `gcp_endpoint_url` is supported for custom endpoint routing; auth uses ADC
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
@@ -333,4 +357,4 @@ Current quality gate:
 ## Roadmap (Post Sprint 8E)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local` and `aws_secrets_manager`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, and `gcp_secret_manager`

@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8F Implementation State
+# Setup Complete — Sprint 1-8G Implementation State
 
-This file records the actual implementation status after Sprint 8F.
+This file records the actual implementation status after Sprint 8G.
 
 ## Completed Work
 
@@ -407,6 +407,26 @@ This file records the actual implementation status after Sprint 8F.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` behavior remains local-backend scoped and unchanged
 
+### Sprint 8G (Advanced Secret-Store Backend v2: GCP Secret Manager)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `gcp_secret_manager`
+- GCP backend contract:
+  - required: `gcp_secret_name` (`projects/<project>/secrets/<secret>`)
+  - optional: `gcp_endpoint_url` (http/https)
+  - ADC-first auth model (no new CLI credential flags)
+  - pre-provisioned secret model (no auto-create flow in scanner)
+- GCP backend behavior:
+  - read from `projects/.../secrets/.../versions/latest`
+  - persist via `add_secret_version` with JSON cache envelope payload (`schema_version`, `updated_at`, `entries`)
+  - provider/read/write/parse errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -419,7 +439,7 @@ This file records the actual implementation status after Sprint 8F.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local` and `aws_secrets_manager`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, and `gcp_secret_manager`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8F scope.
+Current index for the implemented Sprint 1-8G scope.
 
 ## Status Snapshot
 
@@ -28,6 +28,7 @@ Current index for the implemented Sprint 1-8F scope.
 - Sprint 8D: done (release stabilization and PyPI package identity conflict fix)
 - Sprint 8E: done (dynamic analyzer expansion with semantic probe variants and stronger benign-context suppression)
 - Sprint 8F: done (publish unblock follow-up + advanced OAuth cache backend v1 with AWS Secrets Manager)
+- Sprint 8G: done (advanced OAuth cache backend v2 with GCP Secret Manager, ADC-first, pre-provisioned secret model)
 
 ## Top-Level Docs
 
@@ -54,7 +55,7 @@ Current index for the implemented Sprint 1-8F scope.
   - Config auth normalization (`bearer` / `api_key` / `session_cookie` / `oauth_client_credentials` / `oauth_device_code` / `oauth_auth_code_pkce`)
   - Auth finding flow: `auth_config_error` (schema/env) and `auth_token_error` (token endpoint)
   - OAuth client-credentials + device-code + auth-code PKCE/refresh with in-memory cache
-  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_region`, `aws_endpoint_url`)
+  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_region`, `aws_endpoint_url`, `gcp_secret_name`, `gcp_endpoint_url`)
   - Persistent cache hardening:
     - strict lock file with retry/timeout and non-fatal bypass
     - corrupt cache quarantine (`*.corrupt.<timestamp>`)
@@ -64,6 +65,7 @@ Current index for the implemented Sprint 1-8F scope.
   - Advanced persistent cache backend v1:
     - `backend=local` (existing encrypted file + keyring/fallback key model)
     - `backend=aws_secrets_manager` (single secret JSON envelope for OAuth cache entries)
+    - `backend=gcp_secret_manager` (single secret JSON envelope for OAuth cache entries via Secret Manager versions)
     - backend read/write failures are non-fatal and fall back to live token flow
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
   - `private_key_jwt` signer inputs with exclusivity (`client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`), optional `client_assertion_kid`
@@ -127,4 +129,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- additional persistent secret-store providers beyond `local` and `aws_secrets_manager`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, and `gcp_secret_manager`

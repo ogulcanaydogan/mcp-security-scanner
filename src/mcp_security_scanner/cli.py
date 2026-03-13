@@ -53,9 +53,11 @@ _OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-
 _OAUTH_AUTH_TYPES = {"oauth_client_credentials", "oauth_device_code", "oauth_auth_code_pkce"}
 _OAUTH_CACHE_BACKEND_LOCAL = "local"
 _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER = "aws_secrets_manager"
+_OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER = "gcp_secret_manager"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
+    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -82,6 +84,8 @@ class OAuthCacheSettings:
     aws_secret_id: str | None = None
     aws_region: str | None = None
     aws_endpoint_url: str | None = None
+    gcp_secret_name: str | None = None
+    gcp_endpoint_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2195,12 +2199,15 @@ def _coerce_oauth_cache_settings(
             "aws_secret_id",
             "aws_region",
             "aws_endpoint_url",
+            "gcp_secret_name",
+            "gcp_endpoint_url",
         }
     ]
     if unknown_fields:
         return (
             None,
-            "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_region, aws_endpoint_url.",
+            "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_region, aws_endpoint_url, "
+            "gcp_secret_name, gcp_endpoint_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2244,18 +2251,66 @@ def _coerce_oauth_cache_settings(
         if parsed_aws_endpoint_url.scheme not in {"http", "https"} or not parsed_aws_endpoint_url.netloc:
             return None, "auth.cache.aws_endpoint_url must be a valid http/https URL."
 
+    gcp_secret_name_value = cache_value.get("gcp_secret_name")
+    if gcp_secret_name_value is not None and (
+        not isinstance(gcp_secret_name_value, str) or not gcp_secret_name_value.strip()
+    ):
+        return None, "auth.cache.gcp_secret_name must be a non-empty string when provided."
+    gcp_secret_name = gcp_secret_name_value.strip() if isinstance(gcp_secret_name_value, str) else None
+    if gcp_secret_name is not None and not _is_valid_gcp_secret_name(gcp_secret_name):
+        return (
+            None,
+            "auth.cache.gcp_secret_name must match 'projects/<project>/secrets/<secret>'.",
+        )
+
+    gcp_endpoint_url_value = cache_value.get("gcp_endpoint_url")
+    if gcp_endpoint_url_value is not None and (
+        not isinstance(gcp_endpoint_url_value, str) or not gcp_endpoint_url_value.strip()
+    ):
+        return None, "auth.cache.gcp_endpoint_url must be a non-empty string when provided."
+    gcp_endpoint_url = gcp_endpoint_url_value.strip() if isinstance(gcp_endpoint_url_value, str) else None
+    if gcp_endpoint_url is not None:
+        parsed_gcp_endpoint_url = urlparse(gcp_endpoint_url)
+        if parsed_gcp_endpoint_url.scheme not in {"http", "https"} or not parsed_gcp_endpoint_url.netloc:
+            return None, "auth.cache.gcp_endpoint_url must be a valid http/https URL."
+
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         if aws_secret_id is None:
             return (
                 None,
                 "auth.cache.aws_secret_id is required when auth.cache.backend='aws_secrets_manager'.",
             )
-    elif aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
-        return (
-            None,
-            "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
-            "when auth.cache.backend='aws_secrets_manager'.",
-        )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+    elif backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
+        if gcp_secret_name is None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name is required when auth.cache.backend='gcp_secret_manager'.",
+            )
+        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
+                "when auth.cache.backend='aws_secrets_manager'.",
+            )
+    else:
+        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
+                "when auth.cache.backend='aws_secrets_manager'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
 
     return (
         OAuthCacheSettings(
@@ -2265,9 +2320,16 @@ def _coerce_oauth_cache_settings(
             aws_secret_id=aws_secret_id,
             aws_region=aws_region,
             aws_endpoint_url=aws_endpoint_url,
+            gcp_secret_name=gcp_secret_name,
+            gcp_endpoint_url=gcp_endpoint_url,
         ),
         None,
     )
+
+
+def _is_valid_gcp_secret_name(value: str) -> bool:
+    """Validate gcp secret name shape: projects/<project>/secrets/<secret>."""
+    return re.fullmatch(r"projects/[^/]+/secrets/[^/]+", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -3967,6 +4029,8 @@ def _load_oauth_persistent_cache_entries(
     resolved_settings = cache_settings or OAuthCacheSettings()
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         return _load_oauth_persistent_cache_entries_from_aws(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
+        return _load_oauth_persistent_cache_entries_from_gcp(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -3993,6 +4057,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
     resolved_settings = cache_settings or OAuthCacheSettings()
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         _persist_oauth_cache_entry_aws(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
+        _persist_oauth_cache_entry_gcp(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -4041,6 +4108,27 @@ def _persist_oauth_cache_entry_aws(cache_key: str, cache_settings: OAuthCacheSet
         persistent_entries.pop(cache_key, None)
 
     _write_oauth_cache_payload_to_aws(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _load_oauth_persistent_cache_entries_from_gcp(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from GCP Secret Manager; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_gcp(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_gcp(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to GCP Secret Manager; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_gcp(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_gcp(cache_settings=cache_settings, entries=persistent_entries)
 
 
 def _build_aws_secrets_manager_client(cache_settings: OAuthCacheSettings) -> Any | None:
@@ -4141,6 +4229,83 @@ def _write_oauth_cache_payload_to_aws(cache_settings: OAuthCacheSettings, entrie
 
     try:
         client.create_secret(Name=cache_settings.aws_secret_id, SecretString=serialized_payload)
+    except Exception:
+        return False
+    return True
+
+
+def _build_gcp_secret_manager_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create GCP Secret Manager client for OAuth cache backend."""
+    try:
+        secretmanager_module = importlib.import_module("google.cloud.secretmanager")
+    except Exception:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if cache_settings.gcp_endpoint_url is not None:
+        client_kwargs["client_options"] = {"api_endpoint": cache_settings.gcp_endpoint_url}
+
+    try:
+        return cast(Any, secretmanager_module).SecretManagerServiceClient(**client_kwargs)
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_gcp(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from GCP Secret Manager secret."""
+    if cache_settings.gcp_secret_name is None:
+        return None
+
+    client = _build_gcp_secret_manager_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        response = client.access_secret_version(request={"name": f"{cache_settings.gcp_secret_name}/versions/latest"})
+    except Exception:
+        return None
+
+    payload_container = getattr(response, "payload", None)
+    secret_data = getattr(payload_container, "data", None)
+    if isinstance(secret_data, bytes):
+        raw_payload = secret_data.decode("utf-8", errors="ignore")
+    elif isinstance(secret_data, str):
+        raw_payload = secret_data
+    else:
+        return None
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_gcp(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to GCP Secret Manager as a new secret version."""
+    if cache_settings.gcp_secret_name is None:
+        return False
+
+    client = _build_gcp_secret_manager_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+    try:
+        client.add_secret_version(
+            request={
+                "parent": cache_settings.gcp_secret_name,
+                "payload": {"data": serialized_payload},
+            }
+        )
     except Exception:
         return False
     return True
