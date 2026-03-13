@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8A Implementation State
+# Setup Complete — Sprint 1-8B Implementation State
 
-This file records the actual implementation status after Sprint 8A.
+This file records the actual implementation status after Sprint 8B.
 
 ## Completed Work
 
@@ -322,6 +322,29 @@ This file records the actual implementation status after Sprint 8A.
   - `dynamic_command_execution_signal` (`high`, `LLM07`)
 - report formats and exit-code contract are unchanged
 
+### Sprint 8B (Dynamic Analyzer Hardening, Opt-In)
+
+- dynamic runtime probing policy centralized in a single control point:
+  - max tools per scan
+  - max payload fields per probe
+  - max probe payloads per tool
+  - per-probe timeout budget
+  - evidence trim length
+- probe payload generation hardened:
+  - deterministic key ordering with required-field prioritization
+  - bounded field count
+  - conservative low-risk defaults for schema types
+- signal quality hardening:
+  - sensitive output detection tuned toward high-confidence credential signals
+  - command-execution detection tuned with benign blocked/simulated context suppression
+  - placeholder credential outputs are suppressed to reduce false positives
+- runtime safety and resilience:
+  - per-probe timeout is non-fatal and emits `dynamic_tool_execution_error`
+  - scan continues to next tools after timeout/exception paths
+- determinism improvements:
+  - tools are probed in deterministic order
+  - dynamic findings are returned in stable sorted order with deterministic metadata keys
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -336,7 +359,7 @@ This file records the actual implementation status after Sprint 8A.
 
 - advanced persistent secret-store backends beyond keyring/fallback file model
 - URL positional auth/mTLS UX (still config-only)
-- dynamic analyzer expansion/hardening beyond current opt-in v1
+- dynamic analyzer expansion beyond current hardened opt-in baseline
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

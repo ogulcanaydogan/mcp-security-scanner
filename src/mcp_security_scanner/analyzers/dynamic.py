@@ -1,8 +1,10 @@
 """Dynamic analyzer for safe runtime probing of MCP tools."""
 
+import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from mcp_security_scanner.analyzers.base import BaseAnalyzer, Finding, Severity
@@ -11,25 +13,46 @@ from mcp_security_scanner.discovery import ToolDefinition
 ExecuteToolCallable = Callable[[str, dict[str, Any]], Awaitable[Any]]
 
 
+@dataclass(frozen=True)
+class DynamicProbePolicy:
+    """Single control point for bounded dynamic probing behavior."""
+
+    max_tools: int = 8
+    max_payload_fields: int = 3
+    max_probe_payloads: int = 2
+    per_probe_timeout_seconds: float = 4.0
+    max_evidence_length: int = 400
+
+
 class DynamicAnalyzer(BaseAnalyzer):
     """Run bounded runtime probes against tools when explicitly enabled."""
 
-    def __init__(self: "DynamicAnalyzer") -> None:
+    def __init__(self: "DynamicAnalyzer", policy: DynamicProbePolicy | None = None) -> None:
         super().__init__(
             name="dynamic_analyzer",
             description="Performs safe runtime probes and inspects tool responses for risky behavior.",
         )
-        self._max_tools = 8
-        self._sensitive_output_patterns = [
-            re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
-            re.compile(r"\b(aws_secret_access_key|api[_-]?key|secret[_-]?key|password)\b", re.IGNORECASE),
-            re.compile(r"authorization:\s*bearer\s+[A-Za-z0-9._\-]+", re.IGNORECASE),
-            re.compile(r"root:x:0:0:", re.IGNORECASE),
+        self._policy = policy or DynamicProbePolicy()
+        self._probe_mode = "safe_runtime_v2"
+        self._sensitive_output_signals = [
+            ("private_key_material", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE)),
+            (
+                "credential_assignment",
+                re.compile(
+                    r"\b(?:aws_secret_access_key|api[_-]?key|secret[_-]?key|password)\b\s*[:=]\s*[\"']?[A-Za-z0-9/+._\-]{8,}",
+                    re.IGNORECASE,
+                ),
+            ),
+            (
+                "bearer_token_header",
+                re.compile(r"\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._\-]{20,}\b", re.IGNORECASE),
+            ),
+            ("passwd_dump", re.compile(r"root:x:0:0:[^\n]*:/root:/", re.IGNORECASE)),
         ]
         self._command_signal_patterns = [
-            re.compile(r"\b(uid=\d+|gid=\d+|command executed|subprocess|shell)\b", re.IGNORECASE),
-            re.compile(r"/etc/passwd", re.IGNORECASE),
-            re.compile(r"\b(sh|bash|powershell)\s+-c\b", re.IGNORECASE),
+            ("uid_gid_output", re.compile(r"\buid=\d+\([^)]+\)\s+gid=\d+\([^)]+\)", re.IGNORECASE)),
+            ("passwd_path_access", re.compile(r"/etc/passwd", re.IGNORECASE)),
+            ("shell_invocation", re.compile(r"\b(?:sh|bash|zsh|powershell)\s+-c\b", re.IGNORECASE)),
         ]
 
     async def analyze(self: "DynamicAnalyzer", **kwargs: Any) -> list[Finding]:
@@ -41,15 +64,20 @@ class DynamicAnalyzer(BaseAnalyzer):
         if not isinstance(tools, list) or not callable(execute_tool):
             return self.get_findings()
 
-        execute_tool_fn = execute_tool
-        for tool in tools[: self._max_tools]:
-            if not isinstance(tool, ToolDefinition):
-                continue
-
+        execute_tool_fn: ExecuteToolCallable = execute_tool
+        normalized_tools = sorted(
+            (tool for tool in tools if isinstance(tool, ToolDefinition)),
+            key=lambda candidate: (candidate.name.lower(), candidate.name),
+        )
+        for tool_index, tool in enumerate(normalized_tools[: self._policy.max_tools]):
             probe_payloads = self._build_probe_payloads(tool.input_schema)
-            for payload in probe_payloads:
+            for probe_index, payload in enumerate(probe_payloads):
+                probe_keys = sorted(payload.keys())
                 try:
-                    result = await execute_tool_fn(tool.name, payload)
+                    result = await asyncio.wait_for(
+                        execute_tool_fn(tool.name, payload),
+                        timeout=self._policy.per_probe_timeout_seconds,
+                    )
                 except Exception as exc:
                     self.add_finding(
                         severity=Severity.MEDIUM,
@@ -60,7 +88,8 @@ class DynamicAnalyzer(BaseAnalyzer):
                             {
                                 "tool": tool.name,
                                 "error_type": exc.__class__.__name__,
-                                "probe_keys": sorted(payload.keys()),
+                                "probe_keys": probe_keys,
+                                "probe_index": probe_index,
                             },
                             ensure_ascii=False,
                             sort_keys=True,
@@ -68,12 +97,20 @@ class DynamicAnalyzer(BaseAnalyzer):
                         owasp_id="LLM07",
                         remediation="Review runtime safety controls and guardrails for this tool.",
                         tool_name=tool.name,
-                        metadata={"probe_keys": sorted(payload.keys()), "probe_mode": "safe_runtime_v1"},
+                        metadata=self._build_probe_metadata(
+                            probe_keys=probe_keys,
+                            tool_index=tool_index,
+                            probe_index=probe_index,
+                            error_type=exc.__class__.__name__,
+                        ),
                     )
                     break
 
                 normalized_result = self._normalize_result(result)
-                if self._matches_any(self._sensitive_output_patterns, normalized_result):
+                sensitive_signal = self._match_signal(self._sensitive_output_signals, normalized_result)
+                if sensitive_signal is not None and not self._is_benign_sensitive_context(
+                    normalized_result, sensitive_signal
+                ):
                     self.add_finding(
                         severity=Severity.HIGH,
                         category="dynamic_sensitive_output",
@@ -83,11 +120,17 @@ class DynamicAnalyzer(BaseAnalyzer):
                         owasp_id="LLM06",
                         remediation="Sanitize tool outputs and enforce redaction for sensitive values.",
                         tool_name=tool.name,
-                        metadata={"probe_keys": sorted(payload.keys()), "probe_mode": "safe_runtime_v1"},
+                        metadata=self._build_probe_metadata(
+                            probe_keys=probe_keys,
+                            tool_index=tool_index,
+                            probe_index=probe_index,
+                            matched_signal=sensitive_signal,
+                        ),
                     )
                     break
 
-                if self._matches_any(self._command_signal_patterns, normalized_result):
+                command_signal = self._match_signal(self._command_signal_patterns, normalized_result)
+                if command_signal is not None and not self._is_benign_command_context(normalized_result):
                     self.add_finding(
                         severity=Severity.HIGH,
                         category="dynamic_command_execution_signal",
@@ -97,21 +140,30 @@ class DynamicAnalyzer(BaseAnalyzer):
                         owasp_id="LLM07",
                         remediation="Restrict command execution surfaces and enforce strict allowlists.",
                         tool_name=tool.name,
-                        metadata={"probe_keys": sorted(payload.keys()), "probe_mode": "safe_runtime_v1"},
+                        metadata=self._build_probe_metadata(
+                            probe_keys=probe_keys,
+                            tool_index=tool_index,
+                            probe_index=probe_index,
+                            matched_signal=command_signal,
+                        ),
                     )
                     break
 
-        return self.get_findings()
+        return self._sorted_findings(self.get_findings())
 
     def _build_probe_payloads(self: "DynamicAnalyzer", input_schema: dict[str, Any]) -> list[dict[str, Any]]:
         """Build deterministic low-risk probe payloads from JSON schema."""
         base_payload = self._payload_from_schema(input_schema)
         probes = [base_payload]
-        if "probe" not in base_payload:
+        if (
+            "probe" not in base_payload
+            and len(base_payload) < self._policy.max_payload_fields
+            and self._policy.max_probe_payloads > 1
+        ):
             probe_payload = dict(base_payload)
             probe_payload["probe"] = "mcp-security-scanner"
             probes.append(probe_payload)
-        return probes
+        return probes[: self._policy.max_probe_payloads]
 
     def _payload_from_schema(self: "DynamicAnalyzer", input_schema: dict[str, Any]) -> dict[str, Any]:
         """Build a bounded payload from tool schema fields."""
@@ -119,8 +171,19 @@ class DynamicAnalyzer(BaseAnalyzer):
         if not isinstance(properties, dict) or not properties:
             return {"probe": "mcp-security-scanner"}
 
+        required_values = input_schema.get("required", [])
+        prioritized: list[str] = []
+        if isinstance(required_values, list):
+            for value in required_values:
+                if isinstance(value, str) and value in properties and value not in prioritized:
+                    prioritized.append(value)
+
+        for key in sorted(properties.keys()):
+            if key not in prioritized:
+                prioritized.append(key)
+
         payload: dict[str, Any] = {}
-        for key in sorted(properties.keys())[:3]:
+        for key in prioritized[: self._policy.max_payload_fields]:
             value_schema = properties.get(key)
             payload[key] = self._value_for_schema(value_schema)
 
@@ -136,11 +199,11 @@ class DynamicAnalyzer(BaseAnalyzer):
             if schema_type == "string":
                 return "security_probe"
             if schema_type in {"number", "integer"}:
-                return 1
+                return 0
             if schema_type == "boolean":
                 return False
             if schema_type == "array":
-                return ["security_probe"]
+                return []
             if schema_type == "object":
                 return {}
         return "security_probe"
@@ -155,16 +218,87 @@ class DynamicAnalyzer(BaseAnalyzer):
         return str(result)
 
     @staticmethod
-    def _matches_any(patterns: list[re.Pattern[str]], text: str) -> bool:
-        """Return True if any pattern matches the result text."""
-        for pattern in patterns:
+    def _match_signal(patterns: list[tuple[str, re.Pattern[str]]], text: str) -> str | None:
+        """Return matching signal label for a text, if any."""
+        for signal_name, pattern in patterns:
             if pattern.search(text):
-                return True
-        return False
+                return signal_name
+        return None
 
     @staticmethod
-    def _trim_evidence(text: str, max_length: int = 400) -> str:
+    def _is_benign_sensitive_context(text: str, signal_name: str) -> bool:
+        """Suppress low-confidence credential keywords in clearly benign placeholder context."""
+        if signal_name != "credential_assignment":
+            return False
+        lowered = text.lower()
+        benign_markers = (
+            "redacted",
+            "masked",
+            "placeholder",
+            "example",
+            "sample",
+            "dummy",
+            "<token>",
+            "<api_key>",
+            "******",
+        )
+        return any(marker in lowered for marker in benign_markers)
+
+    @staticmethod
+    def _is_benign_command_context(text: str) -> bool:
+        """Suppress command signals that are explicitly blocked, simulated, or documentation-only."""
+        lowered = text.lower()
+        benign_markers = (
+            "not executed",
+            "execution blocked",
+            "blocked by policy",
+            "dry run",
+            "simulation",
+            "example output",
+            "forbidden",
+            "permission denied",
+            "disallowed",
+        )
+        return any(marker in lowered for marker in benign_markers)
+
+    def _build_probe_metadata(
+        self: "DynamicAnalyzer",
+        probe_keys: list[str],
+        tool_index: int,
+        probe_index: int,
+        matched_signal: str | None = None,
+        error_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Build deterministic metadata payload for dynamic findings."""
+        metadata: dict[str, Any] = {
+            "probe_mode": self._probe_mode,
+            "probe_keys": probe_keys,
+            "tool_index": tool_index,
+            "probe_index": probe_index,
+            "max_tools": self._policy.max_tools,
+            "max_probe_payloads": self._policy.max_probe_payloads,
+            "probe_timeout_seconds": self._policy.per_probe_timeout_seconds,
+        }
+        if matched_signal is not None:
+            metadata["matched_signal"] = matched_signal
+        if error_type is not None:
+            metadata["error_type"] = error_type
+        return metadata
+
+    @staticmethod
+    def _sorted_findings(findings: list[Finding]) -> list[Finding]:
+        """Ensure stable ordering for report diff friendliness."""
+        return sorted(
+            findings,
+            key=lambda finding: (
+                finding.tool_name or "",
+                finding.category,
+                finding.title,
+            ),
+        )
+
+    def _trim_evidence(self: "DynamicAnalyzer", text: str) -> str:
         """Trim result text for finding evidence payloads."""
-        if len(text) <= max_length:
+        if len(text) <= self._policy.max_evidence_length:
             return text
-        return f"{text[:max_length].rstrip()}..."
+        return f"{text[: self._policy.max_evidence_length].rstrip()}..."

@@ -7,7 +7,7 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8A)
+## Current Scope (Sprint 1-8B)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
@@ -16,7 +16,7 @@ Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `h
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
-- Dynamic analyzer v1 available as opt-in (`--dynamic`) for `server` and `config` scans
+- Dynamic analyzer hardening (opt-in `--dynamic`) with bounded probe policy, deterministic ordering, and noise suppression
 - Default analyzers enabled in scan flows:
   - `StaticAnalyzer`
   - `PromptInjectionAnalyzer`
@@ -220,6 +220,10 @@ Notes:
 - dynamic analyzer v1 is opt-in:
   - enable with `--dynamic` on `server` and `config`
   - default pipeline remains unchanged when flag is omitted
+  - bounded runtime policy is enforced from a single control point:
+    - max tool count, max probe payload count, max payload fields, per-probe timeout
+  - dynamic findings are returned in deterministic order with stable metadata keys
+  - benign placeholder/blocked-execution contexts are suppressed to reduce false positives
 - Refresh fallback behavior:
   - if refresh fails with `invalid_grant` / `invalid_token`, scanner drops cached refresh token and retries primary grant once
   - if retry requires interaction in headless mode, `auth_token_error` is emitted and scan continues
@@ -278,9 +282,9 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8A)
+## Roadmap (Post Sprint 8B)
 
 Deferred items:
 - advanced persistent secret-store backends beyond keyring/fallback file model
 - URL positional auth/mTLS UX (currently config-only)
-- dynamic analyzer expansion/hardening beyond current opt-in v1
+- dynamic analyzer expansion beyond current hardened opt-in baseline

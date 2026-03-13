@@ -1,9 +1,11 @@
 """Tests for dynamic analyzer runtime probe behavior."""
 
+import asyncio
+
 import pytest
 
 from mcp_security_scanner.analyzers.base import Severity
-from mcp_security_scanner.analyzers.dynamic import DynamicAnalyzer
+from mcp_security_scanner.analyzers.dynamic import DynamicAnalyzer, DynamicProbePolicy
 from mcp_security_scanner.discovery import ToolDefinition
 
 
@@ -107,6 +109,120 @@ class TestDynamicAnalyzer:
 
         assert payloads
         first = payloads[0]
-        assert first["count"] == 1
+        assert first["count"] == 0
         assert first["enabled"] is False
         assert first["name"] == "security_probe"
+
+    def test_probe_payload_builder_is_bounded_and_deterministic(self):
+        """Payload builder should cap fields and keep deterministic ordering."""
+        analyzer = DynamicAnalyzer(policy=DynamicProbePolicy(max_payload_fields=2, max_probe_payloads=1))
+        payloads = analyzer._build_probe_payloads(
+            {
+                "type": "object",
+                "required": ["zeta", "beta"],
+                "properties": {
+                    "beta": {"type": "string"},
+                    "alpha": {"type": "integer"},
+                    "zeta": {"type": "boolean"},
+                },
+            }
+        )
+
+        assert payloads == [{"zeta": False, "beta": "security_probe"}]
+
+    @pytest.mark.asyncio
+    async def test_sensitive_placeholder_output_is_suppressed(self):
+        """Placeholder secret text should not raise sensitive-output finding."""
+        analyzer = DynamicAnalyzer()
+        tool = ToolDefinition(
+            name="placeholder_tool",
+            description="Returns placeholder credentials.",
+            input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+        )
+
+        async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
+            del tool_name, args
+            return "api_key: REDACTED (example only)"
+
+        findings = await analyzer.analyze(tools=[tool], execute_tool=fake_execute)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_command_signal_in_blocked_context_is_suppressed(self):
+        """Blocked/simulated execution text should not raise command-execution finding."""
+        analyzer = DynamicAnalyzer()
+        tool = ToolDefinition(
+            name="blocked_exec_tool",
+            description="Tool with blocked execution policy.",
+            input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
+        )
+
+        async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
+            del tool_name, args
+            return "uid=0(root) gid=0(root) execution blocked by policy"
+
+        findings = await analyzer.analyze(tools=[tool], execute_tool=fake_execute)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_non_fatal_and_scan_continues(self):
+        """Timeout should produce execution-error finding and continue with next tool."""
+        analyzer = DynamicAnalyzer(
+            policy=DynamicProbePolicy(
+                max_tools=2,
+                max_payload_fields=1,
+                max_probe_payloads=1,
+                per_probe_timeout_seconds=0.01,
+            )
+        )
+        tools = [
+            ToolDefinition(
+                name="slow_tool",
+                description="Sleeps too long.",
+                input_schema={"type": "object", "properties": {"input": {"type": "string"}}},
+            ),
+            ToolDefinition(
+                name="secret_tool",
+                description="Returns sensitive output.",
+                input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+            ),
+        ]
+
+        async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
+            del args
+            if tool_name == "slow_tool":
+                await asyncio.sleep(0.05)
+                return "done"
+            return "-----BEGIN PRIVATE KEY-----abc"
+
+        findings = await analyzer.analyze(tools=tools, execute_tool=fake_execute)
+        categories = [finding.category for finding in findings]
+
+        assert categories == ["dynamic_sensitive_output", "dynamic_tool_execution_error"]
+        timeout_findings = [item for item in findings if item.category == "dynamic_tool_execution_error"]
+        assert timeout_findings
+        assert timeout_findings[0].metadata["error_type"] == "TimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_findings_are_sorted_deterministically(self):
+        """Findings should be returned in stable order regardless of input tool order."""
+        analyzer = DynamicAnalyzer()
+        tools = [
+            ToolDefinition(
+                name="z_tool",
+                description="Returns secret output.",
+                input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+            ),
+            ToolDefinition(
+                name="a_tool",
+                description="Returns secret output.",
+                input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+            ),
+        ]
+
+        async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
+            del tool_name, args
+            return "-----BEGIN PRIVATE KEY-----abc"
+
+        findings = await analyzer.analyze(tools=tools, execute_tool=fake_execute)
+        assert [finding.tool_name for finding in findings] == ["a_tool", "z_tool"]

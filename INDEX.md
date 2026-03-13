@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8A scope.
+Current index for the implemented Sprint 1-8B scope.
 
 ## Status Snapshot
 
@@ -23,6 +23,7 @@ Current index for the implemented Sprint 1-8A scope.
 - Sprint 7B: done (OAuth provider integrations v2: `private_key_jwt` supports AWS KMS signer source)
 - Sprint 7C: done (transport-level mTLS propagation for `sse` and `streamable-http` config entries)
 - Sprint 8A: done (Dynamic Analyzer v1 added as opt-in via `--dynamic`)
+- Sprint 8B: done (Dynamic analyzer hardening: bounded runtime policy, deterministic outputs, false-positive suppression)
 
 ## Top-Level Docs
 
@@ -58,6 +59,7 @@ Current index for the implemented Sprint 1-8A scope.
   - Shared transient retry policy for OAuth token/device/refresh/auth-code endpoint calls (`429/5xx` + timeout/connection errors)
   - Refresh fallback on `invalid_grant`/`invalid_token` with headless-safe behavior
   - dynamic scan path enabled by `--dynamic` for `server`/`config` with connector-backed tool probes
+  - dynamic hardening policy for bounded probes (tool/payload limits + per-probe timeout) and deterministic finding ordering
 
 - `src/mcp_security_scanner/discovery.py`
   - `MCPServerConnector` with `stdio`, `sse`, and `streamable-http` transports
@@ -88,6 +90,7 @@ Current index for the implemented Sprint 1-8A scope.
   - cross-tool attack-chain checks (`secret_exfiltration`, `file_to_exec`, `sql_to_write`, `prompt_to_exec`)
 - `src/mcp_security_scanner/analyzers/dynamic.py`
   - opt-in runtime probe checks (`dynamic_tool_execution_error`, `dynamic_sensitive_output`, `dynamic_command_execution_signal`)
+  - hardened signal filtering to suppress benign placeholder/blocked-execution contexts
 
 ## Tests
 
@@ -96,7 +99,7 @@ Current index for the implemented Sprint 1-8A scope.
 - `tests/test_mutation.py`: baseline-v1, deterministic hash, mutation diff logic
 - `tests/test_reporter.py`: JSON/HTML/SARIF formatting
 - `tests/analyzers/`: analyzer unit tests
-- `tests/analyzers/test_dynamic.py`: dynamic analyzer runtime probe behavior
+- `tests/analyzers/test_dynamic.py`: dynamic analyzer bounded-policy, noise-suppression, timeout, and determinism behavior
 
 ## Quality Commands
 
@@ -111,4 +114,4 @@ Coverage threshold is enforced at `>=80%`.
 
 - advanced persistent secret-store options beyond keyring/fallback file model
 - URL positional auth/mTLS UX (currently config-only)
-- dynamic analyzer hardening and broader probe coverage beyond current opt-in v1
+- dynamic analyzer probe coverage expansion beyond current hardened opt-in baseline

@@ -267,6 +267,42 @@ class TestCLICommands:
         assert [item["type"] for item in connector_configs] == ["streamable-http", "sse"]
         assert all(item["url"] == "https://example.com/sse" for item in connector_configs)
 
+    @pytest.mark.parametrize(
+        ("dynamic_args", "expected_dynamic_enabled"),
+        [
+            ([], False),
+            (["--dynamic"], True),
+        ],
+    )
+    def test_server_dynamic_flag_forwarding(self, monkeypatch, dynamic_args: list[str], expected_dynamic_enabled: bool):
+        """Server command should forward --dynamic state into scan pipeline."""
+        captured: dict[str, object] = {}
+
+        async def fake_scan_single_server(
+            server_target: str,
+            timeout: int,
+            threshold: Severity | None,
+            dynamic_enabled: bool = False,
+        ) -> tuple[cli_module.ScanReport, list[Finding]]:
+            del timeout, threshold
+            captured["server_target"] = server_target
+            captured["dynamic_enabled"] = dynamic_enabled
+            report = cli_module.ScanReport(
+                scanner_version="0.1.0",
+                server_name=server_target,
+                findings=[],
+            )
+            return report, []
+
+        monkeypatch.setattr(cli_module, "_scan_single_server", fake_scan_single_server)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["server", "python -m fake_server", "--format", "json", *dynamic_args])
+
+        assert result.exit_code == 0
+        assert captured["server_target"] == "python -m fake_server"
+        assert captured["dynamic_enabled"] is expected_dynamic_enabled
+
     def test_baseline_url_target_uses_transport_candidates(self, monkeypatch, tmp_path: Path):
         """Baseline command should use streamable-http then sse candidates for URL targets."""
         captured: dict[str, object] = {}
@@ -525,6 +561,60 @@ class TestCLICommands:
         payload = json.loads(result.output)
         categories = {finding["category"] for finding in payload["findings"]}
         assert "cross_tool_secret_exfiltration" in categories
+
+    def test_config_dynamic_flag_forwarding_and_output(self, monkeypatch, tmp_path: Path):
+        """Config command should forward --dynamic and include resulting dynamic findings."""
+        captured: dict[str, object] = {}
+
+        async def fake_scan_entries(
+            server_entries: dict[str, object],
+            timeout: int,
+            dynamic_enabled: bool = False,
+        ) -> list[Finding]:
+            del server_entries, timeout
+            captured["dynamic_enabled"] = dynamic_enabled
+            return [
+                Finding(
+                    analyzer_name="dynamic_analyzer",
+                    severity=Severity.HIGH,
+                    category="dynamic_sensitive_output",
+                    title="Dynamic sensitive output",
+                    description="Dynamic probe observed sensitive output markers.",
+                    evidence="-----BEGIN PRIVATE KEY-----",
+                    owasp_id="LLM06",
+                    remediation="Sanitize dynamic output.",
+                    tool_name="dynamic_tool",
+                )
+            ]
+
+        monkeypatch.setattr(cli_module, "_scan_config_entries", fake_scan_entries)
+
+        runner = CliRunner()
+        config_path = tmp_path / "claude_desktop_config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "dynamic_server": {
+                            "transport": "stdio",
+                            "command": "python -m fake_server",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            main,
+            ["config", str(config_path), "--format", "json", "--timeout", "1", "--dynamic"],
+        )
+
+        assert result.exit_code == 1
+        assert captured["dynamic_enabled"] is True
+        payload = json.loads(result.output)
+        categories = {finding["category"] for finding in payload["findings"]}
+        assert "dynamic_sensitive_output" in categories
 
     def test_config_auth_error_emits_finding_and_continues(self, monkeypatch, tmp_path: Path):
         """Auth resolution failures should produce finding and continue scanning other servers."""
