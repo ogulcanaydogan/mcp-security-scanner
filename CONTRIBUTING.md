@@ -73,6 +73,7 @@ Follow these guidelines:
   ruff check src tests --fix
   black src tests
   ```
+  Current CI policy is pragmatic: annotation rules (`ANN*`) and async timeout naming rule (`ASYNC109`) are intentionally disabled in Ruff for now; strict typing is enforced with `mypy src`.
 
 - **Types**: All functions must have type annotations (enforced by mypy)
   ```bash

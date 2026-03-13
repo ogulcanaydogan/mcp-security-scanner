@@ -5,12 +5,13 @@ Tests for report generation (JSON, HTML, SARIF).
 import json
 
 import pytest
+
 from mcp_security_scanner.analyzers.base import Finding, Severity
 from mcp_security_scanner.reporter import (
-    JSONReportFormatter,
     HTMLReportFormatter,
-    SARIFReportFormatter,
+    JSONReportFormatter,
     ReportGenerator,
+    SARIFReportFormatter,
     ScanReport,
 )
 

@@ -15,8 +15,8 @@ from mcp_security_scanner.discovery import MCPServerConnector, ServerCapabilitie
 __all__ = [
     "BaseAnalyzer",
     "Finding",
-    "Severity",
     "MCPServerConnector",
     "ServerCapabilities",
+    "Severity",
     "__version__",
 ]

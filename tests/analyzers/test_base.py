@@ -3,6 +3,7 @@ Tests for base analyzer classes and data models.
 """
 
 import pytest
+
 from mcp_security_scanner.analyzers.base import (
     BaseAnalyzer,
     Finding,

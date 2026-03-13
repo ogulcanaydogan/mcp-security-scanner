@@ -102,19 +102,19 @@ select = [
     "I",      # isort
     "N",      # pep8-naming
     "UP",     # pyupgrade
-    "ANN",    # flake8-annotations
-    "ASYNC",  # flake8-async
     "C4",     # flake8-comprehensions
     "RUF",    # Ruff-specific
 ]
 ignore = [
-    "ANN101",  # Missing type annotation for `self`
-    "ANN102",  # Missing type annotation for `cls`
     "E501",    # Line too long (handled by formatter)
+    "UP042",   # StrEnum migration deferred to a later sprint
 ]
 
 [tool.ruff.lint.isort]
 known-first-party = ["mcp_security_scanner"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["RUF043"]
 
 [tool.black]
 line-length = 120

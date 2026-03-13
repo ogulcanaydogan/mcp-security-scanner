@@ -16,7 +16,6 @@ from mcp_security_scanner.discovery import (
     ToolDefinition,
 )
 
-
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 MOCK_SERVER = FIXTURES_DIR / "mock_mcp_server.py"
 LINE_SERVER = FIXTURES_DIR / "mock_mcp_server_line.py"

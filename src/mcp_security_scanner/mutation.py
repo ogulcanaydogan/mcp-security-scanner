@@ -78,8 +78,7 @@ def validate_baseline_document(data: Any) -> dict[str, Any]:
     schema_version = data.get("schema_version")
     if schema_version != BASELINE_SCHEMA_VERSION:
         raise ValueError(
-            f"Unsupported baseline schema_version: {schema_version!r}. "
-            f"Expected {BASELINE_SCHEMA_VERSION!r}."
+            f"Unsupported baseline schema_version: {schema_version!r}. " f"Expected {BASELINE_SCHEMA_VERSION!r}."
         )
 
     tools = data.get("tools")
@@ -146,11 +145,7 @@ def compare_tool_snapshots(
         if baseline_item.get("overall_hash") == current_item.get("overall_hash"):
             continue
 
-        changed_fields = [
-            field
-            for field in comparable_fields
-            if baseline_item.get(field) != current_item.get(field)
-        ]
+        changed_fields = [field for field in comparable_fields if baseline_item.get(field) != current_item.get(field)]
 
         mutations.append(
             {

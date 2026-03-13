@@ -11,8 +11,8 @@ from click.testing import CliRunner
 import mcp_security_scanner.cli as cli_module
 from mcp_security_scanner.analyzers.base import Finding, Severity
 from mcp_security_scanner.cli import (
-    _build_target_connector_config,
     _build_connector_config_from_config_entry,
+    _build_target_connector_config,
     _compose_stdio_command,
     _derive_server_name,
     _extract_config_server_entries,
@@ -24,7 +24,6 @@ from mcp_security_scanner.cli import (
 )
 from mcp_security_scanner.discovery import ServerCapabilities
 from mcp_security_scanner.mutation import BASELINE_SCHEMA_VERSION
-
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 MOCK_SERVER = FIXTURES_DIR / "mock_mcp_server.py"

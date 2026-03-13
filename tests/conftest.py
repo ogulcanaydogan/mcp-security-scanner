@@ -5,7 +5,8 @@ This module provides common fixtures used across all tests.
 """
 
 import pytest
-from mcp_security_scanner.discovery import ToolDefinition, ResourceDefinition
+
+from mcp_security_scanner.discovery import ResourceDefinition, ToolDefinition
 
 
 @pytest.fixture

@@ -277,15 +277,10 @@ class MCPServerConnector:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             sse_result = await self._session.list_tools()
-            raw_tools = [
-                self._model_to_dict(item)
-                for item in sse_result.tools
-            ]
+            raw_tools = [self._model_to_dict(item) for item in sse_result.tools]
         else:
             rpc_result = await self._rpc_request("tools/list", {})
-            raw_tools = [
-                item for item in rpc_result.get("tools", []) if isinstance(item, dict)
-            ]
+            raw_tools = [item for item in rpc_result.get("tools", []) if isinstance(item, dict)]
 
         tools: list[ToolDefinition] = []
         for item in raw_tools:
@@ -310,15 +305,10 @@ class MCPServerConnector:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             sse_result = await self._session.list_resources()
-            raw_resources = [
-                self._model_to_dict(item)
-                for item in sse_result.resources
-            ]
+            raw_resources = [self._model_to_dict(item) for item in sse_result.resources]
         else:
             rpc_result = await self._rpc_request("resources/list", {})
-            raw_resources = [
-                item for item in rpc_result.get("resources", []) if isinstance(item, dict)
-            ]
+            raw_resources = [item for item in rpc_result.get("resources", []) if isinstance(item, dict)]
 
         resources: list[ResourceDefinition] = []
         for item in raw_resources:
@@ -343,15 +333,10 @@ class MCPServerConnector:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             sse_result = await self._session.list_prompts()
-            raw_prompts = [
-                self._model_to_dict(item)
-                for item in sse_result.prompts
-            ]
+            raw_prompts = [self._model_to_dict(item) for item in sse_result.prompts]
         else:
             rpc_result = await self._rpc_request("prompts/list", {})
-            raw_prompts = [
-                item for item in rpc_result.get("prompts", []) if isinstance(item, dict)
-            ]
+            raw_prompts = [item for item in rpc_result.get("prompts", []) if isinstance(item, dict)]
 
         prompts: list[PromptDefinition] = []
         for item in raw_prompts:

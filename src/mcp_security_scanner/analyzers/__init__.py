@@ -17,7 +17,7 @@ from mcp_security_scanner.analyzers.static import StaticAnalyzer
 __all__ = [
     "BaseAnalyzer",
     "Finding",
-    "Severity",
     "PromptInjectionAnalyzer",
+    "Severity",
     "StaticAnalyzer",
 ]
