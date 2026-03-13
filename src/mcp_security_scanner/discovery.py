@@ -1,7 +1,7 @@
 """
 MCP server discovery and capability enumeration.
 
-Handles connection to MCP servers via stdio/SSE transports and retrieves
+Handles connection to MCP servers via stdio/SSE/Streamable HTTP transports and retrieves
 all available tools, resources, and prompts for analysis.
 """
 
@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamable_http_client
 from pydantic import AnyUrl
 
 
@@ -100,7 +102,7 @@ class MCPServerConnector:
     """
     Manages connections to MCP servers and capability discovery.
 
-    Supports stdio and SSE transports.
+    Supports stdio, SSE, and Streamable HTTP transports.
     """
 
     _CONTENT_LENGTH_RE = re.compile(r"Content-Length:\s*(?P<length>\d+)", re.IGNORECASE)
@@ -131,12 +133,12 @@ class MCPServerConnector:
         Args:
             config: Connection configuration.
                 Required keys:
-                    - type: "stdio" or "sse"
+                    - type: "stdio", "sse", "streamable-http", or "streamable_http"
                 stdio keys:
                     - command: shell command to start server process
                     - env: optional environment overrides
-                sse keys:
-                    - url: http/https SSE endpoint
+                sse/streamable-http keys:
+                    - url: http/https endpoint
                     - headers: optional HTTP headers
                 Optional keys:
                     - timeout: request timeout in seconds (default 30)
@@ -150,11 +152,9 @@ class MCPServerConnector:
             ConnectionError: If connection fails.
         """
         transport_value = config.get("type")
-        if not isinstance(transport_value, str):
-            raise ValueError("config.type must be a string ('stdio' or 'sse').")
-        transport = transport_value.lower()
-        if transport not in {"stdio", "sse"}:
-            raise ValueError("Only stdio and sse transports are supported.")
+        transport = self._normalize_transport(transport_value)
+        if transport is None:
+            raise ValueError("config.type must be one of: stdio, sse, streamable-http.")
 
         timeout_value = config.get("timeout", 30)
         try:
@@ -222,36 +222,48 @@ class MCPServerConnector:
 
         url_value = config.get("url")
         if not isinstance(url_value, str) or not url_value.strip():
-            raise ValueError("config.url must be a non-empty string for sse transport.")
+            raise ValueError(f"config.url must be a non-empty string for {transport} transport.")
 
         parsed_url = urlparse(url_value)
         if parsed_url.scheme not in {"http", "https"}:
-            raise ValueError("config.url must use http or https scheme for sse transport.")
+            raise ValueError(f"config.url must use http or https scheme for {transport} transport.")
 
         raw_headers = config.get("headers")
         headers: dict[str, Any] | None = None
         if raw_headers is not None:
             if not isinstance(raw_headers, dict):
-                raise ValueError("config.headers must be an object for sse transport.")
+                raise ValueError(f"config.headers must be an object for {transport} transport.")
             headers = {str(key): str(value) for key, value in raw_headers.items()}
 
         self._exit_stack = AsyncExitStack()
         try:
-            read_stream, write_stream = await self._exit_stack.enter_async_context(
-                sse_client(
+            if transport == "sse":
+                transport_context = sse_client(
                     url=url_value,
                     headers=headers,
                     timeout=timeout,
                     sse_read_timeout=timeout,
                 )
-            )
+            else:
+                http_client = httpx.AsyncClient(
+                    headers=headers,
+                    timeout=httpx.Timeout(timeout, read=timeout),
+                    follow_redirects=True,
+                )
+                await self._exit_stack.enter_async_context(http_client)
+                transport_context = streamable_http_client(
+                    url=url_value,
+                    http_client=http_client,
+                )
+
+            read_stream, write_stream = await self._exit_stack.enter_async_context(transport_context)
             session = await self._exit_stack.enter_async_context(
                 ClientSession(read_stream=read_stream, write_stream=write_stream)
             )
             await session.initialize()
 
             self._session = session
-            self._transport = "sse"
+            self._transport = transport
             self._connected = True
             return True
         except TimeoutError:
@@ -273,7 +285,7 @@ class MCPServerConnector:
         """
         self._ensure_connected()
         raw_tools: list[dict[str, Any]]
-        if self._transport == "sse":
+        if self._transport in {"sse", "streamable-http"}:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             sse_result = await self._session.list_tools()
@@ -301,7 +313,7 @@ class MCPServerConnector:
         """
         self._ensure_connected()
         raw_resources: list[dict[str, Any]]
-        if self._transport == "sse":
+        if self._transport in {"sse", "streamable-http"}:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             sse_result = await self._session.list_resources()
@@ -329,7 +341,7 @@ class MCPServerConnector:
         """
         self._ensure_connected()
         raw_prompts: list[dict[str, Any]]
-        if self._transport == "sse":
+        if self._transport in {"sse", "streamable-http"}:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             sse_result = await self._session.list_prompts()
@@ -363,7 +375,7 @@ class MCPServerConnector:
         if not uri.strip():
             raise ValueError("Resource URI must be non-empty.")
 
-        if self._transport == "sse":
+        if self._transport in {"sse", "streamable-http"}:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             result = await self._session.read_resource(AnyUrl(uri))
@@ -402,7 +414,7 @@ class MCPServerConnector:
         if not tool_name.strip():
             raise ValueError("tool_name must be a non-empty string.")
 
-        if self._transport == "sse":
+        if self._transport in {"sse", "streamable-http"}:
             if self._session is None:
                 raise RuntimeError("Not connected to MCP server.")
             result = await self._session.call_tool(tool_name, arguments)
@@ -485,7 +497,7 @@ class MCPServerConnector:
                 raise RuntimeError("MCP server process is no longer running.")
             return
 
-        if self._transport == "sse":
+        if self._transport in {"sse", "streamable-http"}:
             if self._session is None or self._exit_stack is None:
                 self._connected = False
                 raise RuntimeError("Not connected to MCP server.")
@@ -599,6 +611,21 @@ class MCPServerConnector:
             raise ConnectionError("Incomplete MCP message body.") from exc
 
         return self._parse_json_message(body)
+
+    @staticmethod
+    def _normalize_transport(transport_value: Any) -> str | None:
+        """Normalize supported transport identifiers to canonical values."""
+        if not isinstance(transport_value, str):
+            return None
+
+        transport = transport_value.strip().lower()
+        if transport == "streamable_http":
+            return "streamable-http"
+
+        if transport in {"stdio", "sse", "streamable-http"}:
+            return transport
+
+        return None
 
     @staticmethod
     def _extract_resource_content(result: dict[str, Any], uri: str) -> str | None:

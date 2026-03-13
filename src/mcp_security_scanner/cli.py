@@ -6,19 +6,34 @@ Uses Click for argument parsing and Rich for formatted output.
 """
 
 import asyncio
+import base64
+import hashlib
+import importlib
 import json
+import os
+import re
+import secrets
 import shlex
 import sys
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, cast
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 import click
+import httpx
 from rich.console import Console
 
 import mcp_security_scanner
 from mcp_security_scanner.analyzers.base import Finding, Severity
+from mcp_security_scanner.analyzers.cross_tool import CrossToolAnalyzer
+from mcp_security_scanner.analyzers.escalation import EscalationAnalyzer
 from mcp_security_scanner.analyzers.injection import PromptInjectionAnalyzer
+from mcp_security_scanner.analyzers.poisoning import ToolPoisoningAnalyzer
 from mcp_security_scanner.analyzers.static import StaticAnalyzer
 from mcp_security_scanner.discovery import MCPServerConnector, ServerCapabilities
 from mcp_security_scanner.mutation import (
@@ -29,6 +44,37 @@ from mcp_security_scanner.mutation import (
     validate_baseline_document,
 )
 from mcp_security_scanner.reporter import ReportGenerator, ScanReport
+
+_OAUTH_TOKEN_CACHE_SKEW_SECONDS = 30.0
+_OAUTH_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = {"client_secret_post", "client_secret_basic"}
+_OAUTH_AUTH_TYPES = {"oauth_client_credentials", "oauth_device_code", "oauth_auth_code_pkce"}
+_OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
+_OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
+_OAUTH_PERSISTENT_CACHE_FILE = Path.home() / ".cache" / "mcp-security-scanner" / "oauth-cache-v1.json.enc"
+_OAUTH_PERSISTENT_CACHE_LOCK_FILE = _OAUTH_PERSISTENT_CACHE_FILE.with_name("oauth-cache-v1.lock")
+_OAUTH_PERSISTENT_KEY_FILE = Path.home() / ".config" / "mcp-security-scanner" / "cache.key"
+_OAUTH_PERSISTENT_KEYRING_SERVICE = "mcp-security-scanner"
+_OAUTH_PERSISTENT_KEYRING_USERNAME = "oauth-cache-key-v1"
+_OAUTH_CACHE_LOCK_TIMEOUT_SECONDS = 2.0
+_OAUTH_CACHE_LOCK_RETRY_SECONDS = 0.05
+
+
+@dataclass(frozen=True)
+class OAuthCacheSettings:
+    """Optional OAuth cache settings parsed from config auth.cache."""
+
+    persistent: bool = False
+    namespace: str = "default"
+
+
+@dataclass(frozen=True)
+class OAuthCacheKeyMaterial:
+    """Resolved OAuth cache encryption key metadata."""
+
+    key_id: str
+    fernet_key: bytes
+    source: str
 
 
 @click.group()
@@ -45,6 +91,27 @@ def main() -> None:
         mcp-scan config claude_desktop_config.json --format sarif
         mcp-scan baseline "python -m my_mcp_server" --save baseline.json
     """
+
+
+@main.group("cache")
+def cache() -> None:
+    """Manage scanner cache artifacts."""
+
+
+@cache.command("rotate")
+def cache_rotate() -> None:
+    """Rotate OAuth persistent cache encryption key."""
+    try:
+        summary = _rotate_oauth_persistent_cache_key()
+    except (RuntimeError, ValueError) as exc:
+        click.echo(f"Cache rotation failed: {exc}", err=True)
+        sys.exit(2)
+
+    click.echo(
+        "OAuth cache key rotated successfully "
+        f"(source={summary['source']}, key_id={summary['key_id']}, entries={summary['entry_count']})."
+    )
+    sys.exit(0)
 
 
 @main.command()
@@ -93,7 +160,7 @@ def server(
 
     SERVER_TARGET is either:
       - stdio command (e.g., "python -m my_server")
-      - SSE URL (e.g., "https://localhost:3000/sse")
+      - HTTP(S) URL (auto-detected: streamable-http, fallback to sse)
 
     Examples:
         mcp-scan server "python -m my_server"
@@ -200,11 +267,14 @@ def config(
 
     threshold = _parse_severity_threshold(severity)
 
+    _clear_oauth_token_cache()
     try:
         findings = asyncio.run(_scan_config_entries(server_entries, timeout=timeout))
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
         console.print(f"[red]Config scan failed:[/red] {exc}")
         sys.exit(2)
+    finally:
+        _clear_oauth_token_cache()
 
     filtered_findings = _filter_findings(findings, threshold)
     report = ScanReport(
@@ -263,10 +333,10 @@ def baseline(server_target: str, baseline_path: str, timeout: int, verbose: bool
         console.print(f"[debug]Creating baseline for: {server_target}[/debug]")
         console.print(f"[debug]Saving to: {baseline_path}[/debug]")
 
-    connector_config = _build_target_connector_config(server_target, timeout)
+    connector_configs = _build_target_connector_configs(server_target, timeout)
 
     try:
-        capabilities = asyncio.run(_discover_capabilities(server_name, connector_config))
+        capabilities = asyncio.run(_discover_capabilities(server_name, connector_configs))
         baseline_document = build_baseline_document(
             scanner_version=mcp_security_scanner.__version__,
             server_name=server_name,
@@ -352,10 +422,10 @@ def compare(
         console.print(f"[red]Compare failed:[/red] {exc}")
         sys.exit(2)
 
-    connector_config = _build_target_connector_config(server_target, timeout)
+    connector_configs = _build_target_connector_configs(server_target, timeout)
 
     try:
-        capabilities = asyncio.run(_discover_capabilities(server_name, connector_config))
+        capabilities = asyncio.run(_discover_capabilities(server_name, connector_configs))
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
         console.print(f"[red]Compare failed:[/red] {exc}")
         sys.exit(2)
@@ -392,11 +462,11 @@ async def _scan_single_server(
     timeout: int,
     threshold: Severity | None,
 ) -> tuple[ScanReport, list[Finding]]:
-    """Run discovery + MVP analyzers against one server target (stdio or sse)."""
+    """Run discovery + MVP analyzers against one server target."""
     server_name = _derive_server_name(server_target)
-    connector_config = _build_target_connector_config(server_target, timeout)
+    connector_configs = _build_target_connector_configs(server_target, timeout)
 
-    findings = await _scan_server_findings(server_name, connector_config)
+    findings = await _scan_server_findings(server_name, connector_configs)
     filtered_findings = _filter_findings(findings, threshold)
     report = ScanReport(
         scanner_version=mcp_security_scanner.__version__,
@@ -425,35 +495,55 @@ async def _scan_config_entries(
             continue
 
         assert connector_config is not None
+        connector_configs = [connector_config]
 
         try:
-            findings.extend(await _scan_server_findings(server_name, connector_config))
+            findings.extend(await _scan_server_findings(server_name, connector_configs))
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
             findings.append(_build_scan_failure_finding(server_name, raw_server_config, exc))
 
     return findings
 
 
-async def _scan_server_findings(server_name: str, connector_config: dict[str, Any]) -> list[Finding]:
+async def _scan_server_findings(server_name: str, connector_configs: list[dict[str, Any]]) -> list[Finding]:
     """Discover capabilities from one server and run MVP analyzers."""
-    capabilities = await _discover_capabilities(server_name, connector_config)
+    capabilities = await _discover_capabilities(server_name, connector_configs)
     return await _run_mvp_analyzers(capabilities)
 
 
-async def _discover_capabilities(server_name: str, connector_config: dict[str, Any]) -> ServerCapabilities:
-    """Create connector session and retrieve capabilities from one server."""
-    connector = MCPServerConnector(server_name=server_name)
-    await connector.connect(connector_config)
+async def _discover_capabilities(server_name: str, connector_configs: list[dict[str, Any]]) -> ServerCapabilities:
+    """Try one or more transport configs and return discovered capabilities."""
+    if not connector_configs:
+        raise ValueError("At least one connector configuration is required.")
 
-    try:
-        return await connector.get_server_capabilities()
-    finally:
-        await connector.disconnect()
+    errors: list[str] = []
+
+    for connector_config in connector_configs:
+        connector = MCPServerConnector(server_name=server_name)
+        transport = str(connector_config.get("type", "unknown"))
+        try:
+            await connector.connect(connector_config)
+            try:
+                return await connector.get_server_capabilities()
+            finally:
+                await connector.disconnect()
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+            errors.append(f"{transport}: {exc}")
+            await connector.disconnect()
+
+    joined_errors = " | ".join(errors)
+    raise ConnectionError(f"Failed to discover capabilities for {server_name}. Attempts: {joined_errors}")
 
 
 async def _run_mvp_analyzers(capabilities: ServerCapabilities) -> list[Finding]:
-    """Run the MVP analyzer set against discovered capabilities."""
-    analyzers = [StaticAnalyzer(), PromptInjectionAnalyzer()]
+    """Run the current default analyzer set against discovered capabilities."""
+    analyzers = [
+        StaticAnalyzer(),
+        PromptInjectionAnalyzer(),
+        EscalationAnalyzer(),
+        ToolPoisoningAnalyzer(),
+        CrossToolAnalyzer(),
+    ]
     findings: list[Finding] = []
 
     for analyzer in analyzers:
@@ -468,23 +558,32 @@ async def _run_mvp_analyzers(capabilities: ServerCapabilities) -> list[Finding]:
     return findings
 
 
-def _build_target_connector_config(server_target: str, timeout: int) -> dict[str, Any]:
-    """Build connector config from CLI target (stdio command or sse URL)."""
+def _build_target_connector_configs(server_target: str, timeout: int) -> list[dict[str, Any]]:
+    """Build connector config candidates from CLI target."""
     target = server_target.strip()
     parsed = urlparse(target)
 
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        return {
-            "type": "sse",
-            "url": target,
+        return [
+            {
+                "type": "streamable-http",
+                "url": target,
+                "timeout": timeout,
+            },
+            {
+                "type": "sse",
+                "url": target,
+                "timeout": timeout,
+            },
+        ]
+
+    return [
+        {
+            "type": "stdio",
+            "command": server_target,
             "timeout": timeout,
         }
-
-    return {
-        "type": "stdio",
-        "command": server_target,
-        "timeout": timeout,
-    }
+    ]
 
 
 def _extract_config_server_entries(config_data: Any) -> dict[str, Any]:
@@ -525,22 +624,22 @@ def _build_connector_config_from_config_entry(
             title=f"Invalid transport value for {server_name}",
             description="Transport field must be a string when provided.",
             raw_server_config=raw_server_config,
-            remediation="Set transport/type to 'stdio' or 'sse' for supported scanning.",
+            remediation="Set transport/type to one of: stdio, sse, streamable-http.",
         )
 
-    transport = transport_value.lower()
-    if transport not in {"stdio", "sse"}:
+    transport = _normalize_transport_name(transport_value)
+    if transport is None:
         return None, _build_config_entry_finding(
             server_name=server_name,
             severity=Severity.MEDIUM,
             category="unsupported_transport",
             title=f"Unsupported transport for {server_name}",
-            description="Only stdio and sse transports are supported; entry was skipped.",
+            description="Only stdio, sse, and streamable-http transports are supported; entry was skipped.",
             raw_server_config=raw_server_config,
-            remediation="Use a stdio or sse MCP server entry.",
+            remediation="Use stdio, sse, or streamable-http transport.",
         )
 
-    if transport == "sse":
+    if transport in {"sse", "streamable-http"}:
         url_value = raw_server_config.get("url")
         if not isinstance(url_value, str) or not url_value.strip():
             return None, _build_config_entry_finding(
@@ -548,9 +647,9 @@ def _build_connector_config_from_config_entry(
                 severity=Severity.HIGH,
                 category="invalid_config_entry",
                 title=f"Missing url for {server_name}",
-                description="sse entries must include a non-empty URL.",
+                description=f"{transport} entries must include a non-empty URL.",
                 raw_server_config=raw_server_config,
-                remediation="Set a valid http/https URL for sse transport.",
+                remediation=f"Set a valid http/https URL for {transport} transport.",
             )
 
         parsed_url = urlparse(url_value)
@@ -559,14 +658,14 @@ def _build_connector_config_from_config_entry(
                 server_name=server_name,
                 severity=Severity.HIGH,
                 category="invalid_url",
-                title=f"Invalid SSE URL for {server_name}",
-                description="sse URL must use http or https scheme.",
+                title=f"Invalid URL for {server_name}",
+                description=f"{transport} URL must use http or https scheme.",
                 raw_server_config=raw_server_config,
-                remediation="Use an http:// or https:// URL for sse transport.",
+                remediation=f"Use an http:// or https:// URL for {transport} transport.",
             )
 
         headers_value = raw_server_config.get("headers")
-        headers: dict[str, str] | None = None
+        headers: dict[str, str] = {}
         if headers_value is not None:
             if not isinstance(headers_value, dict):
                 return None, _build_config_entry_finding(
@@ -574,21 +673,43 @@ def _build_connector_config_from_config_entry(
                     severity=Severity.HIGH,
                     category="invalid_headers",
                     title=f"Invalid headers for {server_name}",
-                    description="headers must be an object when provided.",
+                    description=f"headers must be an object when provided for {transport}.",
                     raw_server_config=raw_server_config,
                     remediation="Set headers as a key/value JSON object.",
                 )
             headers = {str(key): str(value) for key, value in headers_value.items()}
 
+        auth_value = raw_server_config.get("auth")
+        if auth_value is not None:
+            headers, auth_finding = _resolve_auth_headers(
+                server_name=server_name,
+                transport=transport,
+                auth_value=auth_value,
+                explicit_headers=headers,
+                timeout=timeout,
+            )
+            if auth_finding is not None:
+                return None, auth_finding
+
         connector_config: dict[str, Any] = {
-            "type": "sse",
+            "type": transport,
             "url": url_value,
             "timeout": timeout,
         }
-        if headers is not None:
+        if headers:
             connector_config["headers"] = headers
 
         return connector_config, None
+
+    auth_value = raw_server_config.get("auth")
+    if auth_value is not None:
+        return None, _build_auth_config_error_finding(
+            server_name=server_name,
+            transport=transport,
+            auth_type=_safe_auth_type(auth_value),
+            env_var=_extract_auth_env_var(auth_value),
+            reason="auth is only supported for sse and streamable-http transports.",
+        )
 
     command = raw_server_config.get("command")
     if not isinstance(command, str) or not command.strip():
@@ -675,12 +796,2716 @@ def _build_config_entry_finding(
     )
 
 
+def _resolve_auth_headers(
+    server_name: str,
+    transport: str,
+    auth_value: Any,
+    explicit_headers: dict[str, str],
+    timeout: int,
+) -> tuple[dict[str, str], Finding | None]:
+    """Resolve auth object into headers and merge over explicit headers."""
+    headers = dict(explicit_headers)
+
+    if not isinstance(auth_value, dict):
+        return headers, _build_auth_config_error_finding(
+            server_name=server_name,
+            transport=transport,
+            auth_type=_safe_auth_type(auth_value),
+            env_var=None,
+            reason="auth must be an object.",
+        )
+
+    raw_auth_type = auth_value.get("type")
+    if not isinstance(raw_auth_type, str) or not raw_auth_type.strip():
+        return headers, _build_auth_config_error_finding(
+            server_name=server_name,
+            transport=transport,
+            auth_type=_safe_auth_type(auth_value),
+            env_var=None,
+            reason="auth.type must be a non-empty string.",
+        )
+    auth_type = raw_auth_type.strip().lower()
+    oauth_cache_settings, oauth_cache_error = _coerce_oauth_cache_settings(auth_type=auth_type, auth_value=auth_value)
+    if oauth_cache_error is not None:
+        return headers, _build_auth_config_error_finding(
+            server_name=server_name,
+            transport=transport,
+            auth_type=auth_type,
+            env_var=_extract_auth_env_var(auth_value),
+            reason=oauth_cache_error,
+        )
+    assert oauth_cache_settings is not None
+
+    if auth_type == "bearer":
+        token_env, token_env_error = _validate_auth_env_name(auth_value.get("token_env"), "token_env")
+        if token_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=token_env,
+                reason=token_env_error,
+            )
+
+        token_value, token_error = _read_auth_env_value(token_env)
+        if token_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=token_env,
+                reason=token_error,
+            )
+        assert token_value is not None
+
+        header_name = _coerce_auth_header_name(auth_value.get("header"), default="Authorization")
+        if header_name is None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=token_env,
+                reason="auth.header must be a non-empty string when provided.",
+            )
+
+        scheme_value = auth_value.get("scheme", "Bearer")
+        if not isinstance(scheme_value, str):
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=token_env,
+                reason="auth.scheme must be a string when provided.",
+            )
+        scheme = scheme_value.strip()
+        auth_header_value = f"{scheme} {token_value}".strip() if scheme else token_value
+        headers[header_name] = auth_header_value
+        return headers, None
+
+    if auth_type == "api_key":
+        key_env, key_env_error = _validate_auth_env_name(auth_value.get("key_env"), "key_env")
+        if key_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=key_env,
+                reason=key_env_error,
+            )
+
+        key_value, key_error = _read_auth_env_value(key_env)
+        if key_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=key_env,
+                reason=key_error,
+            )
+        assert key_value is not None
+
+        header_name = _coerce_auth_header_name(auth_value.get("header"), default="X-API-Key")
+        if header_name is None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=key_env,
+                reason="auth.header must be a non-empty string when provided.",
+            )
+
+        headers[header_name] = key_value
+        return headers, None
+
+    if auth_type == "session_cookie":
+        cookie_env, cookie_env_error = _validate_auth_env_name(auth_value.get("cookie_env"), "cookie_env")
+        if cookie_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=cookie_env,
+                reason=cookie_env_error,
+            )
+
+        cookie_value, cookie_error = _read_auth_env_value(cookie_env)
+        if cookie_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=cookie_env,
+                reason=cookie_error,
+            )
+        assert cookie_value is not None
+
+        cookie_name_value = auth_value.get("cookie_name", "session")
+        if not isinstance(cookie_name_value, str) or not cookie_name_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=cookie_env,
+                reason="auth.cookie_name must be a non-empty string when provided.",
+            )
+
+        cookie_name = cookie_name_value.strip()
+        cookie_pair = f"{cookie_name}={cookie_value}"
+        existing_cookie = headers.get("Cookie")
+        if existing_cookie and existing_cookie.strip():
+            headers["Cookie"] = f"{existing_cookie}; {cookie_pair}"
+        else:
+            headers["Cookie"] = cookie_pair
+        return headers, None
+
+    if auth_type == "oauth_client_credentials":
+        token_url_value = auth_value.get("token_url")
+        if not isinstance(token_url_value, str) or not token_url_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.token_url must be a non-empty string.",
+            )
+        token_url = token_url_value.strip()
+        parsed_token_url = urlparse(token_url)
+        if parsed_token_url.scheme not in {"http", "https"} or not parsed_token_url.netloc:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.token_url must be a valid http/https URL.",
+            )
+
+        client_id_env, client_id_env_error = _validate_auth_env_name(auth_value.get("client_id_env"), "client_id_env")
+        if client_id_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_env_error,
+            )
+
+        client_secret_env, client_secret_env_error = _validate_auth_env_name(
+            auth_value.get("client_secret_env"), "client_secret_env"
+        )
+        if client_secret_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_secret_env,
+                reason=client_secret_env_error,
+            )
+
+        client_id_value, client_id_error = _read_auth_env_value(client_id_env)
+        if client_id_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_error,
+            )
+        assert client_id_value is not None
+
+        client_secret_value, client_secret_error = _read_auth_env_value(client_secret_env)
+        if client_secret_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_secret_env,
+                reason=client_secret_error,
+            )
+        assert client_secret_value is not None
+
+        scope_value, scope_error = _validate_optional_auth_text(auth_value.get("scope"), "scope")
+        if scope_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=scope_error,
+            )
+
+        audience_value, audience_error = _validate_optional_auth_text(auth_value.get("audience"), "audience")
+        if audience_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=audience_error,
+            )
+
+        token_endpoint_auth_method, token_endpoint_auth_method_error = _coerce_token_endpoint_auth_method(
+            auth_value.get("token_endpoint_auth_method")
+        )
+        if token_endpoint_auth_method_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_secret_env,
+                reason=token_endpoint_auth_method_error,
+            )
+        assert token_endpoint_auth_method is not None
+
+        header_name = _coerce_auth_header_name(auth_value.get("header"), default="Authorization")
+        if header_name is None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason="auth.header must be a non-empty string when provided.",
+            )
+
+        scheme_value = auth_value.get("scheme")
+
+        oauth_env_var = _join_auth_env_vars(client_id_env, client_secret_env)
+        token_value, token_type, token_error_finding = _resolve_oauth_client_credentials_token(
+            server_name=server_name,
+            transport=transport,
+            auth_type=auth_type,
+            token_url=token_url,
+            client_id=client_id_value,
+            client_secret=client_secret_value,
+            scope=scope_value,
+            audience=audience_value,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout,
+            env_var=oauth_env_var,
+            cache_settings=oauth_cache_settings,
+        )
+        if token_error_finding is not None:
+            return headers, token_error_finding
+        assert token_value is not None
+
+        auth_header_value, scheme_error = _build_oauth_auth_header_value(
+            token_value=token_value,
+            explicit_scheme_value=scheme_value,
+            token_type=token_type,
+        )
+        if scheme_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=scheme_error,
+            )
+        assert auth_header_value is not None
+
+        headers[header_name] = auth_header_value
+        return headers, None
+
+    if auth_type == "oauth_device_code":
+        device_authorization_url_value = auth_value.get("device_authorization_url")
+        if not isinstance(device_authorization_url_value, str) or not device_authorization_url_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.device_authorization_url must be a non-empty string.",
+            )
+        device_authorization_url = device_authorization_url_value.strip()
+        parsed_device_authorization_url = urlparse(device_authorization_url)
+        if (
+            parsed_device_authorization_url.scheme not in {"http", "https"}
+            or not parsed_device_authorization_url.netloc
+        ):
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.device_authorization_url must be a valid http/https URL.",
+            )
+
+        token_url_value = auth_value.get("token_url")
+        if not isinstance(token_url_value, str) or not token_url_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.token_url must be a non-empty string.",
+            )
+        token_url = token_url_value.strip()
+        parsed_token_url = urlparse(token_url)
+        if parsed_token_url.scheme not in {"http", "https"} or not parsed_token_url.netloc:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.token_url must be a valid http/https URL.",
+            )
+
+        client_id_env, client_id_env_error = _validate_auth_env_name(auth_value.get("client_id_env"), "client_id_env")
+        if client_id_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_env_error,
+            )
+
+        client_secret_env, client_secret_env_error = _validate_optional_auth_env_name(
+            auth_value.get("client_secret_env"), "client_secret_env"
+        )
+        if client_secret_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_secret_env,
+                reason=client_secret_env_error,
+            )
+
+        client_id_value, client_id_error = _read_auth_env_value(client_id_env)
+        if client_id_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_error,
+            )
+        assert client_id_value is not None
+
+        device_client_secret_value: str | None = None
+        if client_secret_env is not None:
+            device_client_secret_value, client_secret_error = _read_auth_env_value(client_secret_env)
+            if client_secret_error is not None:
+                return headers, _build_auth_config_error_finding(
+                    server_name=server_name,
+                    transport=transport,
+                    auth_type=auth_type,
+                    env_var=client_secret_env,
+                    reason=client_secret_error,
+                )
+            assert device_client_secret_value is not None
+
+        scope_value, scope_error = _validate_optional_auth_text(auth_value.get("scope"), "scope")
+        if scope_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=scope_error,
+            )
+
+        audience_value, audience_error = _validate_optional_auth_text(auth_value.get("audience"), "audience")
+        if audience_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=audience_error,
+            )
+
+        token_endpoint_auth_method, token_endpoint_auth_method_error = _coerce_token_endpoint_auth_method(
+            auth_value.get("token_endpoint_auth_method")
+        )
+        if token_endpoint_auth_method_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_secret_env or client_id_env,
+                reason=token_endpoint_auth_method_error,
+            )
+        assert token_endpoint_auth_method is not None
+        if token_endpoint_auth_method == "client_secret_basic" and client_secret_env is None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=(
+                    "auth.client_secret_env is required when " "auth.token_endpoint_auth_method='client_secret_basic'."
+                ),
+            )
+
+        header_name = _coerce_auth_header_name(auth_value.get("header"), default="Authorization")
+        if header_name is None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason="auth.header must be a non-empty string when provided.",
+            )
+
+        scheme_value = auth_value.get("scheme")
+
+        oauth_env_var = _join_auth_env_vars(client_id_env, client_secret_env)
+        token_value, token_type, token_error_finding = _resolve_oauth_device_code_token(
+            server_name=server_name,
+            transport=transport,
+            auth_type=auth_type,
+            device_authorization_url=device_authorization_url,
+            token_url=token_url,
+            client_id=client_id_value,
+            client_secret=device_client_secret_value,
+            scope=scope_value,
+            audience=audience_value,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout,
+            is_interactive_tty=_is_interactive_tty(),
+            env_var=oauth_env_var,
+            cache_settings=oauth_cache_settings,
+        )
+        if token_error_finding is not None:
+            return headers, token_error_finding
+        assert token_value is not None
+
+        auth_header_value, scheme_error = _build_oauth_auth_header_value(
+            token_value=token_value,
+            explicit_scheme_value=scheme_value,
+            token_type=token_type,
+        )
+        if scheme_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=scheme_error,
+            )
+        assert auth_header_value is not None
+
+        headers[header_name] = auth_header_value
+        return headers, None
+
+    if auth_type == "oauth_auth_code_pkce":
+        authorization_url_value = auth_value.get("authorization_url")
+        if not isinstance(authorization_url_value, str) or not authorization_url_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.authorization_url must be a non-empty string.",
+            )
+        authorization_url = authorization_url_value.strip()
+        parsed_authorization_url = urlparse(authorization_url)
+        if parsed_authorization_url.scheme not in {"http", "https"} or not parsed_authorization_url.netloc:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.authorization_url must be a valid http/https URL.",
+            )
+
+        token_url_value = auth_value.get("token_url")
+        if not isinstance(token_url_value, str) or not token_url_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.token_url must be a non-empty string.",
+            )
+        token_url = token_url_value.strip()
+        parsed_token_url = urlparse(token_url)
+        if parsed_token_url.scheme not in {"http", "https"} or not parsed_token_url.netloc:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=None,
+                reason="auth.token_url must be a valid http/https URL.",
+            )
+
+        client_id_env, client_id_env_error = _validate_auth_env_name(auth_value.get("client_id_env"), "client_id_env")
+        if client_id_env_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_env_error,
+            )
+
+        client_id_value, client_id_error = _read_auth_env_value(client_id_env)
+        if client_id_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_error,
+            )
+        assert client_id_value is not None
+
+        scope_value, scope_error = _validate_optional_auth_text(auth_value.get("scope"), "scope")
+        if scope_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=scope_error,
+            )
+
+        audience_value, audience_error = _validate_optional_auth_text(auth_value.get("audience"), "audience")
+        if audience_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=audience_error,
+            )
+
+        redirect_host_value = auth_value.get("redirect_host", "127.0.0.1")
+        if not isinstance(redirect_host_value, str) or not redirect_host_value.strip():
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason="auth.redirect_host must be a non-empty string when provided.",
+            )
+        redirect_host = redirect_host_value.strip()
+
+        redirect_port, redirect_port_error = _coerce_redirect_port(auth_value.get("redirect_port"), default=8765)
+        if redirect_port_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=redirect_port_error,
+            )
+
+        callback_path_value = auth_value.get("callback_path", "/callback")
+        callback_path, callback_path_error = _coerce_callback_path(callback_path_value)
+        if callback_path_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=callback_path_error,
+            )
+
+        header_name = _coerce_auth_header_name(auth_value.get("header"), default="Authorization")
+        if header_name is None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason="auth.header must be a non-empty string when provided.",
+            )
+
+        scheme_value = auth_value.get("scheme")
+
+        oauth_env_var = _join_auth_env_vars(client_id_env)
+        token_value, token_type, token_error_finding = _resolve_oauth_auth_code_pkce_token(
+            server_name=server_name,
+            transport=transport,
+            auth_type=auth_type,
+            authorization_url=authorization_url,
+            token_url=token_url,
+            client_id=client_id_value,
+            scope=scope_value,
+            audience=audience_value,
+            redirect_host=redirect_host,
+            redirect_port=redirect_port,
+            callback_path=callback_path,
+            timeout_seconds=timeout,
+            is_interactive_tty=_is_interactive_tty(),
+            env_var=oauth_env_var,
+            cache_settings=oauth_cache_settings,
+        )
+        if token_error_finding is not None:
+            return headers, token_error_finding
+        assert token_value is not None
+
+        auth_header_value, scheme_error = _build_oauth_auth_header_value(
+            token_value=token_value,
+            explicit_scheme_value=scheme_value,
+            token_type=token_type,
+        )
+        if scheme_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=scheme_error,
+            )
+        assert auth_header_value is not None
+
+        headers[header_name] = auth_header_value
+        return headers, None
+
+    return headers, _build_auth_config_error_finding(
+        server_name=server_name,
+        transport=transport,
+        auth_type=auth_type,
+        env_var=None,
+        reason="Unsupported auth.type. Use bearer, api_key, session_cookie, oauth_client_credentials, oauth_device_code, or oauth_auth_code_pkce.",
+    )
+
+
+def _validate_auth_env_name(value: Any, field_name: str) -> tuple[str | None, str | None]:
+    """Validate auth env var reference fields."""
+    if not isinstance(value, str) or not value.strip():
+        return None, f"auth.{field_name} must be a non-empty string."
+    return value.strip(), None
+
+
+def _validate_optional_auth_env_name(value: Any, field_name: str) -> tuple[str | None, str | None]:
+    """Validate optional auth env refs that must be non-empty strings when provided."""
+    if value is None:
+        return None, None
+    return _validate_auth_env_name(value, field_name)
+
+
+def _read_auth_env_value(env_name: str | None) -> tuple[str | None, str | None]:
+    """Read required secret value from environment without exposing secret content."""
+    if env_name is None:
+        return None, "auth env name is missing."
+
+    raw_value = os.getenv(env_name)
+    if raw_value is None or not raw_value.strip():
+        return None, f"Environment variable {env_name} is missing or empty."
+    return raw_value, None
+
+
+def _coerce_auth_header_name(value: Any, default: str) -> str | None:
+    """Normalize optional auth header names."""
+    if value is None:
+        return default
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
+
+
+def _coerce_token_endpoint_auth_method(value: Any) -> tuple[str | None, str | None]:
+    """Normalize optional OAuth token endpoint auth method."""
+    if value is None:
+        return "client_secret_post", None
+    if not isinstance(value, str) or not value.strip():
+        return None, ("auth.token_endpoint_auth_method must be one of: " "client_secret_post, client_secret_basic.")
+    normalized = value.strip().lower()
+    if normalized not in _SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
+        return None, ("auth.token_endpoint_auth_method must be one of: " "client_secret_post, client_secret_basic.")
+    return normalized, None
+
+
+def _build_oauth_auth_header_value(
+    token_value: str,
+    explicit_scheme_value: Any,
+    token_type: str | None,
+) -> tuple[str, str | None]:
+    """Build Authorization header with precedence auth.scheme > token_type > Bearer."""
+    if explicit_scheme_value is not None and not isinstance(explicit_scheme_value, str):
+        return "", "auth.scheme must be a string when provided."
+
+    if isinstance(explicit_scheme_value, str):
+        resolved_scheme = explicit_scheme_value.strip()
+    elif token_type is not None and token_type.strip():
+        resolved_scheme = token_type.strip()
+    else:
+        resolved_scheme = "Bearer"
+
+    if resolved_scheme:
+        return f"{resolved_scheme} {token_value}".strip(), None
+    return token_value, None
+
+
+def _extract_auth_env_var(auth_value: Any) -> str | None:
+    """Extract primary env var reference from auth config for metadata."""
+    if not isinstance(auth_value, dict):
+        return None
+
+    for key in ("token_env", "key_env", "cookie_env", "client_id_env", "client_secret_env"):
+        value = auth_value.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _safe_auth_type(auth_value: Any) -> str:
+    """Return safe auth type string for metadata without raising."""
+    if isinstance(auth_value, dict):
+        raw_auth_type = auth_value.get("type")
+        if isinstance(raw_auth_type, str) and raw_auth_type.strip():
+            return raw_auth_type.strip().lower()
+    return "unknown"
+
+
+def _build_auth_config_error_finding(
+    server_name: str,
+    transport: str,
+    auth_type: str,
+    env_var: str | None,
+    reason: str,
+) -> Finding:
+    """Create a standardized finding for auth config resolution errors."""
+    evidence_payload = {
+        "reason": reason,
+        "auth_type": auth_type,
+        "env_var": env_var,
+    }
+    return Finding(
+        analyzer_name="config_scanner",
+        severity=Severity.HIGH,
+        category="auth_config_error",
+        title=f"Invalid auth configuration for {server_name}",
+        description="Auth configuration could not be resolved; server was skipped.",
+        evidence=json.dumps(evidence_payload, ensure_ascii=False, sort_keys=True),
+        owasp_id="LLM10",
+        remediation="Fix auth config fields and required env variables, then rerun config scan.",
+        metadata={
+            "server_name": server_name,
+            "transport": transport,
+            "auth_type": auth_type,
+            "env_var": env_var,
+        },
+    )
+
+
+def _build_auth_token_error_finding(
+    server_name: str,
+    transport: str,
+    auth_type: str,
+    env_var: str | None,
+    token_url: str,
+    reason: str,
+    http_status: int | None,
+) -> Finding:
+    """Create finding for OAuth token endpoint failures without leaking secrets."""
+    evidence_payload = {
+        "reason": reason,
+        "auth_type": auth_type,
+        "env_var": env_var,
+        "token_url": token_url,
+        "http_status": http_status,
+    }
+    return Finding(
+        analyzer_name="config_scanner",
+        severity=Severity.HIGH,
+        category="auth_token_error",
+        title=f"OAuth token acquisition failed for {server_name}",
+        description="OAuth token could not be acquired; server was skipped.",
+        evidence=json.dumps(evidence_payload, ensure_ascii=False, sort_keys=True),
+        owasp_id="LLM10",
+        remediation="Verify OAuth token endpoint reachability and client credentials, then rerun config scan.",
+        metadata={
+            "server_name": server_name,
+            "transport": transport,
+            "auth_type": auth_type,
+            "env_var": env_var,
+            "token_url": token_url,
+            "http_status": http_status,
+        },
+    )
+
+
+def _validate_optional_auth_text(value: Any, field_name: str) -> tuple[str | None, str | None]:
+    """Validate optional auth fields that, when provided, must be non-empty strings."""
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value.strip():
+        return None, f"auth.{field_name} must be a non-empty string when provided."
+    return value.strip(), None
+
+
+def _coerce_redirect_port(value: Any, default: int) -> tuple[int, str | None]:
+    """Parse redirect_port as a valid TCP port."""
+    if value is None:
+        return default, None
+
+    parsed_port: int
+    if isinstance(value, int):
+        parsed_port = value
+    elif isinstance(value, float):
+        parsed_port = int(value)
+    elif isinstance(value, str):
+        stripped_value = value.strip()
+        if not stripped_value:
+            return 0, "auth.redirect_port must be an integer between 1 and 65535 when provided."
+        try:
+            parsed_port = int(stripped_value)
+        except ValueError:
+            return 0, "auth.redirect_port must be an integer between 1 and 65535 when provided."
+    else:
+        return 0, "auth.redirect_port must be an integer between 1 and 65535 when provided."
+
+    if parsed_port < 1 or parsed_port > 65535:
+        return 0, "auth.redirect_port must be an integer between 1 and 65535 when provided."
+    return parsed_port, None
+
+
+def _coerce_callback_path(value: Any) -> tuple[str, str | None]:
+    """Normalize callback_path and ensure it is an absolute path."""
+    if not isinstance(value, str) or not value.strip():
+        return "", "auth.callback_path must be a non-empty string when provided."
+
+    callback_path = value.strip()
+    if not callback_path.startswith("/"):
+        return "", "auth.callback_path must start with '/'."
+    return callback_path, None
+
+
+def _coerce_oauth_cache_settings(
+    auth_type: str, auth_value: dict[str, Any]
+) -> tuple[OAuthCacheSettings | None, str | None]:
+    """Normalize optional auth.cache settings and enforce OAuth-only usage."""
+    cache_value = auth_value.get("cache")
+    if auth_type not in _OAUTH_AUTH_TYPES:
+        if cache_value is not None:
+            return None, "auth.cache is only supported for OAuth auth types."
+        return OAuthCacheSettings(), None
+
+    if cache_value is None:
+        return OAuthCacheSettings(), None
+    if not isinstance(cache_value, dict):
+        return None, "auth.cache must be an object when provided."
+
+    unknown_fields = [str(key) for key in cache_value if str(key) not in {"persistent", "namespace"}]
+    if unknown_fields:
+        return None, "auth.cache supports only: persistent, namespace."
+
+    persistent_value = cache_value.get("persistent", False)
+    if not isinstance(persistent_value, bool):
+        return None, "auth.cache.persistent must be a boolean when provided."
+
+    namespace_value = cache_value.get("namespace", "default")
+    if not isinstance(namespace_value, str) or not namespace_value.strip():
+        return None, "auth.cache.namespace must be a non-empty string when provided."
+
+    return OAuthCacheSettings(persistent=persistent_value, namespace=namespace_value.strip()), None
+
+
+def _join_auth_env_vars(*env_vars: str | None) -> str | None:
+    """Join non-empty env var names for metadata without exposing secret values."""
+    joined = [value for value in env_vars if isinstance(value, str) and value.strip()]
+    if not joined:
+        return None
+    return ",".join(joined)
+
+
+def _resolve_oauth_client_credentials_token(
+    server_name: str,
+    transport: str,
+    auth_type: str,
+    token_url: str,
+    client_id: str,
+    client_secret: str,
+    scope: str | None,
+    audience: str | None,
+    token_endpoint_auth_method: str,
+    timeout_seconds: int,
+    env_var: str | None,
+    cache_settings: OAuthCacheSettings,
+) -> tuple[str | None, str | None, Finding | None]:
+    """Resolve OAuth token with single-run cache and build findings on fetch failure."""
+    cache_key = _build_oauth_cache_key(
+        token_url=token_url,
+        client_id=client_id,
+        scope=scope,
+        audience=audience,
+        namespace=cache_settings.namespace,
+    )
+    _hydrate_oauth_cache_from_persistent(cache_key=cache_key, cache_settings=cache_settings)
+    cached_token = _get_cached_oauth_token(cache_key)
+    cached_token_type = _get_cached_oauth_token_type(cache_key)
+    if cached_token is not None:
+        return cached_token, cached_token_type, None
+
+    request_result = _request_oauth_client_credentials_token(
+        token_url=token_url,
+        client_id=client_id,
+        client_secret=client_secret,
+        scope=scope,
+        audience=audience,
+        token_endpoint_auth_method=token_endpoint_auth_method,
+        timeout_seconds=timeout_seconds,
+    )
+    token_value, expires_in, token_error, http_status, token_type = _coerce_client_credentials_token_response(
+        request_result
+    )
+    if token_error is not None or token_value is None:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason=token_error or "OAuth token endpoint returned an empty token.",
+                http_status=http_status,
+            ),
+        )
+
+    _store_oauth_token_cache(
+        cache_key=cache_key,
+        token=token_value,
+        expires_in=expires_in,
+        token_type=token_type,
+        persistent=cache_settings.persistent,
+    )
+    return token_value, token_type, None
+
+
+def _resolve_oauth_device_code_token(
+    server_name: str,
+    transport: str,
+    auth_type: str,
+    device_authorization_url: str,
+    token_url: str,
+    client_id: str,
+    client_secret: str | None,
+    scope: str | None,
+    audience: str | None,
+    token_endpoint_auth_method: str,
+    timeout_seconds: int,
+    is_interactive_tty: bool,
+    env_var: str | None,
+    cache_settings: OAuthCacheSettings,
+) -> tuple[str | None, str | None, Finding | None]:
+    """Resolve OAuth device-code token with refresh-first behavior on expiry."""
+    cache_key = _build_oauth_cache_key(
+        token_url=token_url,
+        client_id=client_id,
+        scope=scope,
+        audience=audience,
+        namespace=cache_settings.namespace,
+    )
+    _hydrate_oauth_cache_from_persistent(cache_key=cache_key, cache_settings=cache_settings)
+    cached_token = _get_cached_oauth_token(cache_key)
+    cached_token_type = _get_cached_oauth_token_type(cache_key)
+    if cached_token is not None:
+        return cached_token, cached_token_type, None
+
+    cached_refresh_token = _get_cached_oauth_refresh_token(cache_key)
+    if cached_refresh_token is not None:
+        refresh_result = _request_oauth_refresh_token(
+            token_url=token_url,
+            refresh_token=cached_refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+        )
+        refreshed_token, refreshed_expires_in, next_refresh_token, refresh_error, refresh_http_status, refresh_type = (
+            _coerce_oauth_refresh_response(refresh_result)
+        )
+        if refresh_error is not None or refreshed_token is None:
+            if _is_reauth_fallback_error(refresh_error):
+                _drop_oauth_refresh_token(cache_key, persistent=cache_settings.persistent)
+                if not is_interactive_tty:
+                    return (
+                        None,
+                        None,
+                        _build_auth_token_error_finding(
+                            server_name=server_name,
+                            transport=transport,
+                            auth_type=auth_type,
+                            env_var=env_var,
+                            token_url=token_url,
+                            reason=(
+                                "Refresh token is invalid and interactive re-authorization is "
+                                "not available in this environment."
+                            ),
+                            http_status=refresh_http_status,
+                        ),
+                    )
+            else:
+                return (
+                    None,
+                    None,
+                    _build_auth_token_error_finding(
+                        server_name=server_name,
+                        transport=transport,
+                        auth_type=auth_type,
+                        env_var=env_var,
+                        token_url=token_url,
+                        reason=refresh_error or "Refresh token flow returned an empty access_token.",
+                        http_status=refresh_http_status,
+                    ),
+                )
+        else:
+            _store_oauth_token_cache(
+                cache_key=cache_key,
+                token=refreshed_token,
+                expires_in=refreshed_expires_in,
+                refresh_token=next_refresh_token or cached_refresh_token,
+                token_type=refresh_type,
+                persistent=cache_settings.persistent,
+            )
+            return refreshed_token, refresh_type, None
+
+    if not is_interactive_tty:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason="oauth_device_code requires an interactive TTY for verification.",
+                http_status=None,
+            ),
+        )
+
+    device_payload, device_error, device_http_status = _request_oauth_device_authorization(
+        device_authorization_url=device_authorization_url,
+        client_id=client_id,
+        client_secret=client_secret,
+        scope=scope,
+        audience=audience,
+        timeout_seconds=timeout_seconds,
+    )
+    if device_error is not None or device_payload is None:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason=device_error or "Device authorization endpoint returned an empty response.",
+                http_status=device_http_status,
+            ),
+        )
+
+    device_code = device_payload.get("device_code")
+    if not isinstance(device_code, str) or not device_code.strip():
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason="Device authorization response is missing a non-empty device_code.",
+                http_status=device_http_status,
+            ),
+        )
+
+    verification_uri = _optional_non_empty_text(device_payload.get("verification_uri"))
+    verification_uri_complete = _optional_non_empty_text(device_payload.get("verification_uri_complete"))
+    user_code = _optional_non_empty_text(device_payload.get("user_code"))
+
+    _emit_oauth_device_code_instructions(
+        server_name=server_name,
+        verification_uri=verification_uri,
+        verification_uri_complete=verification_uri_complete,
+        user_code=user_code,
+    )
+
+    device_expires_in = _coerce_expires_in_value(device_payload.get("expires_in"))
+    poll_interval_seconds = _coerce_poll_interval_seconds(device_payload.get("interval"), default=5)
+
+    poll_result = _poll_oauth_device_code_token(
+        token_url=token_url,
+        device_code=device_code.strip(),
+        client_id=client_id,
+        client_secret=client_secret,
+        token_endpoint_auth_method=token_endpoint_auth_method,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        device_expires_in=device_expires_in,
+    )
+    token_value, expires_in, refresh_token, token_error, token_http_status, token_type = (
+        _coerce_oauth_token_with_refresh_response(poll_result)
+    )
+    if token_error is not None or token_value is None:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason=token_error or "Device code polling returned an empty access_token.",
+                http_status=token_http_status,
+            ),
+        )
+
+    _store_oauth_token_cache(
+        cache_key=cache_key,
+        token=token_value,
+        expires_in=expires_in,
+        refresh_token=refresh_token,
+        token_type=token_type,
+        persistent=cache_settings.persistent,
+    )
+    return token_value, token_type, None
+
+
+def _resolve_oauth_auth_code_pkce_token(
+    server_name: str,
+    transport: str,
+    auth_type: str,
+    authorization_url: str,
+    token_url: str,
+    client_id: str,
+    scope: str | None,
+    audience: str | None,
+    redirect_host: str,
+    redirect_port: int,
+    callback_path: str,
+    timeout_seconds: int,
+    is_interactive_tty: bool,
+    env_var: str | None,
+    cache_settings: OAuthCacheSettings,
+) -> tuple[str | None, str | None, Finding | None]:
+    """Resolve OAuth auth-code (PKCE) token with cache + refresh behavior."""
+    cache_key = _build_oauth_cache_key(
+        token_url=token_url,
+        client_id=client_id,
+        scope=scope,
+        audience=audience,
+        namespace=cache_settings.namespace,
+    )
+    _hydrate_oauth_cache_from_persistent(cache_key=cache_key, cache_settings=cache_settings)
+    cached_token = _get_cached_oauth_token(cache_key)
+    cached_token_type = _get_cached_oauth_token_type(cache_key)
+    if cached_token is not None:
+        return cached_token, cached_token_type, None
+
+    cached_refresh_token = _get_cached_oauth_refresh_token(cache_key)
+    if cached_refresh_token is not None:
+        refresh_result = _request_oauth_refresh_token(
+            token_url=token_url,
+            refresh_token=cached_refresh_token,
+            client_id=client_id,
+            client_secret=None,
+            token_endpoint_auth_method="client_secret_post",
+            timeout_seconds=timeout_seconds,
+        )
+        refreshed_token, refreshed_expires_in, next_refresh_token, refresh_error, refresh_http_status, refresh_type = (
+            _coerce_oauth_refresh_response(refresh_result)
+        )
+        if refresh_error is not None or refreshed_token is None:
+            if _is_reauth_fallback_error(refresh_error):
+                _drop_oauth_refresh_token(cache_key, persistent=cache_settings.persistent)
+                if not is_interactive_tty:
+                    return (
+                        None,
+                        None,
+                        _build_auth_token_error_finding(
+                            server_name=server_name,
+                            transport=transport,
+                            auth_type=auth_type,
+                            env_var=env_var,
+                            token_url=token_url,
+                            reason=(
+                                "Refresh token is invalid and interactive re-authorization is "
+                                "not available in this environment."
+                            ),
+                            http_status=refresh_http_status,
+                        ),
+                    )
+            else:
+                return (
+                    None,
+                    None,
+                    _build_auth_token_error_finding(
+                        server_name=server_name,
+                        transport=transport,
+                        auth_type=auth_type,
+                        env_var=env_var,
+                        token_url=token_url,
+                        reason=refresh_error or "Refresh token flow returned an empty access_token.",
+                        http_status=refresh_http_status,
+                    ),
+                )
+        else:
+            _store_oauth_token_cache(
+                cache_key=cache_key,
+                token=refreshed_token,
+                expires_in=refreshed_expires_in,
+                refresh_token=next_refresh_token or cached_refresh_token,
+                token_type=refresh_type,
+                persistent=cache_settings.persistent,
+            )
+            return refreshed_token, refresh_type, None
+
+    if not is_interactive_tty:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason="oauth_auth_code_pkce requires an interactive TTY for verification.",
+                http_status=None,
+            ),
+        )
+
+    code_verifier = _generate_pkce_code_verifier()
+    code_challenge = _generate_pkce_code_challenge(code_verifier)
+    expected_state = _generate_oauth_state()
+
+    auth_code, callback_state, redirect_uri, auth_code_error = _run_oauth_auth_code_pkce_flow(
+        server_name=server_name,
+        authorization_url=authorization_url,
+        client_id=client_id,
+        scope=scope,
+        audience=audience,
+        redirect_host=redirect_host,
+        redirect_port=redirect_port,
+        callback_path=callback_path,
+        code_challenge=code_challenge,
+        expected_state=expected_state,
+        timeout_seconds=timeout_seconds,
+    )
+    if auth_code_error is not None or auth_code is None or callback_state is None or redirect_uri is None:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason=auth_code_error or "Authorization code flow did not complete successfully.",
+                http_status=None,
+            ),
+        )
+
+    if callback_state != expected_state:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason="OAuth callback state mismatch detected.",
+                http_status=None,
+            ),
+        )
+
+    exchange_result = _request_oauth_auth_code_token(
+        token_url=token_url,
+        auth_code=auth_code,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        code_verifier=code_verifier,
+        scope=scope,
+        audience=audience,
+        timeout_seconds=timeout_seconds,
+    )
+    token_value, expires_in, refresh_token, token_error, token_http_status, token_type = (
+        _coerce_oauth_token_with_refresh_response(exchange_result)
+    )
+    if token_error is not None or token_value is None:
+        return (
+            None,
+            None,
+            _build_auth_token_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=env_var,
+                token_url=token_url,
+                reason=token_error or "Token exchange returned an empty access_token.",
+                http_status=token_http_status,
+            ),
+        )
+
+    _store_oauth_token_cache(
+        cache_key=cache_key,
+        token=token_value,
+        expires_in=expires_in,
+        refresh_token=refresh_token,
+        token_type=token_type,
+        persistent=cache_settings.persistent,
+    )
+    return token_value, token_type, None
+
+
+def _run_oauth_auth_code_pkce_flow(
+    server_name: str,
+    authorization_url: str,
+    client_id: str,
+    scope: str | None,
+    audience: str | None,
+    redirect_host: str,
+    redirect_port: int,
+    callback_path: str,
+    code_challenge: str,
+    expected_state: str,
+    timeout_seconds: int,
+) -> tuple[str | None, str | None, str | None, str | None]:
+    """Run local-callback auth-code flow and return callback code/state."""
+    callback_server, callback_port, callback_payload, callback_error = _create_oauth_callback_http_server(
+        host=redirect_host,
+        preferred_port=redirect_port,
+        callback_path=callback_path,
+    )
+    if callback_error is not None or callback_server is None or callback_port is None or callback_payload is None:
+        return None, None, None, callback_error or "Unable to start OAuth callback listener."
+
+    redirect_uri = f"http://{redirect_host}:{callback_port}{callback_path}"
+    authorization_request_url = _build_oauth_authorization_request_url(
+        authorization_url=authorization_url,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        code_challenge=code_challenge,
+        state=expected_state,
+        scope=scope,
+        audience=audience,
+    )
+    _emit_oauth_auth_code_pkce_instructions(
+        server_name=server_name, authorization_request_url=authorization_request_url
+    )
+
+    try:
+        received_payload, wait_error = _wait_for_oauth_callback(
+            callback_server=callback_server,
+            callback_payload=callback_payload,
+            timeout_seconds=timeout_seconds,
+        )
+    finally:
+        callback_server.server_close()
+
+    if wait_error is not None or received_payload is None:
+        return None, None, redirect_uri, wait_error or "OAuth callback was not received."
+
+    callback_error_code = _optional_non_empty_text(received_payload.get("error"))
+    if callback_error_code is not None:
+        callback_error_description = _optional_non_empty_text(received_payload.get("error_description"))
+        if callback_error_description is not None:
+            return (
+                None,
+                None,
+                redirect_uri,
+                f"Authorization endpoint returned error '{callback_error_code}': {callback_error_description}.",
+            )
+        return None, None, redirect_uri, f"Authorization endpoint returned error '{callback_error_code}'."
+
+    auth_code = _optional_non_empty_text(received_payload.get("code"))
+    callback_state = _optional_non_empty_text(received_payload.get("state"))
+    if auth_code is None:
+        return None, None, redirect_uri, "OAuth callback is missing authorization code."
+    if callback_state is None:
+        return None, None, redirect_uri, "OAuth callback is missing state value."
+    return auth_code, callback_state, redirect_uri, None
+
+
+def _create_oauth_callback_http_server(
+    host: str,
+    preferred_port: int,
+    callback_path: str,
+) -> tuple[HTTPServer | None, int | None, dict[str, str | None] | None, str | None]:
+    """Create local callback listener; retry with random port on bind failure."""
+    callback_payload: dict[str, str | None] = {}
+
+    def _build_server(port: int) -> tuple[HTTPServer | None, str | None]:
+        class OAuthCallbackHandler(BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return None
+
+            def do_GET(self) -> None:
+                parsed_url = urlparse(self.path)
+                if parsed_url.path != callback_path:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(b"Not found.")
+                    return
+
+                query_params = parse_qs(parsed_url.query, keep_blank_values=True)
+                callback_payload["received"] = "1"
+                callback_payload["code"] = _first_query_value(query_params.get("code"))
+                callback_payload["state"] = _first_query_value(query_params.get("state"))
+                callback_payload["error"] = _first_query_value(query_params.get("error"))
+                callback_payload["error_description"] = _first_query_value(query_params.get("error_description"))
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"Authentication received. You can close this window.")
+
+        try:
+            server = HTTPServer((host, port), OAuthCallbackHandler)
+        except OSError as exc:
+            return None, str(exc)
+        return server, None
+
+    first_server, first_error = _build_server(preferred_port)
+    if first_server is not None:
+        return first_server, int(first_server.server_address[1]), callback_payload, None
+
+    fallback_server, fallback_error = _build_server(0)
+    if fallback_server is not None:
+        return fallback_server, int(fallback_server.server_address[1]), callback_payload, None
+
+    error_parts = [
+        f"failed on {host}:{preferred_port} ({first_error or 'unknown bind error'})",
+        f"random port fallback failed ({fallback_error or 'unknown bind error'})",
+    ]
+    return None, None, None, "Unable to bind OAuth callback listener: " + "; ".join(error_parts)
+
+
+def _wait_for_oauth_callback(
+    callback_server: HTTPServer,
+    callback_payload: dict[str, str | None],
+    timeout_seconds: int,
+) -> tuple[dict[str, str | None] | None, str | None]:
+    """Wait for one OAuth callback until timeout."""
+    deadline = _oauth_now() + max(1.0, float(timeout_seconds))
+
+    while _oauth_now() < deadline:
+        if callback_payload.get("received") == "1":
+            break
+
+        remaining_seconds = deadline - _oauth_now()
+        callback_server.timeout = min(0.5, max(0.05, remaining_seconds))
+        callback_server.handle_request()
+
+    if callback_payload.get("received") != "1":
+        return None, "Timed out waiting for OAuth callback."
+    return callback_payload, None
+
+
+def _build_oauth_authorization_request_url(
+    authorization_url: str,
+    client_id: str,
+    redirect_uri: str,
+    code_challenge: str,
+    state: str,
+    scope: str | None,
+    audience: str | None,
+) -> str:
+    """Build full authorization URL with PKCE + callback parameters."""
+    parsed_url = urlparse(authorization_url)
+    query_params = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
+    query_params.update(
+        {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        }
+    )
+    if scope is not None:
+        query_params["scope"] = scope
+    if audience is not None:
+        query_params["audience"] = audience
+    return urlunparse(parsed_url._replace(query=urlencode(query_params)))
+
+
+def _request_oauth_auth_code_token(
+    token_url: str,
+    auth_code: str,
+    redirect_uri: str,
+    client_id: str,
+    code_verifier: str,
+    scope: str | None,
+    audience: str | None,
+    timeout_seconds: int,
+) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+    """Exchange authorization code for access token using PKCE verifier."""
+    request_data = {
+        "grant_type": "authorization_code",
+        "code": auth_code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "code_verifier": code_verifier,
+    }
+    if scope is not None:
+        request_data["scope"] = scope
+    if audience is not None:
+        request_data["audience"] = audience
+
+    payload, request_error, http_status = _request_oauth_form_payload(
+        endpoint_url=token_url,
+        request_data=request_data,
+        timeout_seconds=timeout_seconds,
+        endpoint_name="Token endpoint",
+    )
+    if request_error is not None:
+        return None, None, None, request_error, http_status, None
+    assert payload is not None
+
+    if http_status is not None and http_status >= 400:
+        return None, None, None, _extract_oauth_error_reason(payload, http_status), http_status, None
+
+    access_token = _optional_non_empty_text(payload.get("access_token"))
+    if access_token is None:
+        return None, None, None, "Token endpoint response is missing a non-empty access_token.", http_status, None
+
+    expires_in = _coerce_expires_in_value(payload.get("expires_in"))
+    refresh_token = _optional_non_empty_text(payload.get("refresh_token"))
+    token_type = _optional_non_empty_text(payload.get("token_type"))
+    return access_token, expires_in, refresh_token, None, http_status, token_type
+
+
+def _generate_pkce_code_verifier() -> str:
+    """Generate RFC7636-compatible high-entropy PKCE code_verifier."""
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).decode("ascii").rstrip("=")
+    if len(verifier) < 43:
+        verifier = verifier + ("A" * (43 - len(verifier)))
+    return verifier[:128]
+
+
+def _generate_pkce_code_challenge(code_verifier: str) -> str:
+    """Generate S256 PKCE code_challenge for a verifier."""
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _generate_oauth_state() -> str:
+    """Generate random OAuth state token."""
+    return secrets.token_urlsafe(32).rstrip("=")
+
+
+def _first_query_value(values: list[str] | None) -> str | None:
+    """Return first query parameter value when available."""
+    if not values:
+        return None
+    return values[0]
+
+
+def _request_oauth_device_authorization(
+    device_authorization_url: str,
+    client_id: str,
+    client_secret: str | None,
+    scope: str | None,
+    audience: str | None,
+    timeout_seconds: int,
+) -> tuple[dict[str, Any] | None, str | None, int | None]:
+    """Request OAuth device authorization details."""
+    request_data = {"client_id": client_id}
+    if client_secret is not None:
+        request_data["client_secret"] = client_secret
+    if scope is not None:
+        request_data["scope"] = scope
+    if audience is not None:
+        request_data["audience"] = audience
+
+    payload, request_error, http_status = _request_oauth_form_payload(
+        endpoint_url=device_authorization_url,
+        request_data=request_data,
+        timeout_seconds=timeout_seconds,
+        endpoint_name="Device authorization endpoint",
+    )
+    if request_error is not None:
+        return None, request_error, http_status
+    assert payload is not None
+
+    if http_status is not None and http_status >= 400:
+        return None, _extract_oauth_error_reason(payload, http_status), http_status
+
+    return payload, None, http_status
+
+
+def _poll_oauth_device_code_token(
+    token_url: str,
+    device_code: str,
+    client_id: str,
+    client_secret: str | None,
+    token_endpoint_auth_method: str,
+    timeout_seconds: int,
+    poll_interval_seconds: int,
+    device_expires_in: float | None,
+) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+    """Poll OAuth token endpoint for device-code completion."""
+    deadline = _oauth_now() + max(1.0, float(timeout_seconds))
+    if device_expires_in is not None:
+        deadline = min(deadline, _oauth_now() + device_expires_in)
+
+    current_interval = poll_interval_seconds
+
+    while True:
+        if _oauth_now() >= deadline:
+            return None, None, None, "Device authorization timed out before completion.", None, None
+
+        request_data = {
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            "device_code": device_code,
+            "client_id": client_id,
+        }
+
+        payload, request_error, http_status = _request_oauth_form_payload(
+            endpoint_url=token_url,
+            request_data=request_data,
+            timeout_seconds=timeout_seconds,
+            endpoint_name="Token endpoint",
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+        )
+        if request_error is not None:
+            return None, None, None, request_error, http_status, None
+        assert payload is not None
+
+        error_code = _optional_non_empty_text(payload.get("error"))
+        if error_code is not None:
+            if error_code == "authorization_pending":
+                _sleep_until_deadline(interval_seconds=current_interval, deadline=deadline)
+                continue
+            if error_code == "slow_down":
+                current_interval += 5
+                _sleep_until_deadline(interval_seconds=current_interval, deadline=deadline)
+                continue
+            if error_code == "access_denied":
+                return None, None, None, "Device authorization was denied by the user.", http_status, None
+            if error_code == "expired_token":
+                return None, None, None, "Device code expired before authorization completed.", http_status, None
+
+            error_description = _optional_non_empty_text(payload.get("error_description"))
+            if error_description is not None:
+                return (
+                    None,
+                    None,
+                    None,
+                    f"Token endpoint returned OAuth error '{error_code}': {error_description}.",
+                    http_status,
+                    None,
+                )
+            return None, None, None, f"Token endpoint returned OAuth error '{error_code}'.", http_status, None
+
+        if http_status is not None and http_status >= 400:
+            return None, None, None, f"Token endpoint returned HTTP {http_status}.", http_status, None
+
+        access_token = _optional_non_empty_text(payload.get("access_token"))
+        if access_token is None:
+            return None, None, None, "Token endpoint response is missing a non-empty access_token.", http_status, None
+
+        expires_in = _coerce_expires_in_value(payload.get("expires_in"))
+        refresh_token = _optional_non_empty_text(payload.get("refresh_token"))
+        token_type = _optional_non_empty_text(payload.get("token_type"))
+        return access_token, expires_in, refresh_token, None, http_status, token_type
+
+
+def _request_oauth_refresh_token(
+    token_url: str,
+    refresh_token: str,
+    client_id: str,
+    client_secret: str | None,
+    token_endpoint_auth_method: str,
+    timeout_seconds: int,
+) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+    """Refresh OAuth access token using refresh_token grant."""
+    request_data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+    }
+
+    payload, request_error, http_status = _request_oauth_form_payload(
+        endpoint_url=token_url,
+        request_data=request_data,
+        timeout_seconds=timeout_seconds,
+        endpoint_name="Token endpoint",
+        client_id=client_id,
+        client_secret=client_secret,
+        token_endpoint_auth_method=token_endpoint_auth_method,
+    )
+    if request_error is not None:
+        return None, None, None, request_error, http_status, None
+    assert payload is not None
+
+    if http_status is not None and http_status >= 400:
+        return None, None, None, _extract_oauth_error_reason(payload, http_status), http_status, None
+
+    access_token = _optional_non_empty_text(payload.get("access_token"))
+    if access_token is None:
+        return None, None, None, "Token endpoint response is missing a non-empty access_token.", http_status, None
+
+    expires_in = _coerce_expires_in_value(payload.get("expires_in"))
+    next_refresh_token = _optional_non_empty_text(payload.get("refresh_token"))
+    token_type = _optional_non_empty_text(payload.get("token_type"))
+    return access_token, expires_in, next_refresh_token, None, http_status, token_type
+
+
+def _request_oauth_form_payload(
+    endpoint_url: str,
+    request_data: dict[str, str],
+    timeout_seconds: int,
+    endpoint_name: str,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    token_endpoint_auth_method: str = "client_secret_post",
+) -> tuple[dict[str, Any] | None, str | None, int | None]:
+    """Execute OAuth form POST and parse JSON payload."""
+    request_headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    request_body = dict(request_data)
+
+    if token_endpoint_auth_method == "client_secret_basic":
+        if client_id is None or client_secret is None:
+            return (
+                None,
+                f"{endpoint_name} client_secret_basic requires both client_id and client_secret.",
+                None,
+            )
+        basic_token = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
+        request_headers["Authorization"] = f"Basic {basic_token}"
+        request_body.pop("client_secret", None)
+    elif token_endpoint_auth_method == "client_secret_post":
+        if client_secret is not None and "client_secret" not in request_body:
+            request_body["client_secret"] = client_secret
+    else:
+        return None, f"{endpoint_name} received unsupported token endpoint auth method.", None
+
+    try:
+        response = httpx.post(
+            endpoint_url,
+            data=request_body,
+            headers=request_headers,
+            timeout=timeout_seconds,
+        )
+    except httpx.HTTPError as exc:
+        return None, f"{endpoint_name} request failed: {exc}", None
+
+    http_status = response.status_code
+    try:
+        payload = response.json()
+    except ValueError:
+        form_payload = _parse_form_encoded_payload(response.text)
+        if form_payload is not None:
+            return form_payload, None, http_status
+        if http_status >= 400:
+            return None, f"{endpoint_name} returned HTTP {http_status}.", http_status
+        return None, f"{endpoint_name} returned a non-JSON response.", http_status
+
+    if not isinstance(payload, dict):
+        return None, f"{endpoint_name} response must be a JSON object.", http_status
+    return payload, None, http_status
+
+
+def _extract_oauth_error_reason(payload: dict[str, Any], http_status: int) -> str:
+    """Render deterministic OAuth error reason from endpoint payload."""
+    error_code = _optional_non_empty_text(payload.get("error"))
+    error_description = _optional_non_empty_text(payload.get("error_description"))
+    if error_code is None:
+        return f"OAuth endpoint returned HTTP {http_status}."
+    if error_description is None:
+        return f"OAuth endpoint returned error '{error_code}' (HTTP {http_status})."
+    return f"OAuth endpoint returned error '{error_code}' (HTTP {http_status}): {error_description}."
+
+
+def _coerce_client_credentials_token_response(
+    result: Any,
+) -> tuple[str | None, float | None, str | None, int | None, str | None]:
+    """Support legacy and current tuple shapes for client-credentials responses."""
+    if isinstance(result, tuple):
+        if len(result) == 5:
+            token_value, expires_in, token_error, http_status, token_type = result
+            return (
+                _optional_non_empty_text(token_value),
+                _coerce_expires_in_value(expires_in),
+                _optional_non_empty_text(token_error),
+                _coerce_optional_int(http_status),
+                _optional_non_empty_text(token_type),
+            )
+        if len(result) == 4:
+            token_value, expires_in, token_error, http_status = result
+            return (
+                _optional_non_empty_text(token_value),
+                _coerce_expires_in_value(expires_in),
+                _optional_non_empty_text(token_error),
+                _coerce_optional_int(http_status),
+                None,
+            )
+    return None, None, "Invalid token response shape.", None, None
+
+
+def _coerce_oauth_token_with_refresh_response(
+    result: Any,
+) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+    """Support legacy and current tuple shapes for OAuth responses with refresh token."""
+    if isinstance(result, tuple):
+        if len(result) == 6:
+            token_value, expires_in, refresh_token, token_error, http_status, token_type = result
+            return (
+                _optional_non_empty_text(token_value),
+                _coerce_expires_in_value(expires_in),
+                _optional_non_empty_text(refresh_token),
+                _optional_non_empty_text(token_error),
+                _coerce_optional_int(http_status),
+                _optional_non_empty_text(token_type),
+            )
+        if len(result) == 5:
+            token_value, expires_in, refresh_token, token_error, http_status = result
+            return (
+                _optional_non_empty_text(token_value),
+                _coerce_expires_in_value(expires_in),
+                _optional_non_empty_text(refresh_token),
+                _optional_non_empty_text(token_error),
+                _coerce_optional_int(http_status),
+                None,
+            )
+    return None, None, None, "Invalid token response shape.", None, None
+
+
+def _coerce_oauth_refresh_response(
+    result: Any,
+) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+    """Support legacy and current tuple shapes for refresh-token responses."""
+    return _coerce_oauth_token_with_refresh_response(result)
+
+
+def _coerce_optional_int(value: Any) -> int | None:
+    """Normalize optional integer fields from patched test responses."""
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return int(float(stripped))
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_oauth_error_code_from_reason(reason: str | None) -> str | None:
+    """Extract OAuth error code from standardized reason text when available."""
+    if reason is None:
+        return None
+    match = re.search(r"error '([^']+)'", reason)
+    if match is None:
+        return None
+    return match.group(1).strip().lower() or None
+
+
+def _is_reauth_fallback_error(reason: str | None) -> bool:
+    """Return True when refresh failure should trigger one-time primary grant fallback."""
+    error_code = _extract_oauth_error_code_from_reason(reason)
+    return error_code in {"invalid_grant", "invalid_token"}
+
+
+def _parse_form_encoded_payload(payload_text: str) -> dict[str, Any] | None:
+    """Parse form-encoded OAuth payloads as fallback when JSON decoding fails."""
+    parsed = parse_qs(payload_text, keep_blank_values=True)
+    if not parsed:
+        return None
+    return {key: _first_query_value(values) for key, values in parsed.items()}
+
+
+def _optional_non_empty_text(value: Any) -> str | None:
+    """Normalize optional textual OAuth payload fields."""
+    if not isinstance(value, str):
+        return None
+    stripped_value = value.strip()
+    return stripped_value if stripped_value else None
+
+
+def _coerce_poll_interval_seconds(value: Any, default: int) -> int:
+    """Parse polling interval as positive integer seconds."""
+    if isinstance(value, (int, float)):
+        parsed = int(value)
+    elif isinstance(value, str):
+        try:
+            parsed = int(float(value.strip()))
+        except ValueError:
+            return default
+    else:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _sleep_until_deadline(interval_seconds: int, deadline: float) -> None:
+    """Sleep up to the configured polling interval without exceeding deadline."""
+    remaining_seconds = deadline - _oauth_now()
+    if remaining_seconds <= 0:
+        return
+    _oauth_sleep(min(float(interval_seconds), remaining_seconds))
+
+
+def _emit_oauth_device_code_instructions(
+    server_name: str,
+    verification_uri: str | None,
+    verification_uri_complete: str | None,
+    user_code: str | None,
+) -> None:
+    """Print copy/paste instructions for OAuth device-code flow."""
+    click.echo(f"[oauth] Complete verification for server '{server_name}'.", err=True)
+    if verification_uri_complete is not None:
+        click.echo(f"[oauth] Open: {verification_uri_complete}", err=True)
+    elif verification_uri is not None:
+        click.echo(f"[oauth] Open: {verification_uri}", err=True)
+    if user_code is not None:
+        click.echo(f"[oauth] Enter code: {user_code}", err=True)
+
+
+def _emit_oauth_auth_code_pkce_instructions(server_name: str, authorization_request_url: str) -> None:
+    """Print copy/paste instructions for OAuth auth-code PKCE flow."""
+    click.echo(f"[oauth] Complete authorization for server '{server_name}'.", err=True)
+    click.echo(f"[oauth] Open: {authorization_request_url}", err=True)
+    click.echo("[oauth] Waiting for local callback...", err=True)
+
+
+def _request_oauth_client_credentials_token(
+    token_url: str,
+    client_id: str,
+    client_secret: str,
+    scope: str | None,
+    audience: str | None,
+    token_endpoint_auth_method: str,
+    timeout_seconds: int,
+) -> tuple[str | None, float | None, str | None, int | None, str | None]:
+    """Request OAuth client-credentials token with x-www-form-urlencoded payload."""
+    request_data = {
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+    }
+    if scope is not None:
+        request_data["scope"] = scope
+    if audience is not None:
+        request_data["audience"] = audience
+
+    payload, request_error, http_status = _request_oauth_form_payload(
+        endpoint_url=token_url,
+        request_data=request_data,
+        timeout_seconds=timeout_seconds,
+        endpoint_name="Token endpoint",
+        client_id=client_id,
+        client_secret=client_secret,
+        token_endpoint_auth_method=token_endpoint_auth_method,
+    )
+    if request_error is not None:
+        return None, None, request_error, http_status, None
+    assert payload is not None
+
+    if http_status is not None and http_status >= 400:
+        return None, None, _extract_oauth_error_reason(payload, http_status), http_status, None
+
+    token_value = _optional_non_empty_text(payload.get("access_token"))
+    if token_value is None:
+        return None, None, "Token endpoint response is missing a non-empty access_token.", http_status, None
+
+    expires_in = _coerce_expires_in_value(payload.get("expires_in"))
+    token_type = _optional_non_empty_text(payload.get("token_type"))
+    return token_value, expires_in, None, http_status, token_type
+
+
+def _coerce_expires_in_value(value: Any) -> float | None:
+    """Parse optional expires_in as seconds; invalid values disable TTL caching."""
+    if value is None:
+        return None
+
+    seconds: float
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if seconds < 0:
+        return 0.0
+    return seconds
+
+
+def _oauth_now() -> float:
+    """Clock source for OAuth cache expiry checks."""
+    return time.monotonic()
+
+
+def _oauth_sleep(seconds: float) -> None:
+    """Sleep function wrapper for OAuth polling to aid deterministic testing."""
+    time.sleep(seconds)
+
+
+def _is_interactive_tty() -> bool:
+    """Return True when both stdin and stderr are interactive TTYs."""
+    stdin_is_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
+    stderr_is_tty = bool(getattr(sys.stderr, "isatty", lambda: False)())
+    return stdin_is_tty and stderr_is_tty
+
+
+def _build_oauth_cache_key(
+    token_url: str,
+    client_id: str,
+    scope: str | None,
+    audience: str | None,
+    namespace: str = "default",
+) -> str:
+    """Build deterministic cache key for OAuth token reuse."""
+    normalized_namespace = namespace.strip() or "default"
+    return "\x1f".join([normalized_namespace, token_url, client_id, scope or "", audience or ""])
+
+
+def _hydrate_oauth_cache_from_persistent(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Hydrate in-memory token cache from encrypted disk cache when enabled."""
+    if not cache_settings.persistent:
+        return
+    if cache_key in _OAUTH_TOKEN_CACHE:
+        return
+
+    persistent_entries = _load_oauth_persistent_cache_entries()
+    cached_entry = persistent_entries.get(cache_key)
+    if not isinstance(cached_entry, dict):
+        return
+    _OAUTH_TOKEN_CACHE[cache_key] = dict(cached_entry)
+
+
+def _load_oauth_persistent_cache_entries() -> dict[str, dict[str, Any]]:
+    """Read encrypted persistent OAuth cache; returns empty map on any failure/bypass."""
+    lock_handle, _ = _acquire_oauth_cache_lock()
+    if lock_handle is None:
+        return {}
+    try:
+        key_material = _resolve_oauth_cache_key_material(create_if_missing=True)
+        if key_material is None:
+            return {}
+        entries, _ = _load_oauth_cache_entries_locked(
+            key_material=key_material,
+            recover_corrupt=True,
+        )
+        return entries
+    finally:
+        _release_oauth_cache_lock(lock_handle)
+
+
+def _persist_oauth_cache_entry(cache_key: str) -> None:
+    """Persist one in-memory OAuth cache entry to encrypted disk cache when possible."""
+    lock_handle, _ = _acquire_oauth_cache_lock()
+    if lock_handle is None:
+        return
+    try:
+        key_material = _resolve_oauth_cache_key_material(create_if_missing=True)
+        if key_material is None:
+            return
+
+        persistent_entries, _ = _load_oauth_cache_entries_locked(
+            key_material=key_material,
+            recover_corrupt=True,
+        )
+        in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+        if isinstance(in_memory_entry, dict):
+            persistent_entries[cache_key] = dict(in_memory_entry)
+        else:
+            persistent_entries.pop(cache_key, None)
+
+        _write_oauth_cache_entries_locked(key_material=key_material, entries=persistent_entries)
+    finally:
+        _release_oauth_cache_lock(lock_handle)
+
+
+def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
+    """Rotate persistent OAuth cache encryption key and re-encrypt existing entries."""
+    lock_handle, lock_error = _acquire_oauth_cache_lock()
+    if lock_handle is None:
+        raise RuntimeError(lock_error or "Unable to acquire OAuth cache lock.")
+    try:
+        current_key_material = _resolve_oauth_cache_key_material(create_if_missing=False)
+        if _OAUTH_PERSISTENT_CACHE_FILE.exists():
+            if current_key_material is None:
+                raise RuntimeError("OAuth cache exists but cache key could not be resolved.")
+            current_entries, load_error = _load_oauth_cache_entries_locked(
+                key_material=current_key_material,
+                recover_corrupt=False,
+            )
+            if load_error is not None:
+                raise RuntimeError(load_error)
+        else:
+            current_entries = {}
+
+        next_key_material = _generate_oauth_cache_key_material()
+        stored_key_material = _store_oauth_cache_key_material(next_key_material)
+        if stored_key_material is None:
+            raise RuntimeError("Failed to store rotated cache key.")
+
+        if not _write_oauth_cache_entries_locked(key_material=stored_key_material, entries=current_entries):
+            raise RuntimeError("Failed to write encrypted cache payload with rotated key.")
+
+        return {
+            "source": stored_key_material.source,
+            "key_id": stored_key_material.key_id,
+            "entry_count": len(current_entries),
+        }
+    finally:
+        _release_oauth_cache_lock(lock_handle)
+
+
+def _load_oauth_cache_entries_locked(
+    key_material: OAuthCacheKeyMaterial,
+    recover_corrupt: bool,
+) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Read and normalize encrypted cache entries while lock is held."""
+    try:
+        encrypted_payload = _OAUTH_PERSISTENT_CACHE_FILE.read_bytes()
+    except FileNotFoundError:
+        return {}, None
+    except OSError:
+        return {}, "Unable to read OAuth cache file."
+
+    _ensure_file_mode(_OAUTH_PERSISTENT_CACHE_FILE, mode=0o600)
+    payload = _decrypt_oauth_cache_payload(
+        encrypted_payload=encrypted_payload,
+        encryption_key=key_material.fernet_key,
+    )
+    if payload is None:
+        if recover_corrupt:
+            _quarantine_oauth_cache_file_locked()
+            return {}, "OAuth cache payload is corrupt or undecryptable."
+        return {}, "OAuth cache payload is corrupt or undecryptable."
+
+    entries, parse_error = _parse_oauth_cache_entries_from_payload(payload)
+    if parse_error is not None:
+        if recover_corrupt:
+            _quarantine_oauth_cache_file_locked()
+            return {}, parse_error
+        return {}, parse_error
+    return entries, None
+
+
+def _write_oauth_cache_entries_locked(key_material: OAuthCacheKeyMaterial, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write encrypted cache entries while lock is held."""
+    encrypted_payload = _encrypt_oauth_cache_payload(
+        entries=entries,
+        key_material=key_material,
+    )
+    if encrypted_payload is None:
+        return False
+    return _atomic_write_bytes(path=_OAUTH_PERSISTENT_CACHE_FILE, data=encrypted_payload, mode=0o600)
+
+
+def _parse_oauth_cache_entries_from_payload(payload: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str | None]:
+    """Parse cache payload entries from v1/v2 envelope shapes."""
+    schema_version = payload.get("schema_version")
+    if schema_version not in {_OAUTH_CACHE_SCHEMA_VERSION_V1, _OAUTH_CACHE_SCHEMA_VERSION_V2}:
+        return {}, "OAuth cache payload schema_version is unsupported."
+
+    entries_value = payload.get("entries")
+    if not isinstance(entries_value, dict):
+        return {}, "OAuth cache payload must include an object 'entries' field."
+
+    normalized_entries: dict[str, dict[str, Any]] = {}
+    for entry_key, entry_value in entries_value.items():
+        if not isinstance(entry_key, str) or not isinstance(entry_value, dict):
+            continue
+        normalized_entries[entry_key] = dict(entry_value)
+    return normalized_entries, None
+
+
+def _resolve_oauth_cache_key_material(create_if_missing: bool) -> OAuthCacheKeyMaterial | None:
+    """Resolve cache key material from keyring first, then fallback key file."""
+    key_material = _read_oauth_cache_key_material_from_keyring()
+    if key_material is not None:
+        return key_material
+
+    key_material = _read_oauth_cache_key_material_from_file()
+    if key_material is not None:
+        return key_material
+
+    if not create_if_missing:
+        return None
+
+    generated_material = _generate_oauth_cache_key_material()
+    return _store_oauth_cache_key_material(generated_material)
+
+
+def _store_oauth_cache_key_material(key_material: OAuthCacheKeyMaterial) -> OAuthCacheKeyMaterial | None:
+    """Persist key material to preferred store and return resolved source."""
+    if _write_oauth_cache_key_material_to_keyring(key_material):
+        return OAuthCacheKeyMaterial(
+            key_id=key_material.key_id,
+            fernet_key=key_material.fernet_key,
+            source="keyring",
+        )
+    if _write_oauth_cache_key_material_to_file(key_material):
+        return OAuthCacheKeyMaterial(
+            key_id=key_material.key_id,
+            fernet_key=key_material.fernet_key,
+            source="file",
+        )
+    return None
+
+
+def _read_oauth_cache_key_material_from_keyring() -> OAuthCacheKeyMaterial | None:
+    """Read cache key metadata from OS keyring."""
+    try:
+        keyring_module = cast(Any, importlib.import_module("keyring"))
+    except Exception:
+        return None
+
+    try:
+        raw_value = keyring_module.get_password(
+            _OAUTH_PERSISTENT_KEYRING_SERVICE,
+            _OAUTH_PERSISTENT_KEYRING_USERNAME,
+        )
+    except Exception:
+        return None
+
+    return _parse_oauth_cache_key_material(raw_value, source="keyring")
+
+
+def _write_oauth_cache_key_material_to_keyring(key_material: OAuthCacheKeyMaterial) -> bool:
+    """Store cache key metadata in keyring when possible."""
+    try:
+        keyring_module = cast(Any, importlib.import_module("keyring"))
+    except Exception:
+        return False
+
+    serialized_value = _serialize_oauth_cache_key_material(key_material)
+    if serialized_value is None:
+        return False
+
+    try:
+        keyring_module.set_password(
+            _OAUTH_PERSISTENT_KEYRING_SERVICE,
+            _OAUTH_PERSISTENT_KEYRING_USERNAME,
+            serialized_value,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _read_oauth_cache_key_material_from_file() -> OAuthCacheKeyMaterial | None:
+    """Read cache key metadata from fallback key file."""
+    try:
+        raw_value = _OAUTH_PERSISTENT_KEY_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+
+    _ensure_file_mode(_OAUTH_PERSISTENT_KEY_FILE, mode=0o600)
+    return _parse_oauth_cache_key_material(raw_value, source="file")
+
+
+def _write_oauth_cache_key_material_to_file(key_material: OAuthCacheKeyMaterial) -> bool:
+    """Write cache key metadata to fallback file with strict file mode."""
+    serialized_value = _serialize_oauth_cache_key_material(key_material)
+    if serialized_value is None:
+        return False
+    return _atomic_write_bytes(path=_OAUTH_PERSISTENT_KEY_FILE, data=serialized_value.encode("utf-8"), mode=0o600)
+
+
+def _parse_oauth_cache_key_material(raw_value: Any, source: str) -> OAuthCacheKeyMaterial | None:
+    """Parse metadata key format with backward-compatible raw-key fallback."""
+    if isinstance(raw_value, bytes):
+        normalized_value = raw_value.decode("utf-8", errors="ignore").strip()
+    elif isinstance(raw_value, str):
+        normalized_value = raw_value.strip()
+    else:
+        return None
+
+    if not normalized_value:
+        return None
+
+    try:
+        parsed_value = json.loads(normalized_value)
+    except json.JSONDecodeError:
+        parsed_value = None
+
+    if isinstance(parsed_value, dict):
+        key_id_value = parsed_value.get("key_id")
+        fernet_key_value = parsed_value.get("fernet_key")
+        if isinstance(key_id_value, str) and key_id_value.strip():
+            parsed_fernet_key = _coerce_fernet_key(fernet_key_value)
+            if parsed_fernet_key is not None:
+                return OAuthCacheKeyMaterial(
+                    key_id=key_id_value.strip(),
+                    fernet_key=parsed_fernet_key,
+                    source=source,
+                )
+
+    parsed_raw_key = _coerce_fernet_key(normalized_value)
+    if parsed_raw_key is None:
+        return None
+
+    return OAuthCacheKeyMaterial(
+        key_id=f"legacy-{source}",
+        fernet_key=parsed_raw_key,
+        source=source,
+    )
+
+
+def _serialize_oauth_cache_key_material(key_material: OAuthCacheKeyMaterial) -> str | None:
+    """Serialize key metadata envelope for keyring/file storage."""
+    if not key_material.key_id.strip():
+        return None
+    try:
+        encoded_key = key_material.fernet_key.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+    payload = {
+        "key_id": key_material.key_id,
+        "fernet_key": encoded_key,
+    }
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _resolve_oauth_cache_encryption_key() -> bytes | None:
+    """Backward-compatible helper returning only resolved key bytes."""
+    key_material = _resolve_oauth_cache_key_material(create_if_missing=True)
+    if key_material is None:
+        return None
+    return key_material.fernet_key
+
+
+def _read_oauth_cache_key_from_keyring() -> bytes | None:
+    """Backward-compatible keyring reader returning raw key bytes."""
+    key_material = _read_oauth_cache_key_material_from_keyring()
+    if key_material is None:
+        return None
+    return key_material.fernet_key
+
+
+def _read_or_create_oauth_cache_key_file() -> bytes | None:
+    """Backward-compatible file reader/writer returning raw key bytes."""
+    key_material = _read_oauth_cache_key_material_from_file()
+    if key_material is not None:
+        return key_material.fernet_key
+
+    generated_material = _generate_oauth_cache_key_material()
+    stored_material = _store_oauth_cache_key_material(generated_material)
+    if stored_material is None:
+        return None
+    return stored_material.fernet_key
+
+
+def _generate_oauth_cache_key_material() -> OAuthCacheKeyMaterial:
+    """Generate new key material envelope."""
+    generated_key = _generate_fernet_key()
+    if generated_key is None:
+        raise RuntimeError("Failed to generate Fernet key.")
+    return OAuthCacheKeyMaterial(
+        key_id=f"k_{secrets.token_hex(8)}",
+        fernet_key=generated_key,
+        source="generated",
+    )
+
+
+def _coerce_fernet_key(value: Any) -> bytes | None:
+    """Normalize candidate Fernet key and verify shape."""
+    if isinstance(value, str):
+        raw_key = value.strip().encode("ascii", errors="ignore")
+    elif isinstance(value, bytes):
+        raw_key = value.strip()
+    else:
+        return None
+
+    if not raw_key:
+        return None
+
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        return None
+
+    try:
+        Fernet(raw_key)
+    except Exception:
+        return None
+    return raw_key
+
+
+def _generate_fernet_key() -> bytes | None:
+    """Generate Fernet key bytes."""
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        return None
+    return Fernet.generate_key()
+
+
+def _decrypt_oauth_cache_payload(encrypted_payload: bytes, encryption_key: bytes) -> dict[str, Any] | None:
+    """Decrypt OAuth cache payload and parse JSON object."""
+    if not encrypted_payload:
+        return None
+
+    try:
+        from cryptography.fernet import Fernet, InvalidToken
+    except Exception:
+        return None
+
+    try:
+        plaintext_payload = Fernet(encryption_key).decrypt(encrypted_payload)
+    except (InvalidToken, ValueError, TypeError):
+        return None
+
+    try:
+        parsed_payload = json.loads(plaintext_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed_payload, dict):
+        return None
+    return parsed_payload
+
+
+def _encrypt_oauth_cache_payload(
+    entries: dict[str, dict[str, Any]],
+    key_material: OAuthCacheKeyMaterial,
+) -> bytes | None:
+    """Encrypt OAuth cache entries with versioned payload."""
+    try:
+        from cryptography.fernet import Fernet
+    except Exception:
+        return None
+
+    payload: dict[str, Any] = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "key_id": key_material.key_id,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+    try:
+        return Fernet(key_material.fernet_key).encrypt(serialized_payload)
+    except Exception:
+        return None
+
+
+def _atomic_write_bytes(path: Path, data: bytes, mode: int) -> bool:
+    """Write bytes atomically by temp file + replace."""
+    temp_path: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("wb", delete=False, dir=path.parent) as temp_file:
+            temp_file.write(data)
+            temp_path = Path(temp_file.name)
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+        _ensure_file_mode(path, mode=mode)
+        return True
+    except OSError:
+        return False
+    finally:
+        if temp_path is not None and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
+def _acquire_oauth_cache_lock() -> tuple[tuple[Any, Any] | None, str | None]:
+    """Acquire exclusive lock for persistent cache operations."""
+    try:
+        fcntl_module = cast(Any, importlib.import_module("fcntl"))
+    except Exception:
+        return None, "POSIX file lock is unavailable; persistent cache is bypassed."
+
+    try:
+        _OAUTH_PERSISTENT_CACHE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        lock_file_handle = _OAUTH_PERSISTENT_CACHE_LOCK_FILE.open("a+b")
+    except OSError as exc:
+        return None, f"Unable to open cache lock file: {exc}"
+
+    deadline = time.monotonic() + _OAUTH_CACHE_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl_module.flock(lock_file_handle.fileno(), fcntl_module.LOCK_EX | fcntl_module.LOCK_NB)
+            return (lock_file_handle, fcntl_module), None
+        except OSError as exc:
+            err_no = getattr(exc, "errno", None)
+            if err_no not in {11, 13}:
+                try:
+                    lock_file_handle.close()
+                except OSError:
+                    pass
+                return None, f"Unable to lock OAuth cache file: {exc}"
+            if time.monotonic() >= deadline:
+                try:
+                    lock_file_handle.close()
+                except OSError:
+                    pass
+                return (
+                    None,
+                    f"Timed out acquiring OAuth cache lock after {_OAUTH_CACHE_LOCK_TIMEOUT_SECONDS:.1f}s.",
+                )
+            time.sleep(_OAUTH_CACHE_LOCK_RETRY_SECONDS)
+
+
+def _release_oauth_cache_lock(lock_handle: tuple[Any, Any] | None) -> None:
+    """Release previously acquired OAuth cache lock."""
+    if lock_handle is None:
+        return
+
+    lock_file_handle, fcntl_module = lock_handle
+    try:
+        fcntl_module.flock(lock_file_handle.fileno(), fcntl_module.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        lock_file_handle.close()
+    except OSError:
+        pass
+
+
+def _quarantine_oauth_cache_file_locked() -> None:
+    """Rename corrupt cache payload to a timestamped quarantine file."""
+    if not _OAUTH_PERSISTENT_CACHE_FILE.exists():
+        return
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    base_name = f"{_OAUTH_PERSISTENT_CACHE_FILE.name}.corrupt.{timestamp}"
+    quarantine_path = _OAUTH_PERSISTENT_CACHE_FILE.with_name(base_name)
+    counter = 1
+    while quarantine_path.exists():
+        quarantine_path = _OAUTH_PERSISTENT_CACHE_FILE.with_name(f"{base_name}.{counter}")
+        counter += 1
+
+    try:
+        os.replace(_OAUTH_PERSISTENT_CACHE_FILE, quarantine_path)
+    except OSError:
+        return
+    _ensure_file_mode(quarantine_path, mode=0o600)
+
+
+def _ensure_file_mode(path: Path, mode: int) -> None:
+    """Best-effort chmod hardening for cache/key artifacts."""
+    try:
+        if path.exists():
+            os.chmod(path, mode)
+    except OSError:
+        pass
+
+
+def _get_cached_oauth_token(cache_key: str) -> str | None:
+    """Return cached access token when TTL is valid."""
+    cached_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if cached_entry is None:
+        return None
+
+    token_value = cached_entry.get("access_token")
+    if not isinstance(token_value, str) or not token_value.strip():
+        _OAUTH_TOKEN_CACHE.pop(cache_key, None)
+        return None
+
+    expires_at_value = cached_entry.get("expires_at")
+    if expires_at_value is None:
+        return token_value.strip()
+    if not isinstance(expires_at_value, (int, float)):
+        _OAUTH_TOKEN_CACHE.pop(cache_key, None)
+        return None
+
+    if _oauth_now() >= float(expires_at_value):
+        refresh_token = cached_entry.get("refresh_token")
+        if isinstance(refresh_token, str) and refresh_token.strip():
+            return None
+        _OAUTH_TOKEN_CACHE.pop(cache_key, None)
+        return None
+
+    return token_value.strip()
+
+
+def _get_cached_oauth_refresh_token(cache_key: str) -> str | None:
+    """Return cached refresh token when available."""
+    cached_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if cached_entry is None:
+        return None
+    refresh_token = cached_entry.get("refresh_token")
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        return None
+    return refresh_token.strip()
+
+
+def _get_cached_oauth_token_type(cache_key: str) -> str | None:
+    """Return cached token_type when available."""
+    cached_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if cached_entry is None:
+        return None
+    token_type = cached_entry.get("token_type")
+    if not isinstance(token_type, str) or not token_type.strip():
+        return None
+    return token_type.strip()
+
+
+def _drop_oauth_refresh_token(cache_key: str, persistent: bool = False) -> None:
+    """Remove cached refresh token to force a one-time primary grant fallback."""
+    cached_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if not isinstance(cached_entry, dict):
+        return
+    cached_entry.pop("refresh_token", None)
+    if not cached_entry:
+        _OAUTH_TOKEN_CACHE.pop(cache_key, None)
+    if persistent:
+        _persist_oauth_cache_entry(cache_key)
+
+
+def _store_oauth_token_cache(
+    cache_key: str,
+    token: str,
+    expires_in: float | None,
+    refresh_token: str | None = None,
+    token_type: str | None = None,
+    persistent: bool = False,
+) -> None:
+    """Store token in in-memory cache with optional TTL and safety skew."""
+    expires_at: float | None = None
+    if expires_in is not None:
+        ttl_seconds = max(0.0, expires_in - _OAUTH_TOKEN_CACHE_SKEW_SECONDS)
+        expires_at = _oauth_now() + ttl_seconds
+
+    entry: dict[str, Any] = {
+        "access_token": token,
+        "expires_at": expires_at,
+    }
+    if isinstance(refresh_token, str) and refresh_token.strip():
+        entry["refresh_token"] = refresh_token.strip()
+    if isinstance(token_type, str) and token_type.strip():
+        entry["token_type"] = token_type.strip()
+
+    _OAUTH_TOKEN_CACHE[cache_key] = entry
+    if persistent:
+        _persist_oauth_cache_entry(cache_key)
+
+
+def _clear_oauth_token_cache() -> None:
+    """Clear in-memory OAuth token cache."""
+    _OAUTH_TOKEN_CACHE.clear()
+
+
 def _build_scan_failure_finding(server_name: str, raw_server_config: Any, error: Exception) -> Finding:
     """Create finding for runtime scan failures while processing config entries."""
     transport = "unknown"
     if isinstance(raw_server_config, dict):
         transport_value = raw_server_config.get("transport", raw_server_config.get("type", "stdio"))
-        if isinstance(transport_value, str):
+        normalized_transport = _normalize_transport_name(transport_value)
+        if normalized_transport is not None:
+            transport = normalized_transport
+        elif isinstance(transport_value, str):
             transport = transport_value.lower()
 
     return Finding(
@@ -765,6 +3590,21 @@ def _safe_json_dump(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except TypeError:
         return repr(value)
+
+
+def _normalize_transport_name(value: Any) -> str | None:
+    """Normalize transport aliases to canonical names."""
+    if not isinstance(value, str):
+        return None
+
+    transport = value.strip().lower()
+    if transport == "streamable_http":
+        return "streamable-http"
+
+    if transport in {"stdio", "sse", "streamable-http"}:
+        return transport
+
+    return None
 
 
 def _derive_server_name(command: str) -> str:

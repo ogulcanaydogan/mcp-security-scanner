@@ -48,10 +48,10 @@ class TestMCPServerConnector:
 
     @pytest.mark.asyncio
     async def test_connect_rejects_unsupported_transport(self):
-        """Connector should reject transports other than stdio/sse."""
+        """Connector should reject transports other than stdio/sse/streamable-http."""
         connector = MCPServerConnector("test_server")
 
-        with pytest.raises(ValueError, match="stdio and sse"):
+        with pytest.raises(ValueError, match="stdio, sse, streamable-http"):
             await connector.connect({"type": "grpc", "endpoint": "localhost:5000"})
 
     @pytest.mark.asyncio
@@ -80,7 +80,7 @@ class TestMCPServerConnector:
 
     @pytest.mark.asyncio
     async def test_connect_rejects_invalid_sse_config(self):
-        """Connector should validate SSE URL and headers payload."""
+        """Connector should validate URL and headers payloads for network transports."""
         connector = MCPServerConnector("test_server")
 
         with pytest.raises(ValueError, match="config.url"):
@@ -94,6 +94,21 @@ class TestMCPServerConnector:
                 {
                     "type": "sse",
                     "url": "https://example.com/sse",
+                    "headers": "Authorization: Bearer token",
+                }
+            )
+
+        with pytest.raises(ValueError, match="config.url"):
+            await connector.connect({"type": "streamable-http"})
+
+        with pytest.raises(ValueError, match="http or https"):
+            await connector.connect({"type": "streamable-http", "url": "ftp://example.com/mcp"})
+
+        with pytest.raises(ValueError, match="config.headers"):
+            await connector.connect(
+                {
+                    "type": "streamable_http",
+                    "url": "https://example.com/mcp",
                     "headers": "Authorization: Bearer token",
                 }
             )
@@ -245,6 +260,142 @@ class TestMCPServerConnector:
 
         await connector.disconnect()
         assert captured["sse_closed"] is True
+        assert captured["session_closed"] is True
+
+    @pytest.mark.asyncio
+    async def test_connect_streamable_http_and_get_server_capabilities(self, monkeypatch):
+        """Connector should use streamable-http transport APIs when configured."""
+        captured: dict[str, object] = {}
+
+        class FakePayload:
+            def __init__(self, payload: dict[str, object]) -> None:
+                self._payload = payload
+
+            def model_dump(self, **kwargs: object) -> dict[str, object]:
+                del kwargs
+                return self._payload
+
+        class FakeStreamableContext:
+            async def __aenter__(self) -> tuple[object, object]:
+                captured["streamable_entered"] = True
+                return object(), object()
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+                captured["streamable_closed"] = True
+
+        class FakeClientSession:
+            def __init__(self, read_stream: object, write_stream: object) -> None:
+                captured["streams"] = (read_stream, write_stream)
+
+            async def __aenter__(self) -> "FakeClientSession":
+                captured["session_entered"] = True
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+                captured["session_closed"] = True
+
+            async def initialize(self) -> None:
+                captured["initialized"] = True
+
+            async def list_tools(self) -> SimpleNamespace:
+                return SimpleNamespace(
+                    tools=[
+                        FakePayload(
+                            {
+                                "name": "streamable_tool",
+                                "description": "Tool from streamable server",
+                                "inputSchema": {"type": "object"},
+                            }
+                        )
+                    ]
+                )
+
+            async def list_resources(self) -> SimpleNamespace:
+                return SimpleNamespace(
+                    resources=[
+                        FakePayload(
+                            {
+                                "uri": "memory://streamable-resource",
+                                "name": "Streamable Resource",
+                                "description": "Resource from streamable server",
+                                "mimeType": "text/plain",
+                            }
+                        )
+                    ]
+                )
+
+            async def list_prompts(self) -> SimpleNamespace:
+                return SimpleNamespace(
+                    prompts=[
+                        FakePayload(
+                            {
+                                "name": "streamable_prompt",
+                                "description": "Prompt from streamable server",
+                                "arguments": [{"name": "text"}],
+                            }
+                        )
+                    ]
+                )
+
+            async def read_resource(self, uri) -> SimpleNamespace:
+                captured["read_uri"] = str(uri)
+                return SimpleNamespace(
+                    contents=[
+                        FakePayload(
+                            {
+                                "uri": "memory://streamable-resource",
+                                "mimeType": "text/plain",
+                                "text": "streamable content payload",
+                            }
+                        )
+                    ]
+                )
+
+            async def call_tool(self, name: str, arguments: dict[str, object]) -> FakePayload:
+                return FakePayload({"tool": name, "echo": arguments})
+
+        def fake_streamable_client(url: str, **kwargs: object) -> FakeStreamableContext:
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return FakeStreamableContext()
+
+        monkeypatch.setattr(discovery_module, "streamable_http_client", fake_streamable_client)
+        monkeypatch.setattr(discovery_module, "ClientSession", FakeClientSession)
+
+        connector = MCPServerConnector("streamable_server")
+        connected = await connector.connect(
+            {
+                "type": "streamable_http",
+                "url": "https://example.com/mcp",
+                "headers": {"Authorization": "Bearer test-token"},
+                "timeout": 3,
+            }
+        )
+
+        assert connected is True
+        assert connector._transport == "streamable-http"
+        assert captured["url"] == "https://example.com/mcp"
+        assert isinstance(captured["kwargs"], dict)
+        assert "http_client" in captured["kwargs"]
+        assert captured["initialized"] is True
+
+        capabilities = await connector.get_server_capabilities()
+        assert capabilities.tools[0].name == "streamable_tool"
+        assert capabilities.resources[0].uri == "memory://streamable-resource"
+        assert capabilities.prompts[0].name == "streamable_prompt"
+
+        content = await connector.get_resource_content("memory://streamable-resource")
+        assert content == "streamable content payload"
+        assert captured["read_uri"] == "memory://streamable-resource"
+
+        tool_result = await connector.call_tool("streamable_tool", {"value": "hello"})
+        assert tool_result["tool"] == "streamable_tool"
+        assert tool_result["echo"]["value"] == "hello"
+
+        await connector.disconnect()
+        assert captured["streamable_closed"] is True
         assert captured["session_closed"] is True
 
     @pytest.mark.asyncio

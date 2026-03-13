@@ -11,13 +11,21 @@ Contains specialized analyzers for:
 """
 
 from mcp_security_scanner.analyzers.base import BaseAnalyzer, Finding, Severity
+from mcp_security_scanner.analyzers.cross_tool import AttackChain, CrossToolAnalyzer
+from mcp_security_scanner.analyzers.escalation import CapabilityRiskProfile, EscalationAnalyzer
 from mcp_security_scanner.analyzers.injection import PromptInjectionAnalyzer
+from mcp_security_scanner.analyzers.poisoning import ToolPoisoningAnalyzer
 from mcp_security_scanner.analyzers.static import StaticAnalyzer
 
 __all__ = [
+    "AttackChain",
     "BaseAnalyzer",
+    "CapabilityRiskProfile",
+    "CrossToolAnalyzer",
+    "EscalationAnalyzer",
     "Finding",
     "PromptInjectionAnalyzer",
     "Severity",
     "StaticAnalyzer",
+    "ToolPoisoningAnalyzer",
 ]
