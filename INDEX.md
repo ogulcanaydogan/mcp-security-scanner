@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8B scope.
+Current index for the implemented Sprint 1-8C scope.
 
 ## Status Snapshot
 
@@ -24,6 +24,7 @@ Current index for the implemented Sprint 1-8B scope.
 - Sprint 7C: done (transport-level mTLS propagation for `sse` and `streamable-http` config entries)
 - Sprint 8A: done (Dynamic Analyzer v1 added as opt-in via `--dynamic`)
 - Sprint 8B: done (Dynamic analyzer hardening: bounded runtime policy, deterministic outputs, false-positive suppression)
+- Sprint 8C: done (URL positional auth/mTLS UX for `server`, `baseline`, `compare`)
 
 ## Top-Level Docs
 
@@ -40,6 +41,7 @@ Current index for the implemented Sprint 1-8B scope.
   - Implemented commands: `server`, `config`, `baseline`, `compare`, `cache rotate`
   - Severity filtering, output formatting, exit code contract
   - URL target auto-routing with fallback (`streamable-http` -> `sse`)
+  - URL positional auth/mTLS options (`--headers-json`, `--auth-json`, `--mtls-*`) for `server`/`baseline`/`compare`
   - Config auth normalization (`bearer` / `api_key` / `session_cookie` / `oauth_client_credentials` / `oauth_device_code` / `oauth_auth_code_pkce`)
   - Auth finding flow: `auth_config_error` (schema/env) and `auth_token_error` (token endpoint)
   - OAuth client-credentials + device-code + auth-code PKCE/refresh with in-memory cache
@@ -113,5 +115,4 @@ Coverage threshold is enforced at `>=80%`.
 ## Current Deferred Backlog
 
 - advanced persistent secret-store options beyond keyring/fallback file model
-- URL positional auth/mTLS UX (currently config-only)
 - dynamic analyzer probe coverage expansion beyond current hardened opt-in baseline

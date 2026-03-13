@@ -46,6 +46,14 @@ mcp-scan server "python -m my_mcp_server" --format json
 # Scan a URL target (auto-detected: streamable-http, fallback to sse)
 mcp-scan server "https://example.com/sse" --format html --output report.html
 
+# Scan a URL target with auth/header/mTLS JSON options
+mcp-scan server "https://example.com/mcp" \
+  --headers-json '{"X-Trace":"run-42"}' \
+  --auth-json '{"type":"api_key","key_env":"MCP_API_KEY"}' \
+  --mtls-cert-file /etc/mcp/client.crt \
+  --mtls-key-file /etc/mcp/client.key \
+  --format json
+
 # Run dynamic probes in addition to default analyzers (opt-in)
 mcp-scan server "python -m my_mcp_server" --dynamic --format json
 
@@ -230,7 +238,11 @@ Notes:
 - auth finding evidence never includes secret/token/cookie plaintext
 - Unsupported transport entries do not stop the run; they are reported as findings
 - Per-server scan failures do not stop the run; they are reported as `scan_failure` findings
-- URL positional commands (`server`, `baseline`, `compare`) do not support auth flags; use `config` for auth-backed scans
+- URL positional commands (`server`, `baseline`, `compare`) support:
+  - `--headers-json` (JSON object)
+  - `--auth-json` (JSON object with same shape as `config.auth`)
+  - `--mtls-cert-file` + `--mtls-key-file` (optional `--mtls-ca-bundle-file`)
+- URL auth/mTLS options are URL-only; when used with stdio targets the command fails with operational error (`exit 2`)
 
 `cache` command:
 - `mcp-scan cache rotate` rotates persistent OAuth cache encryption key and re-encrypts cached entries
@@ -282,9 +294,8 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8B)
+## Roadmap (Post Sprint 8C)
 
 Deferred items:
 - advanced persistent secret-store backends beyond keyring/fallback file model
-- URL positional auth/mTLS UX (currently config-only)
 - dynamic analyzer expansion beyond current hardened opt-in baseline

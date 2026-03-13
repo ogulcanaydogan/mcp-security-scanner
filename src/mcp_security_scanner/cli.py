@@ -113,6 +113,17 @@ class OAuthPrivateKeyJWTSigner:
     kms_endpoint_url: str | None = None
 
 
+@dataclass(frozen=True)
+class URLTargetOptions:
+    """Optional auth/mTLS options for URL positional targets."""
+
+    headers_json: str | None = None
+    auth_json: str | None = None
+    mtls_cert_file: str | None = None
+    mtls_key_file: str | None = None
+    mtls_ca_bundle_file: str | None = None
+
+
 @click.group()
 @click.version_option(version=mcp_security_scanner.__version__)
 def main() -> None:
@@ -189,6 +200,41 @@ def cache_rotate() -> None:
     is_flag=True,
     help="Enable opt-in dynamic runtime probes against tools.",
 )
+@click.option(
+    "--headers-json",
+    "headers_json",
+    default=None,
+    type=str,
+    help="JSON object of HTTP headers for URL targets.",
+)
+@click.option(
+    "--auth-json",
+    "auth_json",
+    default=None,
+    type=str,
+    help="JSON auth object (same shape as config.auth) for URL targets.",
+)
+@click.option(
+    "--mtls-cert-file",
+    "mtls_cert_file",
+    default=None,
+    type=click.Path(),
+    help="Client certificate path for URL transport mTLS.",
+)
+@click.option(
+    "--mtls-key-file",
+    "mtls_key_file",
+    default=None,
+    type=click.Path(),
+    help="Client private key path for URL transport mTLS.",
+)
+@click.option(
+    "--mtls-ca-bundle-file",
+    "mtls_ca_bundle_file",
+    default=None,
+    type=click.Path(),
+    help="Optional CA bundle path for URL transport mTLS.",
+)
 def server(
     server_target: str,
     timeout: int,
@@ -197,6 +243,11 @@ def server(
     severity: str,
     verbose: bool,
     dynamic_enabled: bool,
+    headers_json: str | None,
+    auth_json: str | None,
+    mtls_cert_file: str | None,
+    mtls_key_file: str | None,
+    mtls_ca_bundle_file: str | None,
 ) -> None:
     """
     Scan a single MCP server.
@@ -220,12 +271,20 @@ def server(
     threshold = _parse_severity_threshold(severity)
 
     try:
+        url_target_options = URLTargetOptions(
+            headers_json=headers_json,
+            auth_json=auth_json,
+            mtls_cert_file=mtls_cert_file,
+            mtls_key_file=mtls_key_file,
+            mtls_ca_bundle_file=mtls_ca_bundle_file,
+        )
         report, filtered_findings = asyncio.run(
             _scan_single_server(
                 server_target=server_target,
                 timeout=timeout,
                 threshold=threshold,
                 dynamic_enabled=dynamic_enabled,
+                url_target_options=url_target_options,
             )
         )
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
@@ -369,7 +428,52 @@ def config(
     is_flag=True,
     help="Enable debug output.",
 )
-def baseline(server_target: str, baseline_path: str, timeout: int, verbose: bool) -> None:
+@click.option(
+    "--headers-json",
+    "headers_json",
+    default=None,
+    type=str,
+    help="JSON object of HTTP headers for URL targets.",
+)
+@click.option(
+    "--auth-json",
+    "auth_json",
+    default=None,
+    type=str,
+    help="JSON auth object (same shape as config.auth) for URL targets.",
+)
+@click.option(
+    "--mtls-cert-file",
+    "mtls_cert_file",
+    default=None,
+    type=click.Path(),
+    help="Client certificate path for URL transport mTLS.",
+)
+@click.option(
+    "--mtls-key-file",
+    "mtls_key_file",
+    default=None,
+    type=click.Path(),
+    help="Client private key path for URL transport mTLS.",
+)
+@click.option(
+    "--mtls-ca-bundle-file",
+    "mtls_ca_bundle_file",
+    default=None,
+    type=click.Path(),
+    help="Optional CA bundle path for URL transport mTLS.",
+)
+def baseline(
+    server_target: str,
+    baseline_path: str,
+    timeout: int,
+    verbose: bool,
+    headers_json: str | None,
+    auth_json: str | None,
+    mtls_cert_file: str | None,
+    mtls_key_file: str | None,
+    mtls_ca_bundle_file: str | None,
+) -> None:
     """
     Create a baseline snapshot of an MCP server's tool schemas.
 
@@ -386,9 +490,19 @@ def baseline(server_target: str, baseline_path: str, timeout: int, verbose: bool
         console.print(f"[debug]Creating baseline for: {server_target}[/debug]")
         console.print(f"[debug]Saving to: {baseline_path}[/debug]")
 
-    connector_configs = _build_target_connector_configs(server_target, timeout)
-
+    url_target_options = URLTargetOptions(
+        headers_json=headers_json,
+        auth_json=auth_json,
+        mtls_cert_file=mtls_cert_file,
+        mtls_key_file=mtls_key_file,
+        mtls_ca_bundle_file=mtls_ca_bundle_file,
+    )
     try:
+        connector_configs = _build_target_connector_configs(
+            server_target,
+            timeout,
+            url_target_options=url_target_options,
+        )
         capabilities = asyncio.run(_discover_capabilities(server_name, connector_configs))
         baseline_document = build_baseline_document(
             scanner_version=mcp_security_scanner.__version__,
@@ -441,6 +555,41 @@ def baseline(server_target: str, baseline_path: str, timeout: int, verbose: bool
     is_flag=True,
     help="Enable debug output.",
 )
+@click.option(
+    "--headers-json",
+    "headers_json",
+    default=None,
+    type=str,
+    help="JSON object of HTTP headers for URL targets.",
+)
+@click.option(
+    "--auth-json",
+    "auth_json",
+    default=None,
+    type=str,
+    help="JSON auth object (same shape as config.auth) for URL targets.",
+)
+@click.option(
+    "--mtls-cert-file",
+    "mtls_cert_file",
+    default=None,
+    type=click.Path(),
+    help="Client certificate path for URL transport mTLS.",
+)
+@click.option(
+    "--mtls-key-file",
+    "mtls_key_file",
+    default=None,
+    type=click.Path(),
+    help="Client private key path for URL transport mTLS.",
+)
+@click.option(
+    "--mtls-ca-bundle-file",
+    "mtls_ca_bundle_file",
+    default=None,
+    type=click.Path(),
+    help="Optional CA bundle path for URL transport mTLS.",
+)
 def compare(
     baseline_path: str,
     server_target: str,
@@ -449,6 +598,11 @@ def compare(
     output_path: str | None,
     severity: str,
     verbose: bool,
+    headers_json: str | None,
+    auth_json: str | None,
+    mtls_cert_file: str | None,
+    mtls_key_file: str | None,
+    mtls_ca_bundle_file: str | None,
 ) -> None:
     """
     Compare current server state against a baseline snapshot.
@@ -475,9 +629,19 @@ def compare(
         console.print(f"[red]Compare failed:[/red] {exc}")
         sys.exit(2)
 
-    connector_configs = _build_target_connector_configs(server_target, timeout)
-
+    url_target_options = URLTargetOptions(
+        headers_json=headers_json,
+        auth_json=auth_json,
+        mtls_cert_file=mtls_cert_file,
+        mtls_key_file=mtls_key_file,
+        mtls_ca_bundle_file=mtls_ca_bundle_file,
+    )
     try:
+        connector_configs = _build_target_connector_configs(
+            server_target,
+            timeout,
+            url_target_options=url_target_options,
+        )
         capabilities = asyncio.run(_discover_capabilities(server_name, connector_configs))
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
         console.print(f"[red]Compare failed:[/red] {exc}")
@@ -515,10 +679,15 @@ async def _scan_single_server(
     timeout: int,
     threshold: Severity | None,
     dynamic_enabled: bool = False,
+    url_target_options: URLTargetOptions | None = None,
 ) -> tuple[ScanReport, list[Finding]]:
     """Run discovery + MVP analyzers against one server target."""
     server_name = _derive_server_name(server_target)
-    connector_configs = _build_target_connector_configs(server_target, timeout)
+    connector_configs = _build_target_connector_configs(
+        server_target,
+        timeout,
+        url_target_options=url_target_options,
+    )
 
     findings = await _scan_server_findings(server_name, connector_configs, dynamic_enabled=dynamic_enabled)
     filtered_findings = _filter_findings(findings, threshold)
@@ -657,24 +826,47 @@ async def _run_dynamic_analyzer(
     )
 
 
-def _build_target_connector_configs(server_target: str, timeout: int) -> list[dict[str, Any]]:
+def _build_target_connector_configs(
+    server_target: str,
+    timeout: int,
+    url_target_options: URLTargetOptions | None = None,
+) -> list[dict[str, Any]]:
     """Build connector config candidates from CLI target."""
+    effective_url_options = url_target_options or URLTargetOptions()
     target = server_target.strip()
     parsed = urlparse(target)
 
     if parsed.scheme in {"http", "https"} and parsed.netloc:
-        return [
-            {
-                "type": "streamable-http",
-                "url": target,
-                "timeout": timeout,
-            },
-            {
-                "type": "sse",
-                "url": target,
-                "timeout": timeout,
-            },
-        ]
+        shared_network_entry = _build_url_target_network_entry(target, effective_url_options)
+        server_name = _derive_server_name(target)
+        connector_configs: list[dict[str, Any]] = []
+        for transport in ("streamable-http", "sse"):
+            raw_server_config = {
+                "transport": transport,
+                **shared_network_entry,
+            }
+            connector_config, finding = _build_connector_config_from_config_entry(
+                server_name=server_name,
+                raw_server_config=raw_server_config,
+                timeout=timeout,
+            )
+            if finding is not None:
+                error_message = finding.description
+                if finding.category in {"auth_config_error", "auth_token_error"}:
+                    try:
+                        evidence_payload = json.loads(finding.evidence)
+                    except json.JSONDecodeError:
+                        evidence_payload = {}
+                    reason_value = evidence_payload.get("reason") if isinstance(evidence_payload, dict) else None
+                    if isinstance(reason_value, str) and reason_value.strip():
+                        error_message = reason_value.strip()
+                raise ValueError(f"Invalid URL target configuration: {error_message}")
+            assert connector_config is not None
+            connector_configs.append(connector_config)
+        return connector_configs
+
+    if _has_url_target_options(effective_url_options):
+        raise ValueError("URL auth/mTLS options are only supported when SERVER_TARGET is an http/https URL.")
 
     return [
         {
@@ -683,6 +875,55 @@ def _build_target_connector_configs(server_target: str, timeout: int) -> list[di
             "timeout": timeout,
         }
     ]
+
+
+def _has_url_target_options(url_target_options: URLTargetOptions) -> bool:
+    """Return True when any URL-only option is set."""
+    return any(
+        value is not None
+        for value in (
+            url_target_options.headers_json,
+            url_target_options.auth_json,
+            url_target_options.mtls_cert_file,
+            url_target_options.mtls_key_file,
+            url_target_options.mtls_ca_bundle_file,
+        )
+    )
+
+
+def _build_url_target_network_entry(server_target: str, url_target_options: URLTargetOptions) -> dict[str, Any]:
+    """Build shared network entry payload for URL target candidates."""
+    raw_entry: dict[str, Any] = {"url": server_target}
+
+    headers_value = _parse_json_object_option(url_target_options.headers_json, option_name="headers-json")
+    if headers_value is not None:
+        raw_entry["headers"] = headers_value
+
+    auth_value = _parse_json_object_option(url_target_options.auth_json, option_name="auth-json")
+    if auth_value is not None:
+        raw_entry["auth"] = auth_value
+
+    if url_target_options.mtls_cert_file is not None:
+        raw_entry["mtls_cert_file"] = url_target_options.mtls_cert_file
+    if url_target_options.mtls_key_file is not None:
+        raw_entry["mtls_key_file"] = url_target_options.mtls_key_file
+    if url_target_options.mtls_ca_bundle_file is not None:
+        raw_entry["mtls_ca_bundle_file"] = url_target_options.mtls_ca_bundle_file
+
+    return raw_entry
+
+
+def _parse_json_object_option(value: str | None, option_name: str) -> dict[str, Any] | None:
+    """Parse a JSON object CLI option value."""
+    if value is None:
+        return None
+    try:
+        parsed_value = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--{option_name} must be valid JSON.") from exc
+    if not isinstance(parsed_value, dict):
+        raise ValueError(f"--{option_name} must be a JSON object.")
+    return parsed_value
 
 
 def _extract_config_server_entries(config_data: Any) -> dict[str, Any]:

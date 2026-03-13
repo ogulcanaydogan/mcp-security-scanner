@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8B Implementation State
+# Setup Complete — Sprint 1-8C Implementation State
 
-This file records the actual implementation status after Sprint 8B.
+This file records the actual implementation status after Sprint 8C.
 
 ## Completed Work
 
@@ -345,6 +345,21 @@ This file records the actual implementation status after Sprint 8B.
   - tools are probed in deterministic order
   - dynamic findings are returned in stable sorted order with deterministic metadata keys
 
+### Sprint 8C (URL Positional Auth/mTLS UX)
+
+- URL positional commands now support auth/mTLS options:
+  - `server`, `baseline`, `compare` accept `--headers-json`, `--auth-json`, `--mtls-cert-file`, `--mtls-key-file`, `--mtls-ca-bundle-file`
+- URL target connector generation now reuses existing config normalization/validation pipeline:
+  - auth resolution, OAuth flows, and mTLS validation semantics remain consistent with `config` command behavior
+  - URL auto-detect order is preserved (`streamable-http` -> `sse`)
+- validation/error behavior for URL positional options:
+  - malformed `headers-json` / `auth-json` values return command-level operational error (`exit 2`)
+  - stdio targets with URL-only auth/mTLS flags return command-level operational error (`exit 2`)
+  - transport mTLS pair/path validation and auth env/shape failures return command-level operational error (`exit 2`)
+- existing contracts are preserved:
+  - `config` command flow unchanged
+  - `compare` mutation categories/OWASP mapping unchanged (`tool_added`/`tool_removed`/`tool_changed`, `LLM05`)
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -358,7 +373,6 @@ This file records the actual implementation status after Sprint 8B.
 ## Current Non-Goals / Deferred
 
 - advanced persistent secret-store backends beyond keyring/fallback file model
-- URL positional auth/mTLS UX (still config-only)
 - dynamic analyzer expansion beyond current hardened opt-in baseline
 - visual/report schema refactors beyond current formatter behavior
 

@@ -17,6 +17,7 @@ from click.testing import CliRunner
 import mcp_security_scanner.cli as cli_module
 from mcp_security_scanner.analyzers.base import Finding, Severity
 from mcp_security_scanner.cli import (
+    URLTargetOptions,
     _build_connector_config_from_config_entry,
     _build_target_connector_configs,
     _compose_stdio_command,
@@ -283,10 +284,12 @@ class TestCLICommands:
             timeout: int,
             threshold: Severity | None,
             dynamic_enabled: bool = False,
+            url_target_options: URLTargetOptions | None = None,
         ) -> tuple[cli_module.ScanReport, list[Finding]]:
             del timeout, threshold
             captured["server_target"] = server_target
             captured["dynamic_enabled"] = dynamic_enabled
+            captured["url_target_options"] = url_target_options
             report = cli_module.ScanReport(
                 scanner_version="0.1.0",
                 server_name=server_target,
@@ -302,6 +305,7 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert captured["server_target"] == "python -m fake_server"
         assert captured["dynamic_enabled"] is expected_dynamic_enabled
+        assert captured["url_target_options"] == URLTargetOptions()
 
     def test_baseline_url_target_uses_transport_candidates(self, monkeypatch, tmp_path: Path):
         """Baseline command should use streamable-http then sse candidates for URL targets."""
@@ -371,6 +375,273 @@ class TestCLICommands:
         assert isinstance(connector_configs, list)
         assert [item["type"] for item in connector_configs] == ["streamable-http", "sse"]
         assert all(item["url"] == "https://example.com/sse" for item in connector_configs)
+
+    def test_server_url_target_supports_headers_auth_and_transport_mtls(self, monkeypatch, tmp_path: Path):
+        """URL server scans should forward headers/auth/mTLS options to both transport candidates."""
+        captured: dict[str, object] = {}
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        ca_file = tmp_path / "ca.pem"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        ca_file.write_text("ca", encoding="utf-8")
+        monkeypatch.setenv("URL_API_KEY", "url-key-123")
+
+        async def fake_discover(server_name: str, connector_configs: list[dict[str, object]]) -> ServerCapabilities:
+            captured["server_name"] = server_name
+            captured["connector_configs"] = connector_configs
+            return ServerCapabilities(server_name=server_name, tools=[], resources=[], prompts=[])
+
+        monkeypatch.setattr(cli_module, "_discover_capabilities", fake_discover)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "server",
+                "https://example.com/mcp",
+                "--format",
+                "json",
+                "--timeout",
+                "2",
+                "--headers-json",
+                json.dumps({"X-Trace": 42}),
+                "--auth-json",
+                json.dumps({"type": "api_key", "key_env": "URL_API_KEY"}),
+                "--mtls-cert-file",
+                str(cert_file),
+                "--mtls-key-file",
+                str(key_file),
+                "--mtls-ca-bundle-file",
+                str(ca_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        connector_configs = captured["connector_configs"]
+        assert isinstance(connector_configs, list)
+        assert [item["type"] for item in connector_configs] == ["streamable-http", "sse"]
+        for item in connector_configs:
+            assert item["url"] == "https://example.com/mcp"
+            headers = item.get("headers")
+            assert isinstance(headers, dict)
+            assert headers["X-Trace"] == "42"
+            assert headers["X-API-Key"] == "url-key-123"
+            assert item["mtls_cert_file"] == str(cert_file)
+            assert item["mtls_key_file"] == str(key_file)
+            assert item["mtls_ca_bundle_file"] == str(ca_file)
+
+    def test_baseline_url_target_supports_headers_auth_and_transport_mtls(self, monkeypatch, tmp_path: Path):
+        """URL baseline scans should accept auth/mTLS options and pass them to connector candidates."""
+        captured: dict[str, object] = {}
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        monkeypatch.setenv("URL_BEARER_TOKEN", "token-value")
+
+        async def fake_discover(server_name: str, connector_configs: list[dict[str, object]]) -> ServerCapabilities:
+            captured["server_name"] = server_name
+            captured["connector_configs"] = connector_configs
+            return ServerCapabilities(server_name=server_name, tools=[], resources=[], prompts=[])
+
+        monkeypatch.setattr(cli_module, "_discover_capabilities", fake_discover)
+
+        runner = CliRunner()
+        baseline_path = tmp_path / "url-baseline.json"
+        result = runner.invoke(
+            main,
+            [
+                "baseline",
+                "https://example.com/mcp",
+                "--save",
+                str(baseline_path),
+                "--timeout",
+                "2",
+                "--headers-json",
+                json.dumps({"X-Req": "abc"}),
+                "--auth-json",
+                json.dumps({"type": "bearer", "token_env": "URL_BEARER_TOKEN"}),
+                "--mtls-cert-file",
+                str(cert_file),
+                "--mtls-key-file",
+                str(key_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert baseline_path.exists()
+        connector_configs = captured["connector_configs"]
+        assert isinstance(connector_configs, list)
+        assert [item["type"] for item in connector_configs] == ["streamable-http", "sse"]
+        for item in connector_configs:
+            headers = item.get("headers")
+            assert isinstance(headers, dict)
+            assert headers["X-Req"] == "abc"
+            assert headers["Authorization"] == "Bearer token-value"
+            assert item["mtls_cert_file"] == str(cert_file)
+            assert item["mtls_key_file"] == str(key_file)
+
+    def test_compare_url_target_supports_headers_auth_and_transport_mtls(self, monkeypatch, tmp_path: Path):
+        """URL compare scans should accept auth/mTLS options and pass them to connector candidates."""
+        captured: dict[str, object] = {}
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        monkeypatch.setenv("URL_SESSION_ID", "sess-123")
+
+        async def fake_discover(server_name: str, connector_configs: list[dict[str, object]]) -> ServerCapabilities:
+            captured["server_name"] = server_name
+            captured["connector_configs"] = connector_configs
+            return ServerCapabilities(server_name=server_name, tools=[], resources=[], prompts=[])
+
+        monkeypatch.setattr(cli_module, "_discover_capabilities", fake_discover)
+
+        baseline_path = tmp_path / "baseline.json"
+        baseline_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": BASELINE_SCHEMA_VERSION,
+                    "scanner_version": "0.1.0",
+                    "created_at": "2026-03-13T00:00:00Z",
+                    "server": {"name": "example.com", "command": "https://example.com/mcp"},
+                    "tools": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "compare",
+                str(baseline_path),
+                "https://example.com/mcp",
+                "--format",
+                "json",
+                "--timeout",
+                "2",
+                "--headers-json",
+                json.dumps({"Cookie": "existing=1"}),
+                "--auth-json",
+                json.dumps({"type": "session_cookie", "cookie_env": "URL_SESSION_ID", "cookie_name": "session"}),
+                "--mtls-cert-file",
+                str(cert_file),
+                "--mtls-key-file",
+                str(key_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        connector_configs = captured["connector_configs"]
+        assert isinstance(connector_configs, list)
+        assert [item["type"] for item in connector_configs] == ["streamable-http", "sse"]
+        for item in connector_configs:
+            headers = item.get("headers")
+            assert isinstance(headers, dict)
+            assert headers["Cookie"] == "existing=1; session=sess-123"
+            assert item["mtls_cert_file"] == str(cert_file)
+            assert item["mtls_key_file"] == str(key_file)
+
+    def test_server_url_target_invalid_json_options_return_exit_2(self):
+        """Malformed headers-json/auth-json values should fail URL scans as operational errors."""
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "server",
+                "https://example.com/mcp",
+                "--headers-json",
+                "{bad-json",
+                "--timeout",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "must be valid JSON" in result.output
+
+    @pytest.mark.parametrize("command_name", ["server", "baseline", "compare"])
+    def test_url_options_with_stdio_target_return_exit_2(self, command_name: str, tmp_path: Path):
+        """URL auth/mTLS CLI options must be rejected for stdio targets."""
+        runner = CliRunner()
+        baseline_path = tmp_path / "baseline.json"
+        baseline_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": BASELINE_SCHEMA_VERSION,
+                    "scanner_version": "0.1.0",
+                    "created_at": "2026-03-13T00:00:00Z",
+                    "server": {"name": "example.com", "command": "python -m my_server"},
+                    "tools": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        if command_name == "server":
+            args = [command_name, "python -m fake_server", "--headers-json", "{}"]
+        elif command_name == "baseline":
+            args = [
+                command_name,
+                "python -m fake_server",
+                "--save",
+                str(tmp_path / "out-baseline.json"),
+                "--headers-json",
+                "{}",
+            ]
+        else:
+            args = [
+                command_name,
+                str(baseline_path),
+                "python -m fake_server",
+                "--headers-json",
+                "{}",
+            ]
+
+        result = runner.invoke(main, args)
+        assert result.exit_code == 2
+        assert "URL auth/mTLS options are only supported" in result.output
+
+    def test_server_url_target_invalid_transport_mtls_returns_exit_2(self, tmp_path: Path):
+        """Transport mTLS pair/path validation should fail URL scans as operational errors."""
+        runner = CliRunner()
+        cert_file = tmp_path / "client.crt"
+        cert_file.write_text("cert", encoding="utf-8")
+        result = runner.invoke(
+            main,
+            [
+                "server",
+                "https://example.com/mcp",
+                "--mtls-cert-file",
+                str(cert_file),
+                "--timeout",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "must be provided together" in result.output
+
+    def test_server_url_target_auth_resolution_error_returns_exit_2(self):
+        """Auth resolution failures in URL options should fail command as operational error."""
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "server",
+                "https://example.com/mcp",
+                "--auth-json",
+                json.dumps({"type": "bearer", "token_env": "MISSING_URL_TOKEN"}),
+                "--timeout",
+                "1",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "MISSING_URL_TOKEN is missing or empty" in result.output
 
     def test_server_url_target_failure_after_all_attempts_returns_exit_2(self, monkeypatch):
         """Server URL scans should fail operationally when all transport attempts fail."""
@@ -3768,6 +4039,43 @@ class TestCLIHelpers:
             {"type": "sse", "url": "https://example.com/sse", "timeout": 9},
         ]
         assert stdio_configs == [{"type": "stdio", "command": "python -m my_server", "timeout": 9}]
+
+    def test_build_target_connector_configs_accepts_url_target_options(self, monkeypatch, tmp_path: Path):
+        """URL target config builder should normalize headers/auth/mTLS options into transport candidates."""
+        monkeypatch.setenv("URL_HELPER_API_KEY", "key-value")
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+
+        url_configs = _build_target_connector_configs(
+            "https://example.com/sse",
+            timeout=9,
+            url_target_options=URLTargetOptions(
+                headers_json=json.dumps({"X-Trace": 7}),
+                auth_json=json.dumps({"type": "api_key", "key_env": "URL_HELPER_API_KEY"}),
+                mtls_cert_file=str(cert_file),
+                mtls_key_file=str(key_file),
+            ),
+        )
+
+        assert [item["type"] for item in url_configs] == ["streamable-http", "sse"]
+        for item in url_configs:
+            headers = item.get("headers")
+            assert isinstance(headers, dict)
+            assert headers["X-Trace"] == "7"
+            assert headers["X-API-Key"] == "key-value"
+            assert item["mtls_cert_file"] == str(cert_file)
+            assert item["mtls_key_file"] == str(key_file)
+
+    def test_build_target_connector_configs_rejects_url_options_for_stdio_target(self):
+        """URL options should fail fast for stdio targets."""
+        with pytest.raises(ValueError, match="URL auth/mTLS options are only supported"):
+            _build_target_connector_configs(
+                "python -m my_server",
+                timeout=9,
+                url_target_options=URLTargetOptions(headers_json="{}"),
+            )
 
     def test_discover_capabilities_falls_back_to_second_transport(self, monkeypatch):
         """Capability discovery should fallback when first transport attempt fails."""
