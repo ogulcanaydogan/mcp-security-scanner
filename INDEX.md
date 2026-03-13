@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-6H scope.
+Current index for the implemented Sprint 1-7A scope.
 
 ## Status Snapshot
 
@@ -19,6 +19,7 @@ Current index for the implemented Sprint 1-6H scope.
 - Sprint 6F: done (optional secure persistent OAuth cache with keyring+encrypted file fallback)
 - Sprint 6G: done (persistent cache hardening with strict lock, corrupt recovery, v2 metadata envelope, key rotation command)
 - Sprint 6H: done (OAuth hardening+ with multi-key historical decrypt recovery and shared transient retry policy)
+- Sprint 7A: done (OAuth provider integrations v1: `private_key_jwt` + token endpoint mTLS for config auth)
 
 ## Top-Level Docs
 
@@ -45,7 +46,9 @@ Current index for the implemented Sprint 1-6H scope.
     - v2 cache envelope (`schema_version`, `key_id`, `updated_at`, `entries`) with v1 backward compatibility
     - key metadata handling (`active` + `historical` key sets with `key_id` + `fernet_key`) and `mcp-scan cache rotate`
     - historical key retention (max 3) and deterministic decrypt recovery (`key_id` match -> active -> historical)
-  - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic`) for config OAuth entries
+  - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
+  - `private_key_jwt` signer inputs (`client_assertion_key_env` or `client_assertion_key_file`, optional `client_assertion_kid`)
+  - OAuth token endpoint mTLS inputs (`mtls_cert_file`, `mtls_key_file`, optional `mtls_ca_bundle_file`)
   - OAuth Authorization header precedence (`auth.scheme` > `token_type` > `Bearer`)
   - Shared transient retry policy for OAuth token/device/refresh/auth-code endpoint calls (`429/5xx` + timeout/connection errors)
   - Refresh fallback on `invalid_grant`/`invalid_token` with headless-safe behavior
@@ -97,6 +100,6 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- OAuth advanced provider integrations beyond current config-only auth scope (`private_key_jwt`, mTLS, external KMS flows)
+- OAuth provider integrations beyond current config-only auth scope (external KMS signing, transport-level mTLS propagation)
 - advanced persistent secret-store options beyond keyring/fallback file model
 - further analyzer expansion beyond current core (Static + PromptInjection + Escalation + ToolPoisoning + CrossTool)

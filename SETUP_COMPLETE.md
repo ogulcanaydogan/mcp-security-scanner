@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-6H Implementation State
+# Setup Complete — Sprint 1-7A Implementation State
 
-This file records the actual implementation status after Sprint 6H.
+This file records the actual implementation status after Sprint 7A.
 
 ## Completed Work
 
@@ -247,6 +247,35 @@ This file records the actual implementation status after Sprint 6H.
   - `auth_token_error` for token/device/refresh/auth-code endpoint failures
   - per-server failures remain non-fatal in `config` scans
 
+### Sprint 7A (OAuth Provider Integrations v1, Config-Only)
+
+- OAuth token endpoint auth method support expanded:
+  - `client_secret_post` (existing default)
+  - `client_secret_basic` (existing)
+  - `private_key_jwt` (new)
+- `private_key_jwt` is supported for:
+  - `oauth_client_credentials`
+  - `oauth_device_code`
+- `private_key_jwt` config fields implemented:
+  - `client_assertion_key_env` (optional)
+  - `client_assertion_key_file` (optional)
+  - exactly one of the two is required when method is `private_key_jwt`
+  - optional `client_assertion_kid`
+  - signing algorithm: `RS256` (v1 scope)
+- OAuth token endpoint mTLS fields implemented for OAuth auth types:
+  - `mtls_cert_file` (optional)
+  - `mtls_key_file` (optional)
+  - `mtls_ca_bundle_file` (optional)
+  - validation rule: `mtls_cert_file` + `mtls_key_file` must be provided together
+- token request semantics:
+  - `private_key_jwt` adds `client_assertion_type` + `client_assertion`
+  - `client_secret` is omitted when `private_key_jwt` is used
+  - mTLS settings are applied only to OAuth token endpoint HTTP calls
+- contracts preserved:
+  - no new CLI flags/commands
+  - finding categories unchanged (`auth_config_error`, `auth_token_error`)
+  - `config` continues scanning after per-server auth failures
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -259,7 +288,7 @@ This file records the actual implementation status after Sprint 6H.
 
 ## Current Non-Goals / Deferred
 
-- OAuth advanced provider integrations beyond current config-only scope (`private_key_jwt`, mTLS, external KMS-backed token exchange)
+- OAuth provider integrations beyond current config-only scope (external KMS-backed signing, transport-level mTLS propagation)
 - advanced persistent secret-store backends beyond keyring/fallback file model
 - further analyzer expansion beyond current core (`StaticAnalyzer`, `PromptInjectionAnalyzer`, `EscalationAnalyzer`, `ToolPoisoningAnalyzer`, `CrossToolAnalyzer`)
 - visual/report schema refactors beyond current formatter behavior

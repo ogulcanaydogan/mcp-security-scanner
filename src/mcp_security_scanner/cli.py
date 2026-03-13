@@ -47,7 +47,8 @@ from mcp_security_scanner.reporter import ReportGenerator, ScanReport
 
 _OAUTH_TOKEN_CACHE_SKEW_SECONDS = 30.0
 _OAUTH_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
-_SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = {"client_secret_post", "client_secret_basic"}
+_SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = {"client_secret_post", "client_secret_basic", "private_key_jwt"}
+_OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 _OAUTH_AUTH_TYPES = {"oauth_client_credentials", "oauth_device_code", "oauth_auth_code_pkce"}
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -88,6 +89,23 @@ class OAuthCacheKeySet:
     active: OAuthCacheKeyMaterial
     historical: tuple[OAuthCacheKeyMaterial, ...] = ()
     source: str = "unknown"
+
+
+@dataclass(frozen=True)
+class OAuthMTLSConfig:
+    """Optional mTLS config used only for OAuth token endpoint requests."""
+
+    cert_file: str
+    key_file: str
+    ca_bundle_file: str | None = None
+
+
+@dataclass(frozen=True)
+class OAuthPrivateKeyJWTSigner:
+    """Private-key material used to sign OAuth private_key_jwt client assertions."""
+
+    private_key_pem: str
+    kid: str | None = None
 
 
 @click.group()
@@ -1002,40 +1020,6 @@ def _resolve_auth_headers(
                 reason=client_id_env_error,
             )
 
-        client_secret_env, client_secret_env_error = _validate_auth_env_name(
-            auth_value.get("client_secret_env"), "client_secret_env"
-        )
-        if client_secret_env_error is not None:
-            return headers, _build_auth_config_error_finding(
-                server_name=server_name,
-                transport=transport,
-                auth_type=auth_type,
-                env_var=client_secret_env,
-                reason=client_secret_env_error,
-            )
-
-        client_id_value, client_id_error = _read_auth_env_value(client_id_env)
-        if client_id_error is not None:
-            return headers, _build_auth_config_error_finding(
-                server_name=server_name,
-                transport=transport,
-                auth_type=auth_type,
-                env_var=client_id_env,
-                reason=client_id_error,
-            )
-        assert client_id_value is not None
-
-        client_secret_value, client_secret_error = _read_auth_env_value(client_secret_env)
-        if client_secret_error is not None:
-            return headers, _build_auth_config_error_finding(
-                server_name=server_name,
-                transport=transport,
-                auth_type=auth_type,
-                env_var=client_secret_env,
-                reason=client_secret_error,
-            )
-        assert client_secret_value is not None
-
         scope_value, scope_error = _validate_optional_auth_text(auth_value.get("scope"), "scope")
         if scope_error is not None:
             return headers, _build_auth_config_error_finding(
@@ -1064,10 +1048,74 @@ def _resolve_auth_headers(
                 server_name=server_name,
                 transport=transport,
                 auth_type=auth_type,
-                env_var=client_secret_env,
+                env_var=client_id_env,
                 reason=token_endpoint_auth_method_error,
             )
         assert token_endpoint_auth_method is not None
+
+        client_id_value, client_id_error = _read_auth_env_value(client_id_env)
+        if client_id_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=client_id_error,
+            )
+        assert client_id_value is not None
+
+        client_secret_env: str | None = None
+        client_secret_value: str | None = None
+        if token_endpoint_auth_method in {"client_secret_post", "client_secret_basic"}:
+            client_secret_env, client_secret_env_error = _validate_auth_env_name(
+                auth_value.get("client_secret_env"), "client_secret_env"
+            )
+            if client_secret_env_error is not None:
+                return headers, _build_auth_config_error_finding(
+                    server_name=server_name,
+                    transport=transport,
+                    auth_type=auth_type,
+                    env_var=client_secret_env,
+                    reason=client_secret_env_error,
+                )
+            client_secret_value, client_secret_error = _read_auth_env_value(client_secret_env)
+            if client_secret_error is not None:
+                return headers, _build_auth_config_error_finding(
+                    server_name=server_name,
+                    transport=transport,
+                    auth_type=auth_type,
+                    env_var=client_secret_env,
+                    reason=client_secret_error,
+                )
+            assert client_secret_value is not None
+
+        client_credentials_private_key_jwt_signer: OAuthPrivateKeyJWTSigner | None = None
+        client_credentials_private_key_jwt_env_var: str | None = None
+        if token_endpoint_auth_method == "private_key_jwt":
+            (
+                client_credentials_private_key_jwt_signer,
+                client_credentials_private_key_jwt_env_var,
+                private_key_jwt_error,
+            ) = _resolve_oauth_private_key_jwt_signer(auth_value)
+            if private_key_jwt_error is not None:
+                return headers, _build_auth_config_error_finding(
+                    server_name=server_name,
+                    transport=transport,
+                    auth_type=auth_type,
+                    env_var=client_credentials_private_key_jwt_env_var or client_id_env,
+                    reason=private_key_jwt_error,
+                )
+            assert client_credentials_private_key_jwt_signer is not None
+
+        mtls_config, mtls_config_error = _resolve_oauth_mtls_config(auth_value)
+        if mtls_config_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=mtls_config_error,
+            )
 
         header_name = _coerce_auth_header_name(auth_value.get("header"), default="Authorization")
         if header_name is None:
@@ -1081,7 +1129,11 @@ def _resolve_auth_headers(
 
         scheme_value = auth_value.get("scheme")
 
-        oauth_env_var = _join_auth_env_vars(client_id_env, client_secret_env)
+        oauth_env_var = _join_auth_env_vars(
+            client_id_env,
+            client_secret_env,
+            client_credentials_private_key_jwt_env_var,
+        )
         token_value, token_type, token_error_finding = _resolve_oauth_client_credentials_token(
             server_name=server_name,
             transport=transport,
@@ -1092,6 +1144,8 @@ def _resolve_auth_headers(
             scope=scope_value,
             audience=audience_value,
             token_endpoint_auth_method=token_endpoint_auth_method,
+            client_assertion_signer=client_credentials_private_key_jwt_signer,
+            mtls_config=mtls_config,
             timeout_seconds=timeout,
             env_var=oauth_env_var,
             cache_settings=oauth_cache_settings,
@@ -1251,6 +1305,34 @@ def _resolve_auth_headers(
                 ),
             )
 
+        device_private_key_jwt_signer: OAuthPrivateKeyJWTSigner | None = None
+        device_private_key_jwt_env_var: str | None = None
+        if token_endpoint_auth_method == "private_key_jwt":
+            (
+                device_private_key_jwt_signer,
+                device_private_key_jwt_env_var,
+                private_key_jwt_error,
+            ) = _resolve_oauth_private_key_jwt_signer(auth_value)
+            if private_key_jwt_error is not None:
+                return headers, _build_auth_config_error_finding(
+                    server_name=server_name,
+                    transport=transport,
+                    auth_type=auth_type,
+                    env_var=device_private_key_jwt_env_var or client_id_env,
+                    reason=private_key_jwt_error,
+                )
+            assert device_private_key_jwt_signer is not None
+
+        mtls_config, mtls_config_error = _resolve_oauth_mtls_config(auth_value)
+        if mtls_config_error is not None:
+            return headers, _build_auth_config_error_finding(
+                server_name=server_name,
+                transport=transport,
+                auth_type=auth_type,
+                env_var=client_id_env,
+                reason=mtls_config_error,
+            )
+
         header_name = _coerce_auth_header_name(auth_value.get("header"), default="Authorization")
         if header_name is None:
             return headers, _build_auth_config_error_finding(
@@ -1263,7 +1345,7 @@ def _resolve_auth_headers(
 
         scheme_value = auth_value.get("scheme")
 
-        oauth_env_var = _join_auth_env_vars(client_id_env, client_secret_env)
+        oauth_env_var = _join_auth_env_vars(client_id_env, client_secret_env, device_private_key_jwt_env_var)
         token_value, token_type, token_error_finding = _resolve_oauth_device_code_token(
             server_name=server_name,
             transport=transport,
@@ -1275,6 +1357,8 @@ def _resolve_auth_headers(
             scope=scope_value,
             audience=audience_value,
             token_endpoint_auth_method=token_endpoint_auth_method,
+            client_assertion_signer=device_private_key_jwt_signer,
+            mtls_config=mtls_config,
             timeout_seconds=timeout,
             is_interactive_tty=_is_interactive_tty(),
             env_var=oauth_env_var,
@@ -1516,10 +1600,16 @@ def _coerce_token_endpoint_auth_method(value: Any) -> tuple[str | None, str | No
     if value is None:
         return "client_secret_post", None
     if not isinstance(value, str) or not value.strip():
-        return None, ("auth.token_endpoint_auth_method must be one of: " "client_secret_post, client_secret_basic.")
+        return None, (
+            "auth.token_endpoint_auth_method must be one of: "
+            "client_secret_post, client_secret_basic, private_key_jwt."
+        )
     normalized = value.strip().lower()
     if normalized not in _SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS:
-        return None, ("auth.token_endpoint_auth_method must be one of: " "client_secret_post, client_secret_basic.")
+        return None, (
+            "auth.token_endpoint_auth_method must be one of: "
+            "client_secret_post, client_secret_basic, private_key_jwt."
+        )
     return normalized, None
 
 
@@ -1562,7 +1652,14 @@ def _extract_auth_env_var(auth_value: Any) -> str | None:
     if not isinstance(auth_value, dict):
         return None
 
-    for key in ("token_env", "key_env", "cookie_env", "client_id_env", "client_secret_env"):
+    for key in (
+        "token_env",
+        "key_env",
+        "cookie_env",
+        "client_id_env",
+        "client_secret_env",
+        "client_assertion_key_env",
+    ):
         value = auth_value.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -1730,16 +1827,194 @@ def _join_auth_env_vars(*env_vars: str | None) -> str | None:
     return ",".join(joined)
 
 
+def _read_auth_file_value(file_path: str, field_name: str) -> tuple[str | None, str | None]:
+    """Read required auth file contents without exposing file secrets."""
+    path = Path(file_path)
+    if not path.exists() or not path.is_file():
+        return None, f"auth.{field_name} path does not exist or is not a file."
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, f"auth.{field_name} could not be read."
+    if not content.strip():
+        return None, f"auth.{field_name} file is empty."
+    return content, None
+
+
+def _resolve_oauth_mtls_config(auth_value: dict[str, Any]) -> tuple[OAuthMTLSConfig | None, str | None]:
+    """Resolve optional mTLS config for OAuth token endpoint calls."""
+    cert_file, cert_file_error = _validate_optional_auth_text(auth_value.get("mtls_cert_file"), "mtls_cert_file")
+    if cert_file_error is not None:
+        return None, cert_file_error
+
+    key_file, key_file_error = _validate_optional_auth_text(auth_value.get("mtls_key_file"), "mtls_key_file")
+    if key_file_error is not None:
+        return None, key_file_error
+
+    ca_bundle_file, ca_bundle_error = _validate_optional_auth_text(
+        auth_value.get("mtls_ca_bundle_file"), "mtls_ca_bundle_file"
+    )
+    if ca_bundle_error is not None:
+        return None, ca_bundle_error
+
+    mtls_fields_provided = any(value is not None for value in (cert_file, key_file, ca_bundle_file))
+    if not mtls_fields_provided:
+        return None, None
+
+    if cert_file is None or key_file is None:
+        return None, "auth.mtls_cert_file and auth.mtls_key_file must be provided together."
+
+    cert_path = Path(cert_file)
+    key_path = Path(key_file)
+    if not cert_path.exists() or not cert_path.is_file():
+        return None, "auth.mtls_cert_file path does not exist or is not a file."
+    if not key_path.exists() or not key_path.is_file():
+        return None, "auth.mtls_key_file path does not exist or is not a file."
+
+    if ca_bundle_file is not None:
+        ca_path = Path(ca_bundle_file)
+        if not ca_path.exists() or not ca_path.is_file():
+            return None, "auth.mtls_ca_bundle_file path does not exist or is not a file."
+
+    return OAuthMTLSConfig(cert_file=cert_file, key_file=key_file, ca_bundle_file=ca_bundle_file), None
+
+
+def _resolve_oauth_private_key_jwt_signer(
+    auth_value: dict[str, Any],
+) -> tuple[OAuthPrivateKeyJWTSigner | None, str | None, str | None]:
+    """Resolve private_key_jwt signing key from exactly one source (env or file)."""
+    key_env, key_env_error = _validate_optional_auth_env_name(
+        auth_value.get("client_assertion_key_env"), "client_assertion_key_env"
+    )
+    if key_env_error is not None:
+        return None, None, key_env_error
+
+    key_file, key_file_error = _validate_optional_auth_text(
+        auth_value.get("client_assertion_key_file"), "client_assertion_key_file"
+    )
+    if key_file_error is not None:
+        return None, None, key_file_error
+
+    if key_env is None and key_file is None:
+        return (
+            None,
+            None,
+            "auth.client_assertion_key_env or auth.client_assertion_key_file is required when "
+            "auth.token_endpoint_auth_method='private_key_jwt'.",
+        )
+    if key_env is not None and key_file is not None:
+        return None, None, "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file."
+
+    kid, kid_error = _validate_optional_auth_text(auth_value.get("client_assertion_kid"), "client_assertion_kid")
+    if kid_error is not None:
+        return None, key_env, kid_error
+
+    private_key_pem: str
+    if key_env is not None:
+        private_key_pem_value, key_env_read_error = _read_auth_env_value(key_env)
+        if key_env_read_error is not None:
+            return None, key_env, key_env_read_error
+        assert private_key_pem_value is not None
+        private_key_pem = private_key_pem_value
+    else:
+        assert key_file is not None
+        private_key_pem_value, key_file_read_error = _read_auth_file_value(key_file, "client_assertion_key_file")
+        if key_file_read_error is not None:
+            return None, None, key_file_read_error
+        assert private_key_pem_value is not None
+        private_key_pem = private_key_pem_value
+
+    key_validate_error = _validate_private_key_jwt_signing_key(private_key_pem)
+    if key_validate_error is not None:
+        return None, key_env, key_validate_error
+
+    return OAuthPrivateKeyJWTSigner(private_key_pem=private_key_pem, kid=kid), key_env, None
+
+
+def _validate_private_key_jwt_signing_key(private_key_pem: str) -> str | None:
+    """Validate PEM signing key for RS256 client assertions."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+    except Exception:
+        return "cryptography backend is required for private_key_jwt signing."
+
+    try:
+        private_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+    except Exception:
+        return "Unable to parse auth client assertion private key."
+
+    if not isinstance(private_key, RSAPrivateKey):
+        return "auth private key for private_key_jwt must be an RSA private key."
+    return None
+
+
+def _build_private_key_jwt_client_assertion(
+    token_url: str,
+    client_id: str,
+    signer: OAuthPrivateKeyJWTSigner,
+) -> tuple[str | None, str | None]:
+    """Build RFC7523 private_key_jwt assertion for token endpoint authentication."""
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+    except Exception:
+        return None, "cryptography backend is required for private_key_jwt signing."
+
+    try:
+        private_key = serialization.load_pem_private_key(signer.private_key_pem.encode("utf-8"), password=None)
+    except Exception:
+        return None, "Unable to parse auth client assertion private key."
+    if not isinstance(private_key, RSAPrivateKey):
+        return None, "auth private key for private_key_jwt must be an RSA private key."
+
+    issued_at = int(time.time())
+    header_payload: dict[str, Any] = {"alg": "RS256", "typ": "JWT"}
+    if signer.kid is not None:
+        header_payload["kid"] = signer.kid
+
+    claims_payload = {
+        "iss": client_id,
+        "sub": client_id,
+        "aud": token_url,
+        "iat": issued_at,
+        "exp": issued_at + 300,
+        "jti": secrets.token_urlsafe(24),
+    }
+
+    header_segment = _base64url_encode(
+        json.dumps(header_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+    claims_segment = _base64url_encode(
+        json.dumps(claims_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+    signing_input = f"{header_segment}.{claims_segment}".encode("ascii")
+    try:
+        signature = private_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    except Exception:
+        return None, "Failed to sign OAuth private_key_jwt client assertion."
+    signature_segment = _base64url_encode(signature)
+    return f"{header_segment}.{claims_segment}.{signature_segment}", None
+
+
+def _base64url_encode(value: bytes) -> str:
+    """Base64url encode helper without '=' padding."""
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
 def _resolve_oauth_client_credentials_token(
     server_name: str,
     transport: str,
     auth_type: str,
     token_url: str,
     client_id: str,
-    client_secret: str,
+    client_secret: str | None,
     scope: str | None,
     audience: str | None,
     token_endpoint_auth_method: str,
+    client_assertion_signer: OAuthPrivateKeyJWTSigner | None,
+    mtls_config: OAuthMTLSConfig | None,
     timeout_seconds: int,
     env_var: str | None,
     cache_settings: OAuthCacheSettings,
@@ -1758,15 +2033,50 @@ def _resolve_oauth_client_credentials_token(
     if cached_token is not None:
         return cached_token, cached_token_type, None
 
-    request_result = _request_oauth_client_credentials_token(
-        token_url=token_url,
-        client_id=client_id,
-        client_secret=client_secret,
-        scope=scope,
-        audience=audience,
-        token_endpoint_auth_method=token_endpoint_auth_method,
-        timeout_seconds=timeout_seconds,
-    )
+    if client_assertion_signer is None and mtls_config is None:
+        request_result = _request_oauth_client_credentials_token(
+            token_url=token_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            scope=scope,
+            audience=audience,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+        )
+    elif client_assertion_signer is not None and mtls_config is None:
+        request_result = _request_oauth_client_credentials_token(
+            token_url=token_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            scope=scope,
+            audience=audience,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            client_assertion_signer=client_assertion_signer,
+        )
+    elif client_assertion_signer is None and mtls_config is not None:
+        request_result = _request_oauth_client_credentials_token(
+            token_url=token_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            scope=scope,
+            audience=audience,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            mtls_config=mtls_config,
+        )
+    else:
+        request_result = _request_oauth_client_credentials_token(
+            token_url=token_url,
+            client_id=client_id,
+            client_secret=client_secret,
+            scope=scope,
+            audience=audience,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            client_assertion_signer=client_assertion_signer,
+            mtls_config=mtls_config,
+        )
     token_value, expires_in, token_error, http_status, token_type = _coerce_client_credentials_token_response(
         request_result
     )
@@ -1806,6 +2116,8 @@ def _resolve_oauth_device_code_token(
     scope: str | None,
     audience: str | None,
     token_endpoint_auth_method: str,
+    client_assertion_signer: OAuthPrivateKeyJWTSigner | None,
+    mtls_config: OAuthMTLSConfig | None,
     timeout_seconds: int,
     is_interactive_tty: bool,
     env_var: str | None,
@@ -1827,14 +2139,46 @@ def _resolve_oauth_device_code_token(
 
     cached_refresh_token = _get_cached_oauth_refresh_token(cache_key)
     if cached_refresh_token is not None:
-        refresh_result = _request_oauth_refresh_token(
-            token_url=token_url,
-            refresh_token=cached_refresh_token,
-            client_id=client_id,
-            client_secret=client_secret,
-            token_endpoint_auth_method=token_endpoint_auth_method,
-            timeout_seconds=timeout_seconds,
-        )
+        if client_assertion_signer is None and mtls_config is None:
+            refresh_result = _request_oauth_refresh_token(
+                token_url=token_url,
+                refresh_token=cached_refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                timeout_seconds=timeout_seconds,
+            )
+        elif client_assertion_signer is not None and mtls_config is None:
+            refresh_result = _request_oauth_refresh_token(
+                token_url=token_url,
+                refresh_token=cached_refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                timeout_seconds=timeout_seconds,
+                client_assertion_signer=client_assertion_signer,
+            )
+        elif client_assertion_signer is None and mtls_config is not None:
+            refresh_result = _request_oauth_refresh_token(
+                token_url=token_url,
+                refresh_token=cached_refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                timeout_seconds=timeout_seconds,
+                mtls_config=mtls_config,
+            )
+        else:
+            refresh_result = _request_oauth_refresh_token(
+                token_url=token_url,
+                refresh_token=cached_refresh_token,
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                timeout_seconds=timeout_seconds,
+                client_assertion_signer=client_assertion_signer,
+                mtls_config=mtls_config,
+            )
         refreshed_token, refreshed_expires_in, next_refresh_token, refresh_error, refresh_http_status, refresh_type = (
             _coerce_oauth_refresh_response(refresh_result)
         )
@@ -1951,16 +2295,54 @@ def _resolve_oauth_device_code_token(
     device_expires_in = _coerce_expires_in_value(device_payload.get("expires_in"))
     poll_interval_seconds = _coerce_poll_interval_seconds(device_payload.get("interval"), default=5)
 
-    poll_result = _poll_oauth_device_code_token(
-        token_url=token_url,
-        device_code=device_code.strip(),
-        client_id=client_id,
-        client_secret=client_secret,
-        token_endpoint_auth_method=token_endpoint_auth_method,
-        timeout_seconds=timeout_seconds,
-        poll_interval_seconds=poll_interval_seconds,
-        device_expires_in=device_expires_in,
-    )
+    if client_assertion_signer is None and mtls_config is None:
+        poll_result = _poll_oauth_device_code_token(
+            token_url=token_url,
+            device_code=device_code.strip(),
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            device_expires_in=device_expires_in,
+        )
+    elif client_assertion_signer is not None and mtls_config is None:
+        poll_result = _poll_oauth_device_code_token(
+            token_url=token_url,
+            device_code=device_code.strip(),
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            device_expires_in=device_expires_in,
+            client_assertion_signer=client_assertion_signer,
+        )
+    elif client_assertion_signer is None and mtls_config is not None:
+        poll_result = _poll_oauth_device_code_token(
+            token_url=token_url,
+            device_code=device_code.strip(),
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            device_expires_in=device_expires_in,
+            mtls_config=mtls_config,
+        )
+    else:
+        poll_result = _poll_oauth_device_code_token(
+            token_url=token_url,
+            device_code=device_code.strip(),
+            client_id=client_id,
+            client_secret=client_secret,
+            token_endpoint_auth_method=token_endpoint_auth_method,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            device_expires_in=device_expires_in,
+            client_assertion_signer=client_assertion_signer,
+            mtls_config=mtls_config,
+        )
     token_value, expires_in, refresh_token, token_error, token_http_status, token_type = (
         _coerce_oauth_token_with_refresh_response(poll_result)
     )
@@ -2468,6 +2850,8 @@ def _poll_oauth_device_code_token(
     timeout_seconds: int,
     poll_interval_seconds: int,
     device_expires_in: float | None,
+    client_assertion_signer: OAuthPrivateKeyJWTSigner | None = None,
+    mtls_config: OAuthMTLSConfig | None = None,
 ) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
     """Poll OAuth token endpoint for device-code completion."""
     deadline = _oauth_now() + max(1.0, float(timeout_seconds))
@@ -2486,15 +2870,50 @@ def _poll_oauth_device_code_token(
             "client_id": client_id,
         }
 
-        payload, request_error, http_status = _request_oauth_form_payload(
-            endpoint_url=token_url,
-            request_data=request_data,
-            timeout_seconds=timeout_seconds,
-            endpoint_name="Token endpoint",
-            client_id=client_id,
-            client_secret=client_secret,
-            token_endpoint_auth_method=token_endpoint_auth_method,
-        )
+        if client_assertion_signer is None and mtls_config is None:
+            payload, request_error, http_status = _request_oauth_form_payload(
+                endpoint_url=token_url,
+                request_data=request_data,
+                timeout_seconds=timeout_seconds,
+                endpoint_name="Token endpoint",
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+            )
+        elif client_assertion_signer is not None and mtls_config is None:
+            payload, request_error, http_status = _request_oauth_form_payload(
+                endpoint_url=token_url,
+                request_data=request_data,
+                timeout_seconds=timeout_seconds,
+                endpoint_name="Token endpoint",
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                client_assertion_signer=client_assertion_signer,
+            )
+        elif client_assertion_signer is None and mtls_config is not None:
+            payload, request_error, http_status = _request_oauth_form_payload(
+                endpoint_url=token_url,
+                request_data=request_data,
+                timeout_seconds=timeout_seconds,
+                endpoint_name="Token endpoint",
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                mtls_config=mtls_config,
+            )
+        else:
+            payload, request_error, http_status = _request_oauth_form_payload(
+                endpoint_url=token_url,
+                request_data=request_data,
+                timeout_seconds=timeout_seconds,
+                endpoint_name="Token endpoint",
+                client_id=client_id,
+                client_secret=client_secret,
+                token_endpoint_auth_method=token_endpoint_auth_method,
+                client_assertion_signer=client_assertion_signer,
+                mtls_config=mtls_config,
+            )
         if request_error is not None:
             return None, None, None, request_error, http_status, None
         assert payload is not None
@@ -2544,6 +2963,8 @@ def _request_oauth_refresh_token(
     client_secret: str | None,
     token_endpoint_auth_method: str,
     timeout_seconds: int,
+    client_assertion_signer: OAuthPrivateKeyJWTSigner | None = None,
+    mtls_config: OAuthMTLSConfig | None = None,
 ) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
     """Refresh OAuth access token using refresh_token grant."""
     request_data = {
@@ -2560,6 +2981,8 @@ def _request_oauth_refresh_token(
         client_id=client_id,
         client_secret=client_secret,
         token_endpoint_auth_method=token_endpoint_auth_method,
+        client_assertion_signer=client_assertion_signer,
+        mtls_config=mtls_config,
     )
     if request_error is not None:
         return None, None, None, request_error, http_status, None
@@ -2586,6 +3009,8 @@ def _request_oauth_form_payload(
     client_id: str | None = None,
     client_secret: str | None = None,
     token_endpoint_auth_method: str = "client_secret_post",
+    client_assertion_signer: OAuthPrivateKeyJWTSigner | None = None,
+    mtls_config: OAuthMTLSConfig | None = None,
 ) -> tuple[dict[str, Any] | None, str | None, int | None]:
     """Execute OAuth form POST with transient retry and parse provider payload."""
     request_headers = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -2604,6 +3029,22 @@ def _request_oauth_form_payload(
     elif token_endpoint_auth_method == "client_secret_post":
         if client_secret is not None and "client_secret" not in request_body:
             request_body["client_secret"] = client_secret
+    elif token_endpoint_auth_method == "private_key_jwt":
+        if client_id is None:
+            return None, f"{endpoint_name} private_key_jwt requires client_id.", None
+        if client_assertion_signer is None:
+            return None, f"{endpoint_name} private_key_jwt requires client assertion signing key.", None
+        client_assertion, client_assertion_error = _build_private_key_jwt_client_assertion(
+            token_url=endpoint_url,
+            client_id=client_id,
+            signer=client_assertion_signer,
+        )
+        if client_assertion_error is not None:
+            return None, client_assertion_error, None
+        assert client_assertion is not None
+        request_body["client_assertion_type"] = _OAUTH_CLIENT_ASSERTION_TYPE
+        request_body["client_assertion"] = client_assertion
+        request_body.pop("client_secret", None)
     else:
         return None, f"{endpoint_name} received unsupported token endpoint auth method.", None
 
@@ -2612,11 +3053,17 @@ def _request_oauth_form_payload(
 
     for attempt in range(_OAUTH_FORM_REQUEST_MAX_RETRIES + 1):
         try:
+            request_kwargs: dict[str, Any] = {}
+            if mtls_config is not None:
+                request_kwargs["cert"] = (mtls_config.cert_file, mtls_config.key_file)
+                if mtls_config.ca_bundle_file is not None:
+                    request_kwargs["verify"] = mtls_config.ca_bundle_file
             response = httpx.post(
                 endpoint_url,
                 data=request_body,
                 headers=request_headers,
                 timeout=timeout_seconds,
+                **request_kwargs,
             )
         except httpx.HTTPError as exc:
             last_request_error = f"{endpoint_name} request failed: {exc}"
@@ -2862,11 +3309,13 @@ def _emit_oauth_auth_code_pkce_instructions(server_name: str, authorization_requ
 def _request_oauth_client_credentials_token(
     token_url: str,
     client_id: str,
-    client_secret: str,
+    client_secret: str | None,
     scope: str | None,
     audience: str | None,
     token_endpoint_auth_method: str,
     timeout_seconds: int,
+    client_assertion_signer: OAuthPrivateKeyJWTSigner | None = None,
+    mtls_config: OAuthMTLSConfig | None = None,
 ) -> tuple[str | None, float | None, str | None, int | None, str | None]:
     """Request OAuth client-credentials token with x-www-form-urlencoded payload."""
     request_data = {
@@ -2886,6 +3335,8 @@ def _request_oauth_client_credentials_token(
         client_id=client_id,
         client_secret=client_secret,
         token_endpoint_auth_method=token_endpoint_auth_method,
+        client_assertion_signer=client_assertion_signer,
+        mtls_config=mtls_config,
     )
     if request_error is not None:
         return None, None, request_error, http_status, None

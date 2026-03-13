@@ -1,6 +1,7 @@
 """CLI tests for server/config/baseline/compare commands."""
 
 import asyncio
+import base64
 import json
 import shlex
 import socket
@@ -77,6 +78,19 @@ def _cross_tool_test_tools(include_medium_chain: bool = False) -> list[ToolDefin
         )
 
     return tools
+
+
+def _generate_test_rsa_private_key_pem() -> str:
+    """Generate an RSA private key PEM for private_key_jwt unit tests."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("utf-8")
 
 
 class TestCLICommands:
@@ -4169,3 +4183,843 @@ class TestCLIHelpers:
         assert cache_key in cli_module._OAUTH_TOKEN_CACHE
         assert "refresh_token" not in cli_module._OAUTH_TOKEN_CACHE[cache_key]
         cli_module._clear_oauth_token_cache()
+
+    def test_coerce_token_endpoint_auth_method_rejects_invalid_values(self):
+        """Token endpoint auth method helper should reject invalid shapes deterministically."""
+        method, error = cli_module._coerce_token_endpoint_auth_method(42)
+        assert method is None
+        assert error is not None
+        assert "private_key_jwt" in error
+
+        method, error = cli_module._coerce_token_endpoint_auth_method("unsupported")
+        assert method is None
+        assert error is not None
+        assert "private_key_jwt" in error
+
+    def test_read_auth_file_value_validation_paths(self, monkeypatch, tmp_path: Path):
+        """Auth file resolver should cover missing/read-error/empty/success paths."""
+        missing_value, missing_error = cli_module._read_auth_file_value(
+            str(tmp_path / "missing.pem"), "client_assertion_key_file"
+        )
+        assert missing_value is None
+        assert missing_error is not None
+        assert "does not exist" in missing_error
+
+        key_file = tmp_path / "key.pem"
+        key_file.write_text("dummy", encoding="utf-8")
+
+        monkeypatch.setattr(Path, "read_text", lambda self, encoding="utf-8": (_ for _ in ()).throw(OSError("boom")))
+        read_value, read_error = cli_module._read_auth_file_value(str(key_file), "client_assertion_key_file")
+        assert read_value is None
+        assert read_error == "auth.client_assertion_key_file could not be read."
+
+    def test_read_auth_file_value_empty_and_success(self, tmp_path: Path):
+        """Auth file resolver should reject empty files and accept non-empty content."""
+        empty_file = tmp_path / "empty.pem"
+        empty_file.write_text("   \n", encoding="utf-8")
+
+        empty_value, empty_error = cli_module._read_auth_file_value(str(empty_file), "client_assertion_key_file")
+        assert empty_value is None
+        assert empty_error == "auth.client_assertion_key_file file is empty."
+
+        valid_file = tmp_path / "valid.pem"
+        valid_file.write_text("-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----", encoding="utf-8")
+        valid_value, valid_error = cli_module._read_auth_file_value(str(valid_file), "client_assertion_key_file")
+        assert valid_error is None
+        assert valid_value is not None
+        assert "BEGIN PRIVATE KEY" in valid_value
+
+    def test_resolve_oauth_mtls_config_validation_matrix(self, tmp_path: Path):
+        """mTLS helper should enforce pairing, path checks, and success output."""
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        ca_file = tmp_path / "ca.pem"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        ca_file.write_text("ca", encoding="utf-8")
+
+        config, error = cli_module._resolve_oauth_mtls_config({"mtls_cert_file": 7})
+        assert config is None
+        assert error is not None
+        assert "mtls_cert_file" in error
+
+        config, error = cli_module._resolve_oauth_mtls_config({"mtls_key_file": 7})
+        assert config is None
+        assert error is not None
+        assert "mtls_key_file" in error
+
+        config, error = cli_module._resolve_oauth_mtls_config({"mtls_ca_bundle_file": 7})
+        assert config is None
+        assert error is not None
+        assert "mtls_ca_bundle_file" in error
+
+        config, error = cli_module._resolve_oauth_mtls_config({"mtls_cert_file": str(cert_file)})
+        assert config is None
+        assert error == "auth.mtls_cert_file and auth.mtls_key_file must be provided together."
+
+        config, error = cli_module._resolve_oauth_mtls_config(
+            {"mtls_cert_file": str(tmp_path / "missing.crt"), "mtls_key_file": str(key_file)}
+        )
+        assert config is None
+        assert error == "auth.mtls_cert_file path does not exist or is not a file."
+
+        config, error = cli_module._resolve_oauth_mtls_config(
+            {"mtls_cert_file": str(cert_file), "mtls_key_file": str(tmp_path / "missing.key")}
+        )
+        assert config is None
+        assert error == "auth.mtls_key_file path does not exist or is not a file."
+
+        config, error = cli_module._resolve_oauth_mtls_config(
+            {
+                "mtls_cert_file": str(cert_file),
+                "mtls_key_file": str(key_file),
+                "mtls_ca_bundle_file": str(tmp_path / "missing-ca.pem"),
+            }
+        )
+        assert config is None
+        assert error == "auth.mtls_ca_bundle_file path does not exist or is not a file."
+
+        config, error = cli_module._resolve_oauth_mtls_config(
+            {
+                "mtls_cert_file": str(cert_file),
+                "mtls_key_file": str(key_file),
+                "mtls_ca_bundle_file": str(ca_file),
+            }
+        )
+        assert error is None
+        assert config is not None
+        assert config.cert_file == str(cert_file)
+        assert config.key_file == str(key_file)
+        assert config.ca_bundle_file == str(ca_file)
+
+    def test_resolve_oauth_private_key_jwt_signer_validation_matrix(self, monkeypatch, tmp_path: Path):
+        """private_key_jwt signer resolver should enforce shape/env/file requirements."""
+        key_file = tmp_path / "client-assertion.key"
+        key_file.write_text(_generate_test_rsa_private_key_pem(), encoding="utf-8")
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer({})
+        assert signer is None
+        assert env_var is None
+        assert error is not None
+        assert "is required" in error
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_env": "KEY_ENV", "client_assertion_key_file": str(key_file)}
+        )
+        assert signer is None
+        assert env_var is None
+        assert error == "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file."
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer({"client_assertion_key_env": 9})
+        assert signer is None
+        assert env_var is None
+        assert error is not None
+        assert "client_assertion_key_env" in error
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer({"client_assertion_key_file": 9})
+        assert signer is None
+        assert env_var is None
+        assert error is not None
+        assert "client_assertion_key_file" in error
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_env": "KEY_ENV", "client_assertion_kid": 12}
+        )
+        assert signer is None
+        assert env_var == "KEY_ENV"
+        assert error is not None
+        assert "client_assertion_kid" in error
+
+        monkeypatch.delenv("MCP_ASSERTION_KEY", raising=False)
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_env": "MCP_ASSERTION_KEY"}
+        )
+        assert signer is None
+        assert env_var == "MCP_ASSERTION_KEY"
+        assert error is not None
+        assert "MCP_ASSERTION_KEY" in error
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_file": str(tmp_path / "missing.key")}
+        )
+        assert signer is None
+        assert env_var is None
+        assert error == "auth.client_assertion_key_file path does not exist or is not a file."
+
+        invalid_file = tmp_path / "invalid.key"
+        invalid_file.write_text("not-a-private-key", encoding="utf-8")
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_file": str(invalid_file)}
+        )
+        assert signer is None
+        assert env_var is None
+        assert error == "Unable to parse auth client assertion private key."
+
+        monkeypatch.setenv("MCP_ASSERTION_KEY", _generate_test_rsa_private_key_pem())
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_env": "MCP_ASSERTION_KEY", "client_assertion_kid": "kid-1"}
+        )
+        assert error is None
+        assert env_var == "MCP_ASSERTION_KEY"
+        assert signer is not None
+        assert signer.kid == "kid-1"
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_key_file": str(key_file)}
+        )
+        assert error is None
+        assert env_var is None
+        assert signer is not None
+
+    def test_validate_private_key_jwt_signing_key_and_assertion(self):
+        """Signing-key helper and assertion builder should validate and emit JWT claims."""
+        invalid_error = cli_module._validate_private_key_jwt_signing_key("not-a-key")
+        assert invalid_error == "Unable to parse auth client assertion private key."
+
+        key_pem = _generate_test_rsa_private_key_pem()
+        assert cli_module._validate_private_key_jwt_signing_key(key_pem) is None
+
+        signer = cli_module.OAuthPrivateKeyJWTSigner(private_key_pem=key_pem, kid="kid-abc")
+        assertion, assertion_error = cli_module._build_private_key_jwt_client_assertion(
+            token_url="https://auth.example.com/token",
+            client_id="client-xyz",
+            signer=signer,
+        )
+        assert assertion_error is None
+        assert assertion is not None
+
+        header_segment, claims_segment, signature_segment = assertion.split(".")
+        assert signature_segment
+        padded_header = header_segment + "=" * ((4 - len(header_segment) % 4) % 4)
+        padded_claims = claims_segment + "=" * ((4 - len(claims_segment) % 4) % 4)
+        header_payload = json.loads(base64.urlsafe_b64decode(padded_header.encode("ascii")).decode("utf-8"))
+        claims_payload = json.loads(base64.urlsafe_b64decode(padded_claims.encode("ascii")).decode("utf-8"))
+
+        assert header_payload["alg"] == "RS256"
+        assert header_payload["kid"] == "kid-abc"
+        assert claims_payload["iss"] == "client-xyz"
+        assert claims_payload["sub"] == "client-xyz"
+        assert claims_payload["aud"] == "https://auth.example.com/token"
+        assert claims_payload["exp"] > claims_payload["iat"]
+        assert isinstance(claims_payload["jti"], str) and claims_payload["jti"]
+
+    def test_request_oauth_form_payload_private_key_jwt_and_mtls_paths(self, monkeypatch):
+        """OAuth form helper should handle private_key_jwt requirements and mTLS kwargs."""
+        payload, request_error, http_status = cli_module._request_oauth_form_payload(
+            endpoint_url="https://auth.example.com/token",
+            request_data={"grant_type": "client_credentials"},
+            timeout_seconds=5,
+            endpoint_name="Token endpoint",
+            client_id=None,
+            token_endpoint_auth_method="private_key_jwt",
+        )
+        assert payload is None
+        assert request_error == "Token endpoint private_key_jwt requires client_id."
+        assert http_status is None
+
+        payload, request_error, http_status = cli_module._request_oauth_form_payload(
+            endpoint_url="https://auth.example.com/token",
+            request_data={"grant_type": "client_credentials"},
+            timeout_seconds=5,
+            endpoint_name="Token endpoint",
+            client_id="client-a",
+            token_endpoint_auth_method="private_key_jwt",
+        )
+        assert payload is None
+        assert request_error == "Token endpoint private_key_jwt requires client assertion signing key."
+        assert http_status is None
+
+        signer = cli_module.OAuthPrivateKeyJWTSigner(private_key_pem=_generate_test_rsa_private_key_pem(), kid=None)
+        monkeypatch.setattr(
+            cli_module,
+            "_build_private_key_jwt_client_assertion",
+            lambda token_url, client_id, signer: (None, "assertion-failed"),
+        )
+        payload, request_error, http_status = cli_module._request_oauth_form_payload(
+            endpoint_url="https://auth.example.com/token",
+            request_data={"grant_type": "client_credentials", "client_secret": "secret-a"},
+            timeout_seconds=5,
+            endpoint_name="Token endpoint",
+            client_id="client-a",
+            token_endpoint_auth_method="private_key_jwt",
+            client_assertion_signer=signer,
+        )
+        assert payload is None
+        assert request_error == "assertion-failed"
+        assert http_status is None
+
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {"access_token": "token-ok"}
+
+        def fake_post(
+            url: str,
+            data: dict[str, str],
+            headers: dict[str, str],
+            timeout: int,
+            **kwargs: object,
+        ) -> FakeResponse:
+            captured["url"] = url
+            captured["data"] = data
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            captured["kwargs"] = kwargs
+            return FakeResponse()
+
+        monkeypatch.setattr(
+            cli_module,
+            "_build_private_key_jwt_client_assertion",
+            lambda token_url, client_id, signer: ("jwt-assertion", None),
+        )
+        monkeypatch.setattr(cli_module.httpx, "post", fake_post)
+
+        mtls_config = cli_module.OAuthMTLSConfig(
+            cert_file="/tmp/client.crt",
+            key_file="/tmp/client.key",
+            ca_bundle_file="/tmp/ca.pem",
+        )
+        payload, request_error, http_status = cli_module._request_oauth_form_payload(
+            endpoint_url="https://auth.example.com/token",
+            request_data={"grant_type": "client_credentials", "client_id": "client-a", "client_secret": "secret-a"},
+            timeout_seconds=6,
+            endpoint_name="Token endpoint",
+            client_id="client-a",
+            token_endpoint_auth_method="private_key_jwt",
+            client_assertion_signer=signer,
+            mtls_config=mtls_config,
+        )
+
+        assert request_error is None
+        assert http_status == 200
+        assert payload == {"access_token": "token-ok"}
+        request_data = captured["data"]
+        assert isinstance(request_data, dict)
+        assert request_data["client_assertion_type"] == cli_module._OAUTH_CLIENT_ASSERTION_TYPE
+        assert request_data["client_assertion"] == "jwt-assertion"
+        assert "client_secret" not in request_data
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert kwargs["cert"] == ("/tmp/client.crt", "/tmp/client.key")
+        assert kwargs["verify"] == "/tmp/ca.pem"
+
+    @pytest.mark.parametrize(
+        ("with_signer", "with_mtls"),
+        [
+            (True, False),
+            (False, True),
+            (True, True),
+        ],
+    )
+    def test_resolve_oauth_client_credentials_token_passes_signer_mtls_matrix(
+        self, monkeypatch, with_signer: bool, with_mtls: bool
+    ):
+        """Client-credentials resolver should forward signer/mTLS combinations to request helper."""
+        cli_module._clear_oauth_token_cache()
+        calls: list[dict[str, object]] = []
+
+        def fake_request(**kwargs: object) -> tuple[str | None, float | None, str | None, int | None, str | None]:
+            calls.append(kwargs)
+            return "access-token", 120.0, None, 200, "Bearer"
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+        monkeypatch.setattr(cli_module, "_hydrate_oauth_cache_from_persistent", lambda cache_key, cache_settings: None)
+
+        signer = (
+            cli_module.OAuthPrivateKeyJWTSigner(private_key_pem=_generate_test_rsa_private_key_pem(), kid=None)
+            if with_signer
+            else None
+        )
+        mtls = (
+            cli_module.OAuthMTLSConfig(cert_file="/tmp/cert.pem", key_file="/tmp/key.pem", ca_bundle_file=None)
+            if with_mtls
+            else None
+        )
+        method = "private_key_jwt" if with_signer else "client_secret_post"
+        client_secret = None if with_signer else "secret-a"
+
+        token, token_type, finding = cli_module._resolve_oauth_client_credentials_token(
+            server_name="oauth-server",
+            transport="sse",
+            auth_type="oauth_client_credentials",
+            token_url="https://auth.example.com/token",
+            client_id="client-a",
+            client_secret=client_secret,
+            scope=None,
+            audience=None,
+            token_endpoint_auth_method=method,
+            client_assertion_signer=signer,
+            mtls_config=mtls,
+            timeout_seconds=6,
+            env_var="MCP_OAUTH_CLIENT_ID",
+            cache_settings=cli_module.OAuthCacheSettings(persistent=False, namespace="test-ns"),
+        )
+
+        assert finding is None
+        assert token == "access-token"
+        assert token_type == "Bearer"
+        assert len(calls) == 1
+        assert ("client_assertion_signer" in calls[0]) is with_signer
+        assert ("mtls_config" in calls[0]) is with_mtls
+
+    @pytest.mark.parametrize(
+        ("with_signer", "with_mtls"),
+        [
+            (True, False),
+            (False, True),
+            (True, True),
+        ],
+    )
+    def test_resolve_oauth_device_code_refresh_paths_with_signer_mtls_matrix(
+        self,
+        monkeypatch,
+        with_signer: bool,
+        with_mtls: bool,
+    ):
+        """Device-code refresh path should forward signer/mTLS combinations to refresh helper."""
+        cli_module._clear_oauth_token_cache()
+        calls: list[dict[str, object]] = []
+
+        monkeypatch.setattr(cli_module, "_hydrate_oauth_cache_from_persistent", lambda cache_key, cache_settings: None)
+        monkeypatch.setattr(cli_module, "_get_cached_oauth_token", lambda cache_key: None)
+        monkeypatch.setattr(cli_module, "_get_cached_oauth_token_type", lambda cache_key: None)
+        monkeypatch.setattr(cli_module, "_get_cached_oauth_refresh_token", lambda cache_key: "refresh-1")
+
+        def fake_refresh(
+            **kwargs: object,
+        ) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+            calls.append(kwargs)
+            return "refreshed-token", 90.0, "refresh-2", None, 200, "DPoP"
+
+        monkeypatch.setattr(cli_module, "_request_oauth_refresh_token", fake_refresh)
+
+        signer = (
+            cli_module.OAuthPrivateKeyJWTSigner(private_key_pem=_generate_test_rsa_private_key_pem(), kid=None)
+            if with_signer
+            else None
+        )
+        mtls = (
+            cli_module.OAuthMTLSConfig(cert_file="/tmp/cert.pem", key_file="/tmp/key.pem", ca_bundle_file=None)
+            if with_mtls
+            else None
+        )
+        method = "private_key_jwt" if with_signer else "client_secret_post"
+        client_secret = None if with_signer else "secret-a"
+
+        token, token_type, finding = cli_module._resolve_oauth_device_code_token(
+            server_name="device-server",
+            transport="sse",
+            auth_type="oauth_device_code",
+            device_authorization_url="https://auth.example.com/device",
+            token_url="https://auth.example.com/token",
+            client_id="client-a",
+            client_secret=client_secret,
+            scope=None,
+            audience=None,
+            token_endpoint_auth_method=method,
+            client_assertion_signer=signer,
+            mtls_config=mtls,
+            timeout_seconds=7,
+            is_interactive_tty=True,
+            env_var="MCP_DEVICE_CLIENT_ID",
+            cache_settings=cli_module.OAuthCacheSettings(persistent=False, namespace="test-ns"),
+        )
+
+        assert finding is None
+        assert token == "refreshed-token"
+        assert token_type == "DPoP"
+        assert len(calls) == 1
+        assert ("client_assertion_signer" in calls[0]) is with_signer
+        assert ("mtls_config" in calls[0]) is with_mtls
+
+    @pytest.mark.parametrize(
+        ("with_signer", "with_mtls"),
+        [
+            (True, False),
+            (False, True),
+            (True, True),
+        ],
+    )
+    def test_resolve_oauth_device_code_poll_paths_with_signer_mtls_matrix(
+        self,
+        monkeypatch,
+        with_signer: bool,
+        with_mtls: bool,
+    ):
+        """Device-code primary poll path should forward signer/mTLS combinations."""
+        cli_module._clear_oauth_token_cache()
+        poll_calls: list[dict[str, object]] = []
+
+        monkeypatch.setattr(cli_module, "_hydrate_oauth_cache_from_persistent", lambda cache_key, cache_settings: None)
+        monkeypatch.setattr(cli_module, "_get_cached_oauth_token", lambda cache_key: None)
+        monkeypatch.setattr(cli_module, "_get_cached_oauth_token_type", lambda cache_key: None)
+        monkeypatch.setattr(cli_module, "_get_cached_oauth_refresh_token", lambda cache_key: None)
+        monkeypatch.setattr(
+            cli_module,
+            "_request_oauth_device_authorization",
+            lambda **kwargs: (
+                {"device_code": "device-1", "verification_uri": "https://auth.example.com/verify"},
+                None,
+                200,
+            ),
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "_emit_oauth_device_code_instructions",
+            lambda server_name, verification_uri, verification_uri_complete, user_code: None,
+        )
+
+        def fake_poll(
+            **kwargs: object,
+        ) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+            poll_calls.append(kwargs)
+            return "polled-token", 120.0, "refresh-2", None, 200, "Bearer"
+
+        monkeypatch.setattr(cli_module, "_poll_oauth_device_code_token", fake_poll)
+
+        signer = (
+            cli_module.OAuthPrivateKeyJWTSigner(private_key_pem=_generate_test_rsa_private_key_pem(), kid=None)
+            if with_signer
+            else None
+        )
+        mtls = (
+            cli_module.OAuthMTLSConfig(cert_file="/tmp/cert.pem", key_file="/tmp/key.pem", ca_bundle_file=None)
+            if with_mtls
+            else None
+        )
+        method = "private_key_jwt" if with_signer else "client_secret_post"
+        client_secret = None if with_signer else "secret-a"
+
+        token, token_type, finding = cli_module._resolve_oauth_device_code_token(
+            server_name="device-server",
+            transport="sse",
+            auth_type="oauth_device_code",
+            device_authorization_url="https://auth.example.com/device",
+            token_url="https://auth.example.com/token",
+            client_id="client-a",
+            client_secret=client_secret,
+            scope=None,
+            audience=None,
+            token_endpoint_auth_method=method,
+            client_assertion_signer=signer,
+            mtls_config=mtls,
+            timeout_seconds=7,
+            is_interactive_tty=True,
+            env_var="MCP_DEVICE_CLIENT_ID",
+            cache_settings=cli_module.OAuthCacheSettings(persistent=False, namespace="test-ns"),
+        )
+
+        assert finding is None
+        assert token == "polled-token"
+        assert token_type == "Bearer"
+        assert len(poll_calls) == 1
+        assert ("client_assertion_signer" in poll_calls[0]) is with_signer
+        assert ("mtls_config" in poll_calls[0]) is with_mtls
+
+    @pytest.mark.parametrize(
+        ("with_signer", "with_mtls"),
+        [
+            (True, False),
+            (False, True),
+            (True, True),
+        ],
+    )
+    def test_poll_oauth_device_code_token_forwards_signer_mtls_matrix(
+        self, monkeypatch, with_signer: bool, with_mtls: bool
+    ):
+        """Device-code poll helper should forward signer/mTLS combinations to form request helper."""
+        captured: list[dict[str, object]] = []
+
+        def fake_request_form_payload(**kwargs: object) -> tuple[dict[str, object] | None, str | None, int | None]:
+            captured.append(kwargs)
+            return {"access_token": "token-1", "expires_in": 60}, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_form_payload", fake_request_form_payload)
+
+        signer = (
+            cli_module.OAuthPrivateKeyJWTSigner(private_key_pem=_generate_test_rsa_private_key_pem(), kid=None)
+            if with_signer
+            else None
+        )
+        mtls = (
+            cli_module.OAuthMTLSConfig(cert_file="/tmp/cert.pem", key_file="/tmp/key.pem", ca_bundle_file=None)
+            if with_mtls
+            else None
+        )
+        method = "private_key_jwt" if with_signer else "client_secret_post"
+        client_secret = None if with_signer else "secret-a"
+
+        token, expires_in, refresh_token, token_error, http_status, token_type = (
+            cli_module._poll_oauth_device_code_token(
+                token_url="https://auth.example.com/token",
+                device_code="device-code",
+                client_id="client-a",
+                client_secret=client_secret,
+                token_endpoint_auth_method=method,
+                timeout_seconds=5,
+                poll_interval_seconds=1,
+                device_expires_in=30,
+                client_assertion_signer=signer,
+                mtls_config=mtls,
+            )
+        )
+
+        assert token_error is None
+        assert http_status == 200
+        assert token == "token-1"
+        assert expires_in == 60.0
+        assert refresh_token is None
+        assert token_type is None
+        assert len(captured) == 1
+        assert ("client_assertion_signer" in captured[0]) is with_signer
+        assert ("mtls_config" in captured[0]) is with_mtls
+
+    def test_build_connector_config_oauth_client_credentials_private_key_jwt_with_mtls(
+        self, monkeypatch, tmp_path: Path
+    ):
+        """Config auth should support private_key_jwt and mTLS for client-credentials flow."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-jwt")
+        monkeypatch.setenv("MCP_ASSERTION_KEY", _generate_test_rsa_private_key_pem())
+
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        ca_file = tmp_path / "ca.pem"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        ca_file.write_text("ca", encoding="utf-8")
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str | None,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+            client_assertion_signer: cli_module.OAuthPrivateKeyJWTSigner | None,
+            mtls_config: cli_module.OAuthMTLSConfig | None,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del scope, audience, timeout_seconds
+            assert token_url == "https://auth.example.com/token"
+            assert client_id == "client-jwt"
+            assert client_secret is None
+            assert token_endpoint_auth_method == "private_key_jwt"
+            assert client_assertion_signer is not None
+            assert mtls_config is not None
+            assert mtls_config.cert_file == str(cert_file)
+            assert mtls_config.key_file == str(key_file)
+            assert mtls_config.ca_bundle_file == str(ca_file)
+            return "jwt-token", 300.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_pkjwt_server",
+            raw_server_config={
+                "transport": "streamable-http",
+                "url": "https://example.com/mcp",
+                "auth": {
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "client_assertion_key_env": "MCP_ASSERTION_KEY",
+                    "client_assertion_kid": "kid-123",
+                    "mtls_cert_file": str(cert_file),
+                    "mtls_key_file": str(key_file),
+                    "mtls_ca_bundle_file": str(ca_file),
+                },
+            },
+            timeout=9,
+        )
+
+        assert finding is None
+        assert connector_config is not None
+        assert connector_config["headers"]["Authorization"] == "Bearer jwt-token"
+
+    def test_build_connector_config_oauth_device_code_private_key_jwt_with_mtls(self, monkeypatch, tmp_path: Path):
+        """Config auth should support private_key_jwt and mTLS for device-code flow."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_DEVICE_CLIENT_ID", "device-jwt")
+        monkeypatch.setenv("MCP_ASSERTION_KEY", _generate_test_rsa_private_key_pem())
+        monkeypatch.setattr(cli_module, "_is_interactive_tty", lambda: True)
+
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+
+        monkeypatch.setattr(
+            cli_module,
+            "_request_oauth_device_authorization",
+            lambda **kwargs: (
+                {"device_code": "device-code", "verification_uri": "https://auth.example.com/verify"},
+                None,
+                200,
+            ),
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "_emit_oauth_device_code_instructions",
+            lambda server_name, verification_uri, verification_uri_complete, user_code: None,
+        )
+
+        def fake_poll(
+            *,
+            token_url: str,
+            device_code: str,
+            client_id: str,
+            client_secret: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+            poll_interval_seconds: int,
+            device_expires_in: float | None,
+            client_assertion_signer: cli_module.OAuthPrivateKeyJWTSigner | None,
+            mtls_config: cli_module.OAuthMTLSConfig | None,
+        ) -> tuple[str | None, float | None, str | None, str | None, int | None, str | None]:
+            del timeout_seconds, poll_interval_seconds, device_expires_in
+            assert token_url == "https://auth.example.com/token"
+            assert device_code == "device-code"
+            assert client_id == "device-jwt"
+            assert client_secret is None
+            assert token_endpoint_auth_method == "private_key_jwt"
+            assert client_assertion_signer is not None
+            assert mtls_config is not None
+            assert mtls_config.cert_file == str(cert_file)
+            assert mtls_config.key_file == str(key_file)
+            return "device-token", 120.0, "refresh-1", None, 200, "Bearer"
+
+        monkeypatch.setattr(cli_module, "_poll_oauth_device_code_token", fake_poll)
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_device_pkjwt_server",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_device_code",
+                    "device_authorization_url": "https://auth.example.com/device",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_DEVICE_CLIENT_ID",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "client_assertion_key_env": "MCP_ASSERTION_KEY",
+                    "mtls_cert_file": str(cert_file),
+                    "mtls_key_file": str(key_file),
+                },
+            },
+            timeout=9,
+        )
+
+        assert finding is None
+        assert connector_config is not None
+        assert connector_config["headers"]["Authorization"] == "Bearer device-token"
+
+    def test_build_connector_config_oauth_private_key_jwt_and_mtls_config_errors(self, monkeypatch):
+        """Config auth should emit auth_config_error for private_key_jwt and mTLS validation issues."""
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-jwt")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-jwt")
+        monkeypatch.setenv("MCP_DEVICE_CLIENT_ID", "device-jwt")
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_client_secret_env_error",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                },
+            },
+            timeout=7,
+        )
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "auth_config_error"
+        assert "client_secret_env" in finding.evidence
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_client_error",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                },
+            },
+            timeout=7,
+        )
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "auth_config_error"
+        assert "client_assertion_key_env" in finding.evidence
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_client_mtls_error",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                    "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                    "mtls_cert_file": "/tmp/client.crt",
+                },
+            },
+            timeout=7,
+        )
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "auth_config_error"
+        assert "mtls_cert_file and auth.mtls_key_file" in finding.evidence
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_device_error",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_device_code",
+                    "device_authorization_url": "https://auth.example.com/device",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_DEVICE_CLIENT_ID",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                },
+            },
+            timeout=7,
+        )
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "auth_config_error"
+        assert "client_assertion_key_env" in finding.evidence
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_device_mtls_error",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_device_code",
+                    "device_authorization_url": "https://auth.example.com/device",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_DEVICE_CLIENT_ID",
+                    "mtls_cert_file": "/tmp/client.crt",
+                },
+            },
+            timeout=7,
+        )
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "auth_config_error"
+        assert "mtls_cert_file and auth.mtls_key_file" in finding.evidence

@@ -7,13 +7,14 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-6H)
+## Current Scope (Sprint 1-7A)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
+- OAuth provider integrations v1 in `config` auth: `token_endpoint_auth_method=private_key_jwt` and optional token-endpoint mTLS
 - Default analyzers enabled in scan flows:
   - `StaticAnalyzer`
   - `PromptInjectionAnalyzer`
@@ -96,8 +97,12 @@ Supported entry styles:
         "type": "oauth_client_credentials",
         "token_url": "https://auth.example.com/oauth/token",
         "client_id_env": "MCP_OAUTH_CLIENT_ID",
-        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
-        "token_endpoint_auth_method": "client_secret_basic",
+        "token_endpoint_auth_method": "private_key_jwt",
+        "client_assertion_key_env": "MCP_OAUTH_ASSERTION_KEY_PEM",
+        "client_assertion_kid": "key-2026-03",
+        "mtls_cert_file": "/etc/mcp/oauth-client.crt",
+        "mtls_key_file": "/etc/mcp/oauth-client.key",
+        "mtls_ca_bundle_file": "/etc/mcp/oauth-ca.pem",
         "scope": "mcp.read",
         "audience": "mcp-security-scanner",
         "cache": {"persistent": true, "namespace": "prod-security"},
@@ -151,6 +156,15 @@ Notes:
 - `oauth_client_credentials` and `oauth_device_code` support optional `token_endpoint_auth_method`:
   - `client_secret_post` (default)
   - `client_secret_basic` (`oauth_device_code` requires `client_secret_env` when used)
+  - `private_key_jwt` (`oauth_client_credentials` + `oauth_device_code`; `oauth_auth_code_pkce` remains unchanged)
+- `private_key_jwt` validation rules:
+  - exactly one of `client_assertion_key_env` or `client_assertion_key_file` is required
+  - optional `client_assertion_kid` is propagated into JWT header
+  - v1 signing algorithm is `RS256`
+- token endpoint mTLS options for OAuth auth entries:
+  - `mtls_cert_file` + `mtls_key_file` must be provided together
+  - optional `mtls_ca_bundle_file` is used as request verify bundle
+  - mTLS is applied only to OAuth token endpoint calls (not discovery transport connections)
 - OAuth token cache key is deterministic: `namespace + token_url + client_id + scope + audience`
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
@@ -243,9 +257,9 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 6H)
+## Roadmap (Post Sprint 7A)
 
 Deferred items:
-- OAuth advanced provider integrations beyond current config-only scope (`private_key_jwt`, mTLS, external KMS-backed token exchange)
+- OAuth provider integrations beyond current config-only scope (external KMS-backed signing, transport-level mTLS propagation)
 - advanced persistent secret-store backends beyond keyring/fallback file model
 - further analyzer expansion beyond current core (`Static`, `PromptInjection`, `Escalation`, `ToolPoisoning`, `CrossTool`)
