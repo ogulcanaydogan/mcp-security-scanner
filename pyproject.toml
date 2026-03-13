@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcp-security-scanner"
+name = "ogulcanaydogan-mcp-security-scanner"
 version = "0.1.0"
 description = "Security scanner for Model Context Protocol (MCP) servers. Detects prompt injection, tool poisoning, capability escalation, and rug-pull attacks."
 readme = "README.md"

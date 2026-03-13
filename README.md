@@ -7,7 +7,7 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8B)
+## Current Scope (Sprint 1-8D)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
@@ -17,6 +17,7 @@ Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `h
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
 - Dynamic analyzer hardening (opt-in `--dynamic`) with bounded probe policy, deterministic ordering, and noise suppression
+- Release stabilization (Sprint 8D): PyPI distribution name switched to `ogulcanaydogan-mcp-security-scanner` to avoid name collision
 - Default analyzers enabled in scan flows:
   - `StaticAnalyzer`
   - `PromptInjectionAnalyzer`
@@ -27,6 +28,14 @@ Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `h
 - Severity threshold filtering and documented exit-code contract
 
 ## Installation
+
+From PyPI:
+
+```bash
+pip install ogulcanaydogan-mcp-security-scanner
+```
+
+From source:
 
 ```bash
 git clone https://github.com/ogulcanaydogan/mcp-security-scanner.git
@@ -294,7 +303,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8C)
+## Roadmap (Post Sprint 8D)
 
 Deferred items:
 - advanced persistent secret-store backends beyond keyring/fallback file model

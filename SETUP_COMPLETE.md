@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8C Implementation State
+# Setup Complete — Sprint 1-8D Implementation State
 
-This file records the actual implementation status after Sprint 8C.
+This file records the actual implementation status after Sprint 8D.
 
 ## Completed Work
 
@@ -359,6 +359,17 @@ This file records the actual implementation status after Sprint 8C.
 - existing contracts are preserved:
   - `config` command flow unchanged
   - `compare` mutation categories/OWASP mapping unchanged (`tool_added`/`tool_removed`/`tool_changed`, `LLM05`)
+
+### Sprint 8D (Release Stabilization + PyPI Package Identity Fix)
+
+- release/package identity conflict resolved:
+  - `project.name` switched from `mcp-security-scanner` to `ogulcanaydogan-mcp-security-scanner`
+  - Python module path remains `mcp_security_scanner`
+  - CLI executable remains `mcp-scan`
+- CI publish workflow made package-name-agnostic for Sigstore signing input:
+  - `./dist/*.tar.gz`
+- docs synchronized for installation/release messaging:
+  - README install guidance now includes `pip install ogulcanaydogan-mcp-security-scanner`
 
 ## Exit Code Contract (Current)
 

@@ -148,7 +148,7 @@ jobs:
       - name: Sign release with Sigstore
         uses: sigstore/gh-action-sigstore-python@v2.1.1
         with:
-          inputs: ./dist/mcp-security-scanner-*.tar.gz
+          inputs: ./dist/*.tar.gz
           release: true
 
       - name: Create GitHub Release

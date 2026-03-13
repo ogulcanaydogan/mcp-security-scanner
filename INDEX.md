@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8C scope.
+Current index for the implemented Sprint 1-8D scope.
 
 ## Status Snapshot
 
@@ -25,6 +25,7 @@ Current index for the implemented Sprint 1-8C scope.
 - Sprint 8A: done (Dynamic Analyzer v1 added as opt-in via `--dynamic`)
 - Sprint 8B: done (Dynamic analyzer hardening: bounded runtime policy, deterministic outputs, false-positive suppression)
 - Sprint 8C: done (URL positional auth/mTLS UX for `server`, `baseline`, `compare`)
+- Sprint 8D: done (release stabilization and PyPI package identity conflict fix)
 
 ## Top-Level Docs
 
@@ -32,6 +33,12 @@ Current index for the implemented Sprint 1-8C scope.
 - [ROADMAP.md](ROADMAP.md): broader project direction/backlog
 - [CONTRIBUTING.md](CONTRIBUTING.md): development and contribution flow
 - [SETUP_COMPLETE.md](SETUP_COMPLETE.md): setup and completion checklist
+
+## Release Notes Snapshot
+
+- PyPI distribution name: `ogulcanaydogan-mcp-security-scanner`
+- Python package/module path unchanged: `mcp_security_scanner`
+- CLI entrypoint unchanged: `mcp-scan`
 
 ## Source Map
 
