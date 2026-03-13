@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8E scope.
+Current index for the implemented Sprint 1-8F scope.
 
 ## Status Snapshot
 
@@ -27,6 +27,7 @@ Current index for the implemented Sprint 1-8E scope.
 - Sprint 8C: done (URL positional auth/mTLS UX for `server`, `baseline`, `compare`)
 - Sprint 8D: done (release stabilization and PyPI package identity conflict fix)
 - Sprint 8E: done (dynamic analyzer expansion with semantic probe variants and stronger benign-context suppression)
+- Sprint 8F: done (publish unblock follow-up + advanced OAuth cache backend v1 with AWS Secrets Manager)
 
 ## Top-Level Docs
 
@@ -53,13 +54,17 @@ Current index for the implemented Sprint 1-8E scope.
   - Config auth normalization (`bearer` / `api_key` / `session_cookie` / `oauth_client_credentials` / `oauth_device_code` / `oauth_auth_code_pkce`)
   - Auth finding flow: `auth_config_error` (schema/env) and `auth_token_error` (token endpoint)
   - OAuth client-credentials + device-code + auth-code PKCE/refresh with in-memory cache
-  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`)
+  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_region`, `aws_endpoint_url`)
   - Persistent cache hardening:
     - strict lock file with retry/timeout and non-fatal bypass
     - corrupt cache quarantine (`*.corrupt.<timestamp>`)
     - v2 cache envelope (`schema_version`, `key_id`, `updated_at`, `entries`) with v1 backward compatibility
     - key metadata handling (`active` + `historical` key sets with `key_id` + `fernet_key`) and `mcp-scan cache rotate`
     - historical key retention (max 3) and deterministic decrypt recovery (`key_id` match -> active -> historical)
+  - Advanced persistent cache backend v1:
+    - `backend=local` (existing encrypted file + keyring/fallback key model)
+    - `backend=aws_secrets_manager` (single secret JSON envelope for OAuth cache entries)
+    - backend read/write failures are non-fatal and fall back to live token flow
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
   - `private_key_jwt` signer inputs with exclusivity (`client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`), optional `client_assertion_kid`
   - optional AWS KMS signer tuning (`client_assertion_kms_region`, `client_assertion_kms_endpoint_url`)
@@ -122,4 +127,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- advanced persistent secret-store options beyond keyring/fallback file model
+- additional persistent secret-store providers beyond `local` and `aws_secrets_manager`

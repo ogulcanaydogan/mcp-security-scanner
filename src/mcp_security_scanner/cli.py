@@ -51,6 +51,12 @@ _OAUTH_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
 _SUPPORTED_TOKEN_ENDPOINT_AUTH_METHODS = {"client_secret_post", "client_secret_basic", "private_key_jwt"}
 _OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 _OAUTH_AUTH_TYPES = {"oauth_client_credentials", "oauth_device_code", "oauth_auth_code_pkce"}
+_OAUTH_CACHE_BACKEND_LOCAL = "local"
+_OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER = "aws_secrets_manager"
+_SUPPORTED_OAUTH_CACHE_BACKENDS = {
+    _OAUTH_CACHE_BACKEND_LOCAL,
+    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
+}
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
 _OAUTH_PERSISTENT_CACHE_FILE = Path.home() / ".cache" / "mcp-security-scanner" / "oauth-cache-v1.json.enc"
@@ -72,6 +78,10 @@ class OAuthCacheSettings:
 
     persistent: bool = False
     namespace: str = "default"
+    backend: str = _OAUTH_CACHE_BACKEND_LOCAL
+    aws_secret_id: str | None = None
+    aws_region: str | None = None
+    aws_endpoint_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2174,9 +2184,24 @@ def _coerce_oauth_cache_settings(
     if not isinstance(cache_value, dict):
         return None, "auth.cache must be an object when provided."
 
-    unknown_fields = [str(key) for key in cache_value if str(key) not in {"persistent", "namespace"}]
+    unknown_fields = [
+        str(key)
+        for key in cache_value
+        if str(key)
+        not in {
+            "persistent",
+            "namespace",
+            "backend",
+            "aws_secret_id",
+            "aws_region",
+            "aws_endpoint_url",
+        }
+    ]
     if unknown_fields:
-        return None, "auth.cache supports only: persistent, namespace."
+        return (
+            None,
+            "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_region, aws_endpoint_url.",
+        )
 
     persistent_value = cache_value.get("persistent", False)
     if not isinstance(persistent_value, bool):
@@ -2186,7 +2211,63 @@ def _coerce_oauth_cache_settings(
     if not isinstance(namespace_value, str) or not namespace_value.strip():
         return None, "auth.cache.namespace must be a non-empty string when provided."
 
-    return OAuthCacheSettings(persistent=persistent_value, namespace=namespace_value.strip()), None
+    backend_value = cache_value.get("backend", _OAUTH_CACHE_BACKEND_LOCAL)
+    if not isinstance(backend_value, str) or not backend_value.strip():
+        return None, "auth.cache.backend must be a non-empty string when provided."
+    backend = backend_value.strip().lower()
+    if backend not in _SUPPORTED_OAUTH_CACHE_BACKENDS:
+        return (
+            None,
+            "auth.cache.backend must be one of: " f"{', '.join(sorted(_SUPPORTED_OAUTH_CACHE_BACKENDS))}.",
+        )
+
+    aws_secret_id_value = cache_value.get("aws_secret_id")
+    if aws_secret_id_value is not None and (
+        not isinstance(aws_secret_id_value, str) or not aws_secret_id_value.strip()
+    ):
+        return None, "auth.cache.aws_secret_id must be a non-empty string when provided."
+    aws_secret_id = aws_secret_id_value.strip() if isinstance(aws_secret_id_value, str) else None
+
+    aws_region_value = cache_value.get("aws_region")
+    if aws_region_value is not None and (not isinstance(aws_region_value, str) or not aws_region_value.strip()):
+        return None, "auth.cache.aws_region must be a non-empty string when provided."
+    aws_region = aws_region_value.strip() if isinstance(aws_region_value, str) else None
+
+    aws_endpoint_url_value = cache_value.get("aws_endpoint_url")
+    if aws_endpoint_url_value is not None and (
+        not isinstance(aws_endpoint_url_value, str) or not aws_endpoint_url_value.strip()
+    ):
+        return None, "auth.cache.aws_endpoint_url must be a non-empty string when provided."
+    aws_endpoint_url = aws_endpoint_url_value.strip() if isinstance(aws_endpoint_url_value, str) else None
+    if aws_endpoint_url is not None:
+        parsed_aws_endpoint_url = urlparse(aws_endpoint_url)
+        if parsed_aws_endpoint_url.scheme not in {"http", "https"} or not parsed_aws_endpoint_url.netloc:
+            return None, "auth.cache.aws_endpoint_url must be a valid http/https URL."
+
+    if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
+        if aws_secret_id is None:
+            return (
+                None,
+                "auth.cache.aws_secret_id is required when auth.cache.backend='aws_secrets_manager'.",
+            )
+    elif aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+        return (
+            None,
+            "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
+            "when auth.cache.backend='aws_secrets_manager'.",
+        )
+
+    return (
+        OAuthCacheSettings(
+            persistent=persistent_value,
+            namespace=namespace_value.strip(),
+            backend=backend,
+            aws_secret_id=aws_secret_id,
+            aws_region=aws_region,
+            aws_endpoint_url=aws_endpoint_url,
+        ),
+        None,
+    )
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -2561,7 +2642,7 @@ def _resolve_oauth_client_credentials_token(
         token=token_value,
         expires_in=expires_in,
         token_type=token_type,
-        persistent=cache_settings.persistent,
+        cache_settings=cache_settings,
     )
     return token_value, token_type, None
 
@@ -2645,7 +2726,7 @@ def _resolve_oauth_device_code_token(
         )
         if refresh_error is not None or refreshed_token is None:
             if _is_reauth_fallback_error(refresh_error):
-                _drop_oauth_refresh_token(cache_key, persistent=cache_settings.persistent)
+                _drop_oauth_refresh_token(cache_key, cache_settings=cache_settings)
                 if not is_interactive_tty:
                     return (
                         None,
@@ -2684,7 +2765,7 @@ def _resolve_oauth_device_code_token(
                 expires_in=refreshed_expires_in,
                 refresh_token=next_refresh_token or cached_refresh_token,
                 token_type=refresh_type,
-                persistent=cache_settings.persistent,
+                cache_settings=cache_settings,
             )
             return refreshed_token, refresh_type, None
 
@@ -2828,7 +2909,7 @@ def _resolve_oauth_device_code_token(
         expires_in=expires_in,
         refresh_token=refresh_token,
         token_type=token_type,
-        persistent=cache_settings.persistent,
+        cache_settings=cache_settings,
     )
     return token_value, token_type, None
 
@@ -2879,7 +2960,7 @@ def _resolve_oauth_auth_code_pkce_token(
         )
         if refresh_error is not None or refreshed_token is None:
             if _is_reauth_fallback_error(refresh_error):
-                _drop_oauth_refresh_token(cache_key, persistent=cache_settings.persistent)
+                _drop_oauth_refresh_token(cache_key, cache_settings=cache_settings)
                 if not is_interactive_tty:
                     return (
                         None,
@@ -2918,7 +2999,7 @@ def _resolve_oauth_auth_code_pkce_token(
                 expires_in=refreshed_expires_in,
                 refresh_token=next_refresh_token or cached_refresh_token,
                 token_type=refresh_type,
-                persistent=cache_settings.persistent,
+                cache_settings=cache_settings,
             )
             return refreshed_token, refresh_type, None
 
@@ -3018,7 +3099,7 @@ def _resolve_oauth_auth_code_pkce_token(
         expires_in=expires_in,
         refresh_token=refresh_token,
         token_type=token_type,
-        persistent=cache_settings.persistent,
+        cache_settings=cache_settings,
     )
     return token_value, token_type, None
 
@@ -3872,15 +3953,25 @@ def _hydrate_oauth_cache_from_persistent(cache_key: str, cache_settings: OAuthCa
     if cache_key in _OAUTH_TOKEN_CACHE:
         return
 
-    persistent_entries = _load_oauth_persistent_cache_entries()
+    persistent_entries = _load_oauth_persistent_cache_entries(cache_settings=cache_settings)
     cached_entry = persistent_entries.get(cache_key)
     if not isinstance(cached_entry, dict):
         return
     _OAUTH_TOKEN_CACHE[cache_key] = dict(cached_entry)
 
 
-def _load_oauth_persistent_cache_entries() -> dict[str, dict[str, Any]]:
-    """Read encrypted persistent OAuth cache; returns empty map on any failure/bypass."""
+def _load_oauth_persistent_cache_entries(
+    cache_settings: OAuthCacheSettings | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load persistent OAuth cache entries from configured backend; returns empty map on failure/bypass."""
+    resolved_settings = cache_settings or OAuthCacheSettings()
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
+        return _load_oauth_persistent_cache_entries_from_aws(cache_settings=resolved_settings)
+    return _load_oauth_persistent_cache_entries_local()
+
+
+def _load_oauth_persistent_cache_entries_local() -> dict[str, dict[str, Any]]:
+    """Read encrypted local OAuth cache; returns empty map on any failure/bypass."""
     lock_handle, _ = _acquire_oauth_cache_lock()
     if lock_handle is None:
         return {}
@@ -3897,8 +3988,17 @@ def _load_oauth_persistent_cache_entries() -> dict[str, dict[str, Any]]:
         _release_oauth_cache_lock(lock_handle)
 
 
-def _persist_oauth_cache_entry(cache_key: str) -> None:
-    """Persist one in-memory OAuth cache entry to encrypted disk cache when possible."""
+def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSettings | None = None) -> None:
+    """Persist one in-memory OAuth cache entry to configured persistent backend when possible."""
+    resolved_settings = cache_settings or OAuthCacheSettings()
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
+        _persist_oauth_cache_entry_aws(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    _persist_oauth_cache_entry_local(cache_key=cache_key)
+
+
+def _persist_oauth_cache_entry_local(cache_key: str) -> None:
+    """Persist one in-memory OAuth cache entry to encrypted local cache when possible."""
     lock_handle, _ = _acquire_oauth_cache_lock()
     if lock_handle is None:
         return
@@ -3920,6 +4020,130 @@ def _persist_oauth_cache_entry(cache_key: str) -> None:
         _write_oauth_cache_entries_locked(key_set=key_set, entries=persistent_entries)
     finally:
         _release_oauth_cache_lock(lock_handle)
+
+
+def _load_oauth_persistent_cache_entries_from_aws(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from AWS Secrets Manager; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_aws(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_aws(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to AWS Secrets Manager; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_aws(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_aws(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_aws_secrets_manager_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create AWS Secrets Manager client for OAuth cache backend."""
+    try:
+        boto3_module = importlib.import_module("boto3")
+    except Exception:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if cache_settings.aws_region is not None:
+        client_kwargs["region_name"] = cache_settings.aws_region
+    if cache_settings.aws_endpoint_url is not None:
+        client_kwargs["endpoint_url"] = cache_settings.aws_endpoint_url
+
+    try:
+        return boto3_module.client("secretsmanager", **client_kwargs)
+    except Exception:
+        return None
+
+
+def _extract_aws_error_code(exc: Exception) -> str | None:
+    """Extract AWS API error code when available."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return None
+    error_payload = response.get("Error")
+    if not isinstance(error_payload, dict):
+        return None
+    error_code = error_payload.get("Code")
+    if not isinstance(error_code, str) or not error_code.strip():
+        return None
+    return error_code.strip()
+
+
+def _read_oauth_cache_payload_from_aws(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from AWS Secrets Manager secret."""
+    if cache_settings.aws_secret_id is None:
+        return None
+
+    client = _build_aws_secrets_manager_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        response = client.get_secret_value(SecretId=cache_settings.aws_secret_id)
+    except Exception as exc:
+        if _extract_aws_error_code(exc) in {"ResourceNotFoundException", "ResourceNotFound"}:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        return None
+
+    secret_text = response.get("SecretString")
+    if isinstance(secret_text, str) and secret_text.strip():
+        raw_payload = secret_text
+    else:
+        secret_binary = response.get("SecretBinary")
+        if isinstance(secret_binary, bytes):
+            raw_payload = secret_binary.decode("utf-8", errors="ignore")
+        elif isinstance(secret_binary, str):
+            raw_payload = secret_binary
+        else:
+            return None
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_aws(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to AWS Secrets Manager."""
+    if cache_settings.aws_secret_id is None:
+        return False
+
+    client = _build_aws_secrets_manager_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    try:
+        client.update_secret(SecretId=cache_settings.aws_secret_id, SecretString=serialized_payload)
+        return True
+    except Exception as exc:
+        if _extract_aws_error_code(exc) not in {"ResourceNotFoundException", "ResourceNotFound"}:
+            return False
+
+    try:
+        client.create_secret(Name=cache_settings.aws_secret_id, SecretString=serialized_payload)
+    except Exception:
+        return False
+    return True
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
@@ -4635,7 +4859,11 @@ def _get_cached_oauth_token_type(cache_key: str) -> str | None:
     return token_type.strip()
 
 
-def _drop_oauth_refresh_token(cache_key: str, persistent: bool = False) -> None:
+def _drop_oauth_refresh_token(
+    cache_key: str,
+    persistent: bool = False,
+    cache_settings: OAuthCacheSettings | None = None,
+) -> None:
     """Remove cached refresh token to force a one-time primary grant fallback."""
     cached_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
     if not isinstance(cached_entry, dict):
@@ -4643,8 +4871,12 @@ def _drop_oauth_refresh_token(cache_key: str, persistent: bool = False) -> None:
     cached_entry.pop("refresh_token", None)
     if not cached_entry:
         _OAUTH_TOKEN_CACHE.pop(cache_key, None)
-    if persistent:
-        _persist_oauth_cache_entry(cache_key)
+    should_persist = cache_settings.persistent if cache_settings is not None else persistent
+    if should_persist:
+        if cache_settings is None:
+            _persist_oauth_cache_entry(cache_key)
+        else:
+            _persist_oauth_cache_entry(cache_key, cache_settings=cache_settings)
 
 
 def _store_oauth_token_cache(
@@ -4654,6 +4886,7 @@ def _store_oauth_token_cache(
     refresh_token: str | None = None,
     token_type: str | None = None,
     persistent: bool = False,
+    cache_settings: OAuthCacheSettings | None = None,
 ) -> None:
     """Store token in in-memory cache with optional TTL and safety skew."""
     expires_at: float | None = None
@@ -4671,8 +4904,12 @@ def _store_oauth_token_cache(
         entry["token_type"] = token_type.strip()
 
     _OAUTH_TOKEN_CACHE[cache_key] = entry
-    if persistent:
-        _persist_oauth_cache_entry(cache_key)
+    should_persist = cache_settings.persistent if cache_settings is not None else persistent
+    if should_persist:
+        if cache_settings is None:
+            _persist_oauth_cache_entry(cache_key)
+        else:
+            _persist_oauth_cache_entry(cache_key, cache_settings=cache_settings)
 
 
 def _clear_oauth_token_cache() -> None:

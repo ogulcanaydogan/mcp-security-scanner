@@ -7,12 +7,13 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8E)
+## Current Scope (Sprint 1-8F)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
+- Advanced persistent OAuth cache backend v1 (`auth.cache.backend=aws_secrets_manager`) for config-based OAuth flows
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
@@ -133,9 +134,27 @@ Supported entry styles:
         "mtls_ca_bundle_file": "/etc/mcp/oauth-ca.pem",
         "scope": "mcp.read",
         "audience": "mcp-security-scanner",
-        "cache": {"persistent": true, "namespace": "prod-security"},
+        "cache": {"persistent": true, "namespace": "prod-security", "backend": "local"},
         "header": "Authorization",
         "scheme": "Bearer"
+      }
+    },
+    "remote-oauth-aws-cache": {
+      "transport": "sse",
+      "url": "https://example.com/sse",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "aws_secrets_manager",
+          "aws_secret_id": "mcp-security-scanner/oauth-cache-prod",
+          "aws_region": "eu-west-1",
+          "aws_endpoint_url": "https://secretsmanager.eu-west-1.amazonaws.com"
+        }
       }
     },
     "remote-device-oauth": {
@@ -205,23 +224,30 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
+  - `backend` (string, default `"local"`): `local` or `aws_secrets_manager`
+  - `aws_secret_id` (required when `backend=aws_secrets_manager`)
+  - optional `aws_region`, `aws_endpoint_url` for AWS client routing
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
   - refresh grant
   - primary grant
 - persistent cache details (opt-in):
-  - encrypted file: `~/.cache/mcp-security-scanner/oauth-cache-v1.json.enc`
-  - lock file: `~/.cache/mcp-security-scanner/oauth-cache-v1.lock` (exclusive lock with retry; timeout falls back to in-memory/live token flow)
-  - encrypted payload envelope: `schema_version`, `key_id`, `updated_at`, `entries` (v2)
-  - encryption key lookup: OS keyring (`service="mcp-security-scanner"`, `username="oauth-cache-key-v1"`) then fallback key file `~/.config/mcp-security-scanner/cache.key`
-  - key metadata stores `active` + `historical` key entries (`key_id` + `fernet_key`); legacy raw key format remains readable
-  - decrypt recovery order: payload `key_id` match when possible, then active key, then historical keys (deterministic order)
-  - historical key retention is bounded (max 3); `cache rotate` promotes current active key into historical set
-  - fallback key file is created with `0600` permissions
-  - cache/key file mode hardening uses best-effort `0600`
-  - corrupt or undecryptable cache payloads are quarantined as `oauth-cache-v1.json.enc.corrupt.<timestamp>`
-  - cache read/decrypt/write failures do not stop scan; scanner falls back to live token flow
+  - `backend=local`:
+    - encrypted file: `~/.cache/mcp-security-scanner/oauth-cache-v1.json.enc`
+    - lock file: `~/.cache/mcp-security-scanner/oauth-cache-v1.lock` (exclusive lock with retry; timeout falls back to in-memory/live token flow)
+    - encrypted payload envelope: `schema_version`, `key_id`, `updated_at`, `entries` (v2)
+    - encryption key lookup: OS keyring (`service="mcp-security-scanner"`, `username="oauth-cache-key-v1"`) then fallback key file `~/.config/mcp-security-scanner/cache.key`
+    - key metadata stores `active` + `historical` key entries (`key_id` + `fernet_key`); legacy raw key format remains readable
+    - decrypt recovery order: payload `key_id` match when possible, then active key, then historical keys (deterministic order)
+    - historical key retention is bounded (max 3); `cache rotate` promotes current active key into historical set
+    - fallback key file is created with `0600` permissions
+    - cache/key file mode hardening uses best-effort `0600`
+    - corrupt or undecryptable cache payloads are quarantined as `oauth-cache-v1.json.enc.corrupt.<timestamp>`
+  - `backend=aws_secrets_manager`:
+    - cache payload is stored as a single JSON envelope in the configured AWS secret (`auth.cache.aws_secret_id`)
+    - optional `aws_region` and `aws_endpoint_url` tune client resolution
+  - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
 - `oauth_auth_code_pkce` uses local callback + PKCE (`S256`), prints authorization URL, and supports refresh-token reuse on expiry
@@ -307,4 +333,4 @@ Current quality gate:
 ## Roadmap (Post Sprint 8E)
 
 Deferred items:
-- advanced persistent secret-store backends beyond keyring/fallback file model
+- additional persistent secret-store providers beyond `local` and `aws_secrets_manager`

@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8E Implementation State
+# Setup Complete — Sprint 1-8F Implementation State
 
-This file records the actual implementation status after Sprint 8E.
+This file records the actual implementation status after Sprint 8F.
 
 ## Completed Work
 
@@ -186,9 +186,11 @@ This file records the actual implementation status after Sprint 8E.
 - OAuth auth types now support optional `auth.cache`:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
+  - `backend` (string, default `"local"`)
+  - for AWS backend: `aws_secret_id` (required), optional `aws_region`, `aws_endpoint_url`
 - `auth.cache` is OAuth-only (`oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
   - invalid shape/field usage returns `auth_config_error`
-- optional persistent cache implementation:
+- optional persistent cache implementation (`backend=local`):
   - encrypted cache file: `~/.cache/mcp-security-scanner/oauth-cache-v1.json.enc`
   - key resolution order:
     - keyring (`service="mcp-security-scanner"`, `username="oauth-cache-key-v1"`)
@@ -389,6 +391,22 @@ This file records the actual implementation status after Sprint 8E.
   - analyzer remains opt-in through `--dynamic`
   - default scan behavior unchanged when `--dynamic` is not provided
 
+### Sprint 8F (Publish Unblock Follow-up + Advanced Secret-Store Backend v1)
+
+- publish unblock follow-up executed from repository side:
+  - tag publish workflow rerun attempted and validated against current workflow claims
+  - remaining Trusted Publisher mismatch is external (PyPI project-side mapping) and requires owner-side update
+- OAuth persistent cache backend abstraction expanded:
+  - `auth.cache.backend` supports:
+    - `local` (existing encrypted file + keyring/fallback key flow)
+    - `aws_secrets_manager` (new v1 backend)
+  - AWS backend reads/writes cache envelope as a single secret document (`schema_version`, `updated_at`, `entries`)
+  - `aws_secret_id` is required when backend is AWS; optional `aws_region` and `aws_endpoint_url` are supported
+  - non-fatal provider behavior preserved: AWS read/write/parse failures bypass persistent layer and continue live token flow
+- lookup/write order preserved for OAuth cache-enabled flows:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` behavior remains local-backend scoped and unchanged
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -401,7 +419,7 @@ This file records the actual implementation status after Sprint 8E.
 
 ## Current Non-Goals / Deferred
 
-- advanced persistent secret-store backends beyond keyring/fallback file model
+- additional persistent secret-store providers beyond `local` and `aws_secrets_manager`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

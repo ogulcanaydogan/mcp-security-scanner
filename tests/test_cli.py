@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -2483,6 +2484,230 @@ class TestCLIHelpers:
         assert first_connector["headers"]["Authorization"] == "Bearer token-1"
         assert second_connector["headers"]["Authorization"] == "Bearer token-2"
         assert call_count["value"] == 2
+
+    def test_coerce_oauth_cache_settings_accepts_aws_backend(self):
+        """OAuth cache settings should accept aws_secrets_manager backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "aws_secrets_manager",
+                    "aws_secret_id": "mcp-security/oauth-cache",
+                    "aws_region": "eu-west-1",
+                    "aws_endpoint_url": "https://secretsmanager.eu-west-1.amazonaws.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "aws_secrets_manager"
+        assert settings.aws_secret_id == "mcp-security/oauth-cache"
+        assert settings.aws_region == "eu-west-1"
+        assert settings.aws_endpoint_url == "https://secretsmanager.eu-west-1.amazonaws.com"
+
+    @pytest.mark.parametrize(
+        ("cache_value", "expected_error"),
+        [
+            (
+                {"backend": "invalid"},
+                "auth.cache.backend must be one of",
+            ),
+            (
+                {"backend": "aws_secrets_manager"},
+                "auth.cache.aws_secret_id is required",
+            ),
+            (
+                {"backend": "local", "aws_secret_id": "mcp-security/oauth-cache"},
+                "only supported when auth.cache.backend='aws_secrets_manager'",
+            ),
+            (
+                {
+                    "backend": "aws_secrets_manager",
+                    "aws_secret_id": "mcp-security/oauth-cache",
+                    "aws_endpoint_url": "ftp://invalid",
+                },
+                "auth.cache.aws_endpoint_url must be a valid http/https URL.",
+            ),
+        ],
+    )
+    def test_coerce_oauth_cache_settings_rejects_invalid_aws_shapes(
+        self, cache_value: dict[str, object], expected_error: str
+    ):
+        """OAuth cache settings should validate backend-specific shapes deterministically."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={"cache": cache_value},
+        )
+        assert settings is None
+        assert error is not None
+        assert expected_error in error
+
+    def test_aws_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """AWS Secrets Manager backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-aws")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-aws")
+
+        class ResourceNotFoundError(Exception):
+            def __init__(self) -> None:
+                self.response = {"Error": {"Code": "ResourceNotFoundException"}}
+                super().__init__("not found")
+
+        class FakeSecretsManagerClient:
+            secret_payload: ClassVar[str | None] = None
+            client_kwargs: ClassVar[list[dict[str, str]]] = []
+
+            def __init__(self, **kwargs: str) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get_secret_value(self, **kwargs: str) -> dict[str, object]:
+                assert kwargs["SecretId"] == "mcp-security/oauth-cache"
+                if self.__class__.secret_payload is None:
+                    raise ResourceNotFoundError()
+                return {"SecretString": self.__class__.secret_payload}
+
+            def update_secret(self, **kwargs: str) -> dict[str, object]:
+                assert kwargs["SecretId"] == "mcp-security/oauth-cache"
+                if self.__class__.secret_payload is None:
+                    raise ResourceNotFoundError()
+                self.__class__.secret_payload = kwargs["SecretString"]
+                return {}
+
+            def create_secret(self, **kwargs: str) -> dict[str, object]:
+                assert kwargs["Name"] == "mcp-security/oauth-cache"
+                self.__class__.secret_payload = kwargs["SecretString"]
+                return {}
+
+        class FakeBoto3Module:
+            @staticmethod
+            def client(service_name: str, **kwargs: str) -> FakeSecretsManagerClient:
+                assert service_name == "secretsmanager"
+                return FakeSecretsManagerClient(**kwargs)
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "boto3":
+                return FakeBoto3Module
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-aws-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "aws-prod",
+                    "backend": "aws_secrets_manager",
+                    "aws_secret_id": "mcp-security/oauth-cache",
+                    "aws_region": "eu-west-1",
+                    "aws_endpoint_url": "https://secretsmanager.eu-west-1.amazonaws.com",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_aws_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-aws-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_aws_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-aws-token"
+        assert call_count["value"] == 1
+
+        assert FakeSecretsManagerClient.secret_payload is not None
+        persisted_payload = json.loads(FakeSecretsManagerClient.secret_payload)
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert any(
+            "region_name" in item and item["region_name"] == "eu-west-1"
+            for item in FakeSecretsManagerClient.client_kwargs
+        )
+        assert any(
+            "endpoint_url" in item and item["endpoint_url"] == "https://secretsmanager.eu-west-1.amazonaws.com"
+            for item in FakeSecretsManagerClient.client_kwargs
+        )
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_aws_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """AWS backend cache load should bypass provider errors without raising."""
+
+        class AccessDeniedError(Exception):
+            def __init__(self) -> None:
+                self.response = {"Error": {"Code": "AccessDeniedException"}}
+                super().__init__("denied")
+
+        class FakeSecretsManagerClient:
+            def get_secret_value(self, **kwargs: str) -> dict[str, object]:
+                del kwargs
+                raise AccessDeniedError()
+
+        class FakeBoto3Module:
+            @staticmethod
+            def client(service_name: str, **kwargs: str) -> FakeSecretsManagerClient:
+                del kwargs
+                assert service_name == "secretsmanager"
+                return FakeSecretsManagerClient()
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "boto3":
+                return FakeBoto3Module
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="aws-prod",
+                backend="aws_secrets_manager",
+                aws_secret_id="mcp-security/oauth-cache",
+            )
+        )
+        assert entries == {}
 
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
