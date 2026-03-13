@@ -153,8 +153,11 @@ class DynamicAnalyzer(BaseAnalyzer):
 
     def _build_probe_payloads(self: "DynamicAnalyzer", input_schema: dict[str, Any]) -> list[dict[str, Any]]:
         """Build deterministic low-risk probe payloads from JSON schema."""
-        base_payload = self._payload_from_schema(input_schema)
+        base_payload = self._payload_from_schema(input_schema, semantic_strings=False)
         probes = [base_payload]
+        semantic_payload = self._payload_from_schema(input_schema, semantic_strings=True)
+        if semantic_payload != base_payload:
+            probes.append(semantic_payload)
         if (
             "probe" not in base_payload
             and len(base_payload) < self._policy.max_payload_fields
@@ -163,9 +166,21 @@ class DynamicAnalyzer(BaseAnalyzer):
             probe_payload = dict(base_payload)
             probe_payload["probe"] = "mcp-security-scanner"
             probes.append(probe_payload)
-        return probes[: self._policy.max_probe_payloads]
+        unique_probes: list[dict[str, Any]] = []
+        seen_probe_signatures: set[str] = set()
+        for probe_payload in probes:
+            signature = json.dumps(probe_payload, ensure_ascii=False, sort_keys=True)
+            if signature in seen_probe_signatures:
+                continue
+            seen_probe_signatures.add(signature)
+            unique_probes.append(probe_payload)
+        return unique_probes[: self._policy.max_probe_payloads]
 
-    def _payload_from_schema(self: "DynamicAnalyzer", input_schema: dict[str, Any]) -> dict[str, Any]:
+    def _payload_from_schema(
+        self: "DynamicAnalyzer",
+        input_schema: dict[str, Any],
+        semantic_strings: bool,
+    ) -> dict[str, Any]:
         """Build a bounded payload from tool schema fields."""
         properties = input_schema.get("properties")
         if not isinstance(properties, dict) or not properties:
@@ -185,18 +200,26 @@ class DynamicAnalyzer(BaseAnalyzer):
         payload: dict[str, Any] = {}
         for key in prioritized[: self._policy.max_payload_fields]:
             value_schema = properties.get(key)
-            payload[key] = self._value_for_schema(value_schema)
+            payload[key] = self._value_for_schema(
+                value_schema,
+                field_name=key,
+                semantic_strings=semantic_strings,
+            )
 
         if not payload:
             payload["probe"] = "mcp-security-scanner"
         return payload
 
     @staticmethod
-    def _value_for_schema(value_schema: Any) -> Any:
+    def _value_for_schema(value_schema: Any, field_name: str, semantic_strings: bool) -> Any:
         """Generate deterministic safe probe values based on schema type."""
         if isinstance(value_schema, dict):
             schema_type = value_schema.get("type")
             if schema_type == "string":
+                if semantic_strings:
+                    semantic_value = DynamicAnalyzer._semantic_string_for_field(field_name)
+                    if semantic_value is not None:
+                        return semantic_value
                 return "security_probe"
             if schema_type in {"number", "integer"}:
                 return 0
@@ -207,6 +230,22 @@ class DynamicAnalyzer(BaseAnalyzer):
             if schema_type == "object":
                 return {}
         return "security_probe"
+
+    @staticmethod
+    def _semantic_string_for_field(field_name: str) -> str | None:
+        """Return low-risk semantic probe values for known field-name patterns."""
+        lowered = field_name.lower()
+        if any(token in lowered for token in ("command", "cmd", "shell")):
+            return "echo security_probe"
+        if any(token in lowered for token in ("sql", "statement")):
+            return "SELECT 1"
+        if any(token in lowered for token in ("url", "uri", "endpoint", "webhook", "callback")):
+            return "https://example.com/health"
+        if any(token in lowered for token in ("path", "file", "dir", "directory")):
+            return "./README.md"
+        if any(token in lowered for token in ("query", "search", "prompt", "message", "text")):
+            return "status check"
+        return None
 
     @staticmethod
     def _normalize_result(result: Any) -> str:
@@ -228,8 +267,6 @@ class DynamicAnalyzer(BaseAnalyzer):
     @staticmethod
     def _is_benign_sensitive_context(text: str, signal_name: str) -> bool:
         """Suppress low-confidence credential keywords in clearly benign placeholder context."""
-        if signal_name != "credential_assignment":
-            return False
         lowered = text.lower()
         benign_markers = (
             "redacted",
@@ -238,11 +275,18 @@ class DynamicAnalyzer(BaseAnalyzer):
             "example",
             "sample",
             "dummy",
+            "mock",
+            "fake",
+            "test fixture",
+            "not a real",
             "<token>",
             "<api_key>",
+            "example.com",
             "******",
         )
-        return any(marker in lowered for marker in benign_markers)
+        if signal_name in {"credential_assignment", "bearer_token_header", "passwd_dump"}:
+            return any(marker in lowered for marker in benign_markers)
+        return False
 
     @staticmethod
     def _is_benign_command_context(text: str) -> bool:
@@ -250,11 +294,17 @@ class DynamicAnalyzer(BaseAnalyzer):
         lowered = text.lower()
         benign_markers = (
             "not executed",
+            "would execute",
+            "not run",
             "execution blocked",
             "blocked by policy",
             "dry run",
             "simulation",
             "example output",
+            "sample output",
+            "documentation",
+            "doc example",
+            "mock",
             "forbidden",
             "permission denied",
             "disallowed",

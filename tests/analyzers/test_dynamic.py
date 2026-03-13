@@ -130,6 +130,52 @@ class TestDynamicAnalyzer:
 
         assert payloads == [{"zeta": False, "beta": "security_probe"}]
 
+    def test_probe_payload_builder_adds_semantic_variants(self):
+        """Semantic field-name probes should produce deterministic additional payloads."""
+        analyzer = DynamicAnalyzer(policy=DynamicProbePolicy(max_payload_fields=4, max_probe_payloads=3))
+        payloads = analyzer._build_probe_payloads(
+            {
+                "type": "object",
+                "required": ["url", "query", "command"],
+                "properties": {
+                    "command": {"type": "string"},
+                    "query": {"type": "string"},
+                    "url": {"type": "string"},
+                },
+            }
+        )
+
+        assert payloads[0] == {
+            "url": "security_probe",
+            "query": "security_probe",
+            "command": "security_probe",
+        }
+        assert payloads[1] == {
+            "url": "https://example.com/health",
+            "query": "status check",
+            "command": "echo security_probe",
+        }
+        assert payloads[2]["probe"] == "mcp-security-scanner"
+
+    def test_probe_payload_builder_semantic_variants_respect_probe_limit(self):
+        """Semantic probe variants must still obey configured max probe payload count."""
+        analyzer = DynamicAnalyzer(policy=DynamicProbePolicy(max_payload_fields=4, max_probe_payloads=2))
+        payloads = analyzer._build_probe_payloads(
+            {
+                "type": "object",
+                "required": ["url", "query", "command"],
+                "properties": {
+                    "command": {"type": "string"},
+                    "query": {"type": "string"},
+                    "url": {"type": "string"},
+                },
+            }
+        )
+
+        assert len(payloads) == 2
+        assert payloads[0]["url"] == "security_probe"
+        assert payloads[1]["url"] == "https://example.com/health"
+
     @pytest.mark.asyncio
     async def test_sensitive_placeholder_output_is_suppressed(self):
         """Placeholder secret text should not raise sensitive-output finding."""
@@ -148,6 +194,23 @@ class TestDynamicAnalyzer:
         assert findings == []
 
     @pytest.mark.asyncio
+    async def test_sensitive_bearer_placeholder_output_is_suppressed(self):
+        """Placeholder bearer token snippets in example context should be suppressed."""
+        analyzer = DynamicAnalyzer()
+        tool = ToolDefinition(
+            name="bearer_example_tool",
+            description="Returns example auth header output.",
+            input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+        )
+
+        async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
+            del tool_name, args
+            return "Authorization: Bearer <token> (example output)"
+
+        findings = await analyzer.analyze(tools=[tool], execute_tool=fake_execute)
+        assert findings == []
+
+    @pytest.mark.asyncio
     async def test_command_signal_in_blocked_context_is_suppressed(self):
         """Blocked/simulated execution text should not raise command-execution finding."""
         analyzer = DynamicAnalyzer()
@@ -160,6 +223,23 @@ class TestDynamicAnalyzer:
         async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
             del tool_name, args
             return "uid=0(root) gid=0(root) execution blocked by policy"
+
+        findings = await analyzer.analyze(tools=[tool], execute_tool=fake_execute)
+        assert findings == []
+
+    @pytest.mark.asyncio
+    async def test_command_signal_in_documentation_context_is_suppressed(self):
+        """Documentation/sample command output should be suppressed as benign context."""
+        analyzer = DynamicAnalyzer()
+        tool = ToolDefinition(
+            name="docs_exec_tool",
+            description="Returns documentation snippets.",
+            input_schema={"type": "object", "properties": {"command": {"type": "string"}}},
+        )
+
+        async def fake_execute(tool_name: str, args: dict[str, object]) -> str:
+            del tool_name, args
+            return "uid=0(root) gid=0(root) documentation example output only"
 
         findings = await analyzer.analyze(tools=[tool], execute_tool=fake_execute)
         assert findings == []

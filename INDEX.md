@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8D scope.
+Current index for the implemented Sprint 1-8E scope.
 
 ## Status Snapshot
 
@@ -26,6 +26,7 @@ Current index for the implemented Sprint 1-8D scope.
 - Sprint 8B: done (Dynamic analyzer hardening: bounded runtime policy, deterministic outputs, false-positive suppression)
 - Sprint 8C: done (URL positional auth/mTLS UX for `server`, `baseline`, `compare`)
 - Sprint 8D: done (release stabilization and PyPI package identity conflict fix)
+- Sprint 8E: done (dynamic analyzer expansion with semantic probe variants and stronger benign-context suppression)
 
 ## Top-Level Docs
 
@@ -122,4 +123,3 @@ Coverage threshold is enforced at `>=80%`.
 ## Current Deferred Backlog
 
 - advanced persistent secret-store options beyond keyring/fallback file model
-- dynamic analyzer probe coverage expansion beyond current hardened opt-in baseline

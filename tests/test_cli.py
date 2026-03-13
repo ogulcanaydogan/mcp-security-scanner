@@ -887,6 +887,45 @@ class TestCLICommands:
         categories = {finding["category"] for finding in payload["findings"]}
         assert "dynamic_sensitive_output" in categories
 
+    def test_config_dynamic_disabled_by_default(self, monkeypatch, tmp_path: Path):
+        """Config command should keep dynamic analyzer disabled unless --dynamic is passed."""
+        captured: dict[str, object] = {}
+
+        async def fake_scan_entries(
+            server_entries: dict[str, object],
+            timeout: int,
+            dynamic_enabled: bool = False,
+        ) -> list[Finding]:
+            del server_entries, timeout
+            captured["dynamic_enabled"] = dynamic_enabled
+            return []
+
+        monkeypatch.setattr(cli_module, "_scan_config_entries", fake_scan_entries)
+
+        runner = CliRunner()
+        config_path = tmp_path / "claude_desktop_config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "dynamic_server": {
+                            "transport": "stdio",
+                            "command": "python -m fake_server",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            main,
+            ["config", str(config_path), "--format", "json", "--timeout", "1"],
+        )
+
+        assert result.exit_code == 0
+        assert captured["dynamic_enabled"] is False
+
     def test_config_auth_error_emits_finding_and_continues(self, monkeypatch, tmp_path: Path):
         """Auth resolution failures should produce finding and continue scanning other servers."""
         captured: list[dict[str, object]] = []

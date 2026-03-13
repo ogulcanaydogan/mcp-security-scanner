@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8D Implementation State
+# Setup Complete — Sprint 1-8E Implementation State
 
-This file records the actual implementation status after Sprint 8D.
+This file records the actual implementation status after Sprint 8E.
 
 ## Completed Work
 
@@ -371,6 +371,24 @@ This file records the actual implementation status after Sprint 8D.
 - docs synchronized for installation/release messaging:
   - README install guidance now includes `pip install ogulcanaydogan-mcp-security-scanner`
 
+### Sprint 8E (Dynamic Analyzer Expansion, Opt-In)
+
+- dynamic probe generation extended with semantic field-name variants while preserving bounded policy limits:
+  - URL/endpoint-like fields -> deterministic safe URL probe
+  - path/file-like fields -> deterministic safe file/path probe
+  - query/message-like fields -> deterministic safe text probe
+  - command/shell and SQL-like fields -> deterministic low-risk command/query probes
+- dynamic findings contract preserved (no new categories):
+  - `dynamic_tool_execution_error`
+  - `dynamic_sensitive_output`
+  - `dynamic_command_execution_signal`
+- benign-context suppression expanded to reduce false positives in runtime outputs:
+  - placeholder/example/mock/redacted sensitive text contexts
+  - documentation/sample/dry-run/blocked command-output contexts
+- dynamic rollout unchanged:
+  - analyzer remains opt-in through `--dynamic`
+  - default scan behavior unchanged when `--dynamic` is not provided
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -384,7 +402,6 @@ This file records the actual implementation status after Sprint 8D.
 ## Current Non-Goals / Deferred
 
 - advanced persistent secret-store backends beyond keyring/fallback file model
-- dynamic analyzer expansion beyond current hardened opt-in baseline
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
