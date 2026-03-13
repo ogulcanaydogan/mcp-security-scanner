@@ -11,6 +11,7 @@ import os
 import re
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -98,6 +99,15 @@ class ServerCapabilities:
     metadata: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class NetworkMTLSConfig:
+    """Top-level transport mTLS config for network transports."""
+
+    cert_file: str
+    key_file: str
+    ca_bundle_file: str | None = None
+
+
 class MCPServerConnector:
     """
     Manages connections to MCP servers and capability discovery.
@@ -140,6 +150,9 @@ class MCPServerConnector:
                 sse/streamable-http keys:
                     - url: http/https endpoint
                     - headers: optional HTTP headers
+                    - mtls_cert_file: optional client certificate path
+                    - mtls_key_file: optional client private key path
+                    - mtls_ca_bundle_file: optional CA bundle path
                 Optional keys:
                     - timeout: request timeout in seconds (default 30)
 
@@ -234,22 +247,47 @@ class MCPServerConnector:
             if not isinstance(raw_headers, dict):
                 raise ValueError(f"config.headers must be an object for {transport} transport.")
             headers = {str(key): str(value) for key, value in raw_headers.items()}
+        mtls_config = self._resolve_network_mtls_config(config)
 
         self._exit_stack = AsyncExitStack()
         try:
             if transport == "sse":
+
+                def _httpx_client_factory(
+                    headers: dict[str, str] | None = None,
+                    timeout: httpx.Timeout | None = None,
+                    auth: httpx.Auth | None = None,
+                ) -> httpx.AsyncClient:
+                    client_kwargs: dict[str, Any] = {
+                        "headers": headers,
+                        "timeout": timeout,
+                        "auth": auth,
+                        "follow_redirects": True,
+                    }
+                    if mtls_config is not None:
+                        client_kwargs["cert"] = (mtls_config.cert_file, mtls_config.key_file)
+                        if mtls_config.ca_bundle_file is not None:
+                            client_kwargs["verify"] = mtls_config.ca_bundle_file
+                    return httpx.AsyncClient(**client_kwargs)
+
                 transport_context = sse_client(
                     url=url_value,
                     headers=headers,
                     timeout=timeout,
                     sse_read_timeout=timeout,
+                    httpx_client_factory=_httpx_client_factory,
                 )
             else:
-                http_client = httpx.AsyncClient(
-                    headers=headers,
-                    timeout=httpx.Timeout(timeout, read=timeout),
-                    follow_redirects=True,
-                )
+                client_kwargs: dict[str, Any] = {
+                    "headers": headers,
+                    "timeout": httpx.Timeout(timeout, read=timeout),
+                    "follow_redirects": True,
+                }
+                if mtls_config is not None:
+                    client_kwargs["cert"] = (mtls_config.cert_file, mtls_config.key_file)
+                    if mtls_config.ca_bundle_file is not None:
+                        client_kwargs["verify"] = mtls_config.ca_bundle_file
+                http_client = httpx.AsyncClient(**client_kwargs)
                 await self._exit_stack.enter_async_context(http_client)
                 transport_context = streamable_http_client(
                     url=url_value,
@@ -626,6 +664,36 @@ class MCPServerConnector:
             return transport
 
         return None
+
+    @staticmethod
+    def _resolve_network_mtls_config(config: dict[str, Any]) -> NetworkMTLSConfig | None:
+        """Validate optional top-level mTLS fields for network transports."""
+        cert_file = config.get("mtls_cert_file")
+        key_file = config.get("mtls_key_file")
+        ca_bundle_file = config.get("mtls_ca_bundle_file")
+
+        def _coerce_path(value: Any, field_name: str) -> str | None:
+            if value is None:
+                return None
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"config.{field_name} must be a non-empty string when provided.")
+            return value.strip()
+
+        cert_path = _coerce_path(cert_file, "mtls_cert_file")
+        key_path = _coerce_path(key_file, "mtls_key_file")
+        ca_path = _coerce_path(ca_bundle_file, "mtls_ca_bundle_file")
+
+        if not any(value is not None for value in (cert_path, key_path, ca_path)):
+            return None
+        if cert_path is None or key_path is None:
+            raise ValueError("config.mtls_cert_file and config.mtls_key_file must be provided together.")
+        if not Path(cert_path).is_file():
+            raise ValueError("config.mtls_cert_file path does not exist or is not a file.")
+        if not Path(key_path).is_file():
+            raise ValueError("config.mtls_key_file path does not exist or is not a file.")
+        if ca_path is not None and not Path(ca_path).is_file():
+            raise ValueError("config.mtls_ca_bundle_file path does not exist or is not a file.")
+        return NetworkMTLSConfig(cert_file=cert_path, key_file=key_path, ca_bundle_file=ca_path)
 
     @staticmethod
     def _extract_resource_content(result: dict[str, Any], uri: str) -> str | None:

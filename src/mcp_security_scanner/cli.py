@@ -31,6 +31,7 @@ from rich.console import Console
 import mcp_security_scanner
 from mcp_security_scanner.analyzers.base import Finding, Severity
 from mcp_security_scanner.analyzers.cross_tool import CrossToolAnalyzer
+from mcp_security_scanner.analyzers.dynamic import DynamicAnalyzer
 from mcp_security_scanner.analyzers.escalation import EscalationAnalyzer
 from mcp_security_scanner.analyzers.injection import PromptInjectionAnalyzer
 from mcp_security_scanner.analyzers.poisoning import ToolPoisoningAnalyzer
@@ -104,8 +105,12 @@ class OAuthMTLSConfig:
 class OAuthPrivateKeyJWTSigner:
     """Private-key material used to sign OAuth private_key_jwt client assertions."""
 
-    private_key_pem: str
+    private_key_pem: str | None = None
     kid: str | None = None
+    signing_source: str = "pem"
+    kms_key_id: str | None = None
+    kms_region: str | None = None
+    kms_endpoint_url: str | None = None
 
 
 @click.group()
@@ -178,6 +183,12 @@ def cache_rotate() -> None:
     is_flag=True,
     help="Enable debug output.",
 )
+@click.option(
+    "--dynamic",
+    "dynamic_enabled",
+    is_flag=True,
+    help="Enable opt-in dynamic runtime probes against tools.",
+)
 def server(
     server_target: str,
     timeout: int,
@@ -185,6 +196,7 @@ def server(
     output_path: str | None,
     severity: str,
     verbose: bool,
+    dynamic_enabled: bool,
 ) -> None:
     """
     Scan a single MCP server.
@@ -203,6 +215,7 @@ def server(
     if verbose:
         console.print(f"[debug]Scanning server: {server_target}[/debug]")
         console.print(f"[debug]Timeout: {timeout}s, Format: {output_format}, Severity: {severity}[/debug]")
+        console.print(f"[debug]Dynamic probes enabled: {dynamic_enabled}[/debug]")
 
     threshold = _parse_severity_threshold(severity)
 
@@ -212,6 +225,7 @@ def server(
                 server_target=server_target,
                 timeout=timeout,
                 threshold=threshold,
+                dynamic_enabled=dynamic_enabled,
             )
         )
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
@@ -264,6 +278,12 @@ def server(
     is_flag=True,
     help="Enable debug output.",
 )
+@click.option(
+    "--dynamic",
+    "dynamic_enabled",
+    is_flag=True,
+    help="Enable opt-in dynamic runtime probes against tools.",
+)
 def config(
     config_file: str,
     timeout: int,
@@ -271,6 +291,7 @@ def config(
     output_path: str | None,
     severity: str,
     verbose: bool,
+    dynamic_enabled: bool,
 ) -> None:
     """
     Scan all MCP servers configured in Claude Desktop config.
@@ -288,6 +309,7 @@ def config(
 
     if verbose:
         console.print(f"[debug]Config file: {config_file}[/debug]")
+        console.print(f"[debug]Dynamic probes enabled: {dynamic_enabled}[/debug]")
 
     try:
         config_data = json.loads(Path(config_file).read_text(encoding="utf-8"))
@@ -300,7 +322,7 @@ def config(
 
     _clear_oauth_token_cache()
     try:
-        findings = asyncio.run(_scan_config_entries(server_entries, timeout=timeout))
+        findings = asyncio.run(_scan_config_entries(server_entries, timeout=timeout, dynamic_enabled=dynamic_enabled))
     except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
         console.print(f"[red]Config scan failed:[/red] {exc}")
         sys.exit(2)
@@ -492,12 +514,13 @@ async def _scan_single_server(
     server_target: str,
     timeout: int,
     threshold: Severity | None,
+    dynamic_enabled: bool = False,
 ) -> tuple[ScanReport, list[Finding]]:
     """Run discovery + MVP analyzers against one server target."""
     server_name = _derive_server_name(server_target)
     connector_configs = _build_target_connector_configs(server_target, timeout)
 
-    findings = await _scan_server_findings(server_name, connector_configs)
+    findings = await _scan_server_findings(server_name, connector_configs, dynamic_enabled=dynamic_enabled)
     filtered_findings = _filter_findings(findings, threshold)
     report = ScanReport(
         scanner_version=mcp_security_scanner.__version__,
@@ -510,6 +533,7 @@ async def _scan_single_server(
 async def _scan_config_entries(
     server_entries: dict[str, Any],
     timeout: int,
+    dynamic_enabled: bool = False,
 ) -> list[Finding]:
     """Scan all entries under mcpServers and return aggregate findings."""
     findings: list[Finding] = []
@@ -529,17 +553,47 @@ async def _scan_config_entries(
         connector_configs = [connector_config]
 
         try:
-            findings.extend(await _scan_server_findings(server_name, connector_configs))
+            findings.extend(
+                await _scan_server_findings(server_name, connector_configs, dynamic_enabled=dynamic_enabled)
+            )
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
             findings.append(_build_scan_failure_finding(server_name, raw_server_config, exc))
 
     return findings
 
 
-async def _scan_server_findings(server_name: str, connector_configs: list[dict[str, Any]]) -> list[Finding]:
-    """Discover capabilities from one server and run MVP analyzers."""
-    capabilities = await _discover_capabilities(server_name, connector_configs)
-    return await _run_mvp_analyzers(capabilities)
+async def _scan_server_findings(
+    server_name: str,
+    connector_configs: list[dict[str, Any]],
+    dynamic_enabled: bool = False,
+) -> list[Finding]:
+    """Discover capabilities from one server and run default analyzers (+ optional dynamic probes)."""
+    if not connector_configs:
+        raise ValueError("At least one connector configuration is required.")
+
+    if not dynamic_enabled:
+        capabilities = await _discover_capabilities(server_name, connector_configs)
+        return await _run_mvp_analyzers(capabilities)
+
+    errors: list[str] = []
+    for connector_config in connector_configs:
+        connector = MCPServerConnector(server_name=server_name)
+        transport = str(connector_config.get("type", "unknown"))
+        try:
+            await connector.connect(connector_config)
+            try:
+                capabilities = await connector.get_server_capabilities()
+                findings = await _run_mvp_analyzers(capabilities)
+                findings.extend(await _run_dynamic_analyzer(capabilities, connector))
+                return findings
+            finally:
+                await connector.disconnect()
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+            errors.append(f"{transport}: {exc}")
+            await connector.disconnect()
+
+    joined_errors = " | ".join(errors)
+    raise ConnectionError(f"Failed to discover capabilities for {server_name}. Attempts: {joined_errors}")
 
 
 async def _discover_capabilities(server_name: str, connector_configs: list[dict[str, Any]]) -> ServerCapabilities:
@@ -587,6 +641,20 @@ async def _run_mvp_analyzers(capabilities: ServerCapabilities) -> list[Finding]:
         )
 
     return findings
+
+
+async def _run_dynamic_analyzer(
+    capabilities: ServerCapabilities,
+    connector: MCPServerConnector,
+) -> list[Finding]:
+    """Run optional dynamic analyzer probes using the active connector session."""
+    analyzer = DynamicAnalyzer()
+    return await analyzer.analyze(
+        tools=capabilities.tools,
+        resources=capabilities.resources,
+        prompts=capabilities.prompts,
+        execute_tool=connector.call_tool,
+    )
 
 
 def _build_target_connector_configs(server_target: str, timeout: int) -> list[dict[str, Any]]:
@@ -722,6 +790,18 @@ def _build_connector_config_from_config_entry(
             if auth_finding is not None:
                 return None, auth_finding
 
+        transport_mtls, transport_mtls_error = _resolve_transport_mtls_config(raw_server_config)
+        if transport_mtls_error is not None:
+            return None, _build_config_entry_finding(
+                server_name=server_name,
+                severity=Severity.HIGH,
+                category="invalid_config_entry",
+                title=f"Invalid mTLS config for {server_name}",
+                description=transport_mtls_error,
+                raw_server_config=raw_server_config,
+                remediation="Set mtls_cert_file and mtls_key_file together; verify optional CA bundle path.",
+            )
+
         connector_config: dict[str, Any] = {
             "type": transport,
             "url": url_value,
@@ -729,6 +809,8 @@ def _build_connector_config_from_config_entry(
         }
         if headers:
             connector_config["headers"] = headers
+        if transport_mtls is not None:
+            connector_config.update(transport_mtls)
 
         return connector_config, None
 
@@ -1752,6 +1834,53 @@ def _validate_optional_auth_text(value: Any, field_name: str) -> tuple[str | Non
     return value.strip(), None
 
 
+def _resolve_transport_mtls_config(raw_server_config: dict[str, Any]) -> tuple[dict[str, str] | None, str | None]:
+    """Resolve optional top-level transport mTLS fields for network connector config."""
+    cert_file = raw_server_config.get("mtls_cert_file")
+    key_file = raw_server_config.get("mtls_key_file")
+    ca_bundle_file = raw_server_config.get("mtls_ca_bundle_file")
+
+    def _normalize_mtls_path(value: Any, field_name: str) -> tuple[str | None, str | None]:
+        if value is None:
+            return None, None
+        if not isinstance(value, str) or not value.strip():
+            return None, f"{field_name} must be a non-empty string when provided."
+        return value.strip(), None
+
+    cert_path, cert_path_error = _normalize_mtls_path(cert_file, "mtls_cert_file")
+    if cert_path_error is not None:
+        return None, cert_path_error
+
+    key_path, key_path_error = _normalize_mtls_path(key_file, "mtls_key_file")
+    if key_path_error is not None:
+        return None, key_path_error
+
+    ca_path, ca_path_error = _normalize_mtls_path(ca_bundle_file, "mtls_ca_bundle_file")
+    if ca_path_error is not None:
+        return None, ca_path_error
+
+    mtls_fields_provided = any(value is not None for value in (cert_path, key_path, ca_path))
+    if not mtls_fields_provided:
+        return None, None
+
+    if cert_path is None or key_path is None:
+        return None, "mtls_cert_file and mtls_key_file must be provided together."
+    if not Path(cert_path).is_file():
+        return None, "mtls_cert_file path does not exist or is not a file."
+    if not Path(key_path).is_file():
+        return None, "mtls_key_file path does not exist or is not a file."
+    if ca_path is not None and not Path(ca_path).is_file():
+        return None, "mtls_ca_bundle_file path does not exist or is not a file."
+
+    mtls_config = {
+        "mtls_cert_file": cert_path,
+        "mtls_key_file": key_path,
+    }
+    if ca_path is not None:
+        mtls_config["mtls_ca_bundle_file"] = ca_path
+    return mtls_config, None
+
+
 def _coerce_redirect_port(value: Any, default: int) -> tuple[int, str | None]:
     """Parse redirect_port as a valid TCP port."""
     if value is None:
@@ -1882,7 +2011,7 @@ def _resolve_oauth_mtls_config(auth_value: dict[str, Any]) -> tuple[OAuthMTLSCon
 def _resolve_oauth_private_key_jwt_signer(
     auth_value: dict[str, Any],
 ) -> tuple[OAuthPrivateKeyJWTSigner | None, str | None, str | None]:
-    """Resolve private_key_jwt signing key from exactly one source (env or file)."""
+    """Resolve private_key_jwt signing source from env, file, or AWS KMS."""
     key_env, key_env_error = _validate_optional_auth_env_name(
         auth_value.get("client_assertion_key_env"), "client_assertion_key_env"
     )
@@ -1895,19 +2024,64 @@ def _resolve_oauth_private_key_jwt_signer(
     if key_file_error is not None:
         return None, None, key_file_error
 
-    if key_env is None and key_file is None:
+    kms_key_id, kms_key_id_error = _validate_optional_auth_text(
+        auth_value.get("client_assertion_kms_key_id"),
+        "client_assertion_kms_key_id",
+    )
+    if kms_key_id_error is not None:
+        return None, None, kms_key_id_error
+
+    kms_region, kms_region_error = _validate_optional_auth_text(
+        auth_value.get("client_assertion_kms_region"),
+        "client_assertion_kms_region",
+    )
+    if kms_region_error is not None:
+        return None, key_env, kms_region_error
+
+    kms_endpoint_url, kms_endpoint_url_error = _validate_optional_auth_text(
+        auth_value.get("client_assertion_kms_endpoint_url"),
+        "client_assertion_kms_endpoint_url",
+    )
+    if kms_endpoint_url_error is not None:
+        return None, key_env, kms_endpoint_url_error
+    if kms_endpoint_url is not None:
+        parsed_kms_endpoint_url = urlparse(kms_endpoint_url)
+        if parsed_kms_endpoint_url.scheme not in {"http", "https"} or not parsed_kms_endpoint_url.netloc:
+            return None, key_env, "auth.client_assertion_kms_endpoint_url must be a valid http/https URL."
+
+    selected_sources = [source for source in (key_env, key_file, kms_key_id) if source is not None]
+    if not selected_sources:
         return (
             None,
             None,
-            "auth.client_assertion_key_env or auth.client_assertion_key_file is required when "
+            "auth.client_assertion_key_env or auth.client_assertion_key_file or auth.client_assertion_kms_key_id is required when "
             "auth.token_endpoint_auth_method='private_key_jwt'.",
         )
-    if key_env is not None and key_file is not None:
-        return None, None, "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file."
+    if len(selected_sources) > 1:
+        return (
+            None,
+            None,
+            "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file or "
+            "auth.client_assertion_kms_key_id.",
+        )
 
     kid, kid_error = _validate_optional_auth_text(auth_value.get("client_assertion_kid"), "client_assertion_kid")
     if kid_error is not None:
         return None, key_env, kid_error
+
+    if kms_key_id is not None:
+        return (
+            OAuthPrivateKeyJWTSigner(
+                private_key_pem=None,
+                kid=kid,
+                signing_source="aws_kms",
+                kms_key_id=kms_key_id,
+                kms_region=kms_region,
+                kms_endpoint_url=kms_endpoint_url,
+            ),
+            key_env,
+            None,
+        )
 
     private_key_pem: str
     if key_env is not None:
@@ -1928,7 +2102,7 @@ def _resolve_oauth_private_key_jwt_signer(
     if key_validate_error is not None:
         return None, key_env, key_validate_error
 
-    return OAuthPrivateKeyJWTSigner(private_key_pem=private_key_pem, kid=kid), key_env, None
+    return OAuthPrivateKeyJWTSigner(private_key_pem=private_key_pem, kid=kid, signing_source="pem"), key_env, None
 
 
 def _validate_private_key_jwt_signing_key(private_key_pem: str) -> str | None:
@@ -1955,20 +2129,6 @@ def _build_private_key_jwt_client_assertion(
     signer: OAuthPrivateKeyJWTSigner,
 ) -> tuple[str | None, str | None]:
     """Build RFC7523 private_key_jwt assertion for token endpoint authentication."""
-    try:
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
-        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
-    except Exception:
-        return None, "cryptography backend is required for private_key_jwt signing."
-
-    try:
-        private_key = serialization.load_pem_private_key(signer.private_key_pem.encode("utf-8"), password=None)
-    except Exception:
-        return None, "Unable to parse auth client assertion private key."
-    if not isinstance(private_key, RSAPrivateKey):
-        return None, "auth private key for private_key_jwt must be an RSA private key."
-
     issued_at = int(time.time())
     header_payload: dict[str, Any] = {"alg": "RS256", "typ": "JWT"}
     if signer.kid is not None:
@@ -1990,12 +2150,72 @@ def _build_private_key_jwt_client_assertion(
         json.dumps(claims_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     )
     signing_input = f"{header_segment}.{claims_segment}".encode("ascii")
-    try:
-        signature = private_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
-    except Exception:
-        return None, "Failed to sign OAuth private_key_jwt client assertion."
+
+    if signer.signing_source == "aws_kms":
+        signature, signature_error = _sign_private_key_jwt_with_aws_kms(signing_input=signing_input, signer=signer)
+        if signature_error is not None:
+            return None, signature_error
+        assert signature is not None
+    else:
+        if signer.private_key_pem is None:
+            return None, "auth private key for private_key_jwt is missing."
+        try:
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
+            from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+        except Exception:
+            return None, "cryptography backend is required for private_key_jwt signing."
+
+        try:
+            private_key = serialization.load_pem_private_key(signer.private_key_pem.encode("utf-8"), password=None)
+        except Exception:
+            return None, "Unable to parse auth client assertion private key."
+        if not isinstance(private_key, RSAPrivateKey):
+            return None, "auth private key for private_key_jwt must be an RSA private key."
+
+        try:
+            signature = private_key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+        except Exception:
+            return None, "Failed to sign OAuth private_key_jwt client assertion."
+
     signature_segment = _base64url_encode(signature)
     return f"{header_segment}.{claims_segment}.{signature_segment}", None
+
+
+def _sign_private_key_jwt_with_aws_kms(
+    signing_input: bytes,
+    signer: OAuthPrivateKeyJWTSigner,
+) -> tuple[bytes | None, str | None]:
+    """Sign private_key_jwt assertion bytes with AWS KMS Sign API."""
+    if signer.kms_key_id is None:
+        return None, "auth.client_assertion_kms_key_id is required for AWS KMS signing."
+
+    try:
+        boto3_module = importlib.import_module("boto3")
+    except Exception:
+        return None, "boto3 is required for auth.token_endpoint_auth_method='private_key_jwt' with KMS signing."
+
+    try:
+        client_kwargs: dict[str, Any] = {}
+        if signer.kms_region is not None:
+            client_kwargs["region_name"] = signer.kms_region
+        if signer.kms_endpoint_url is not None:
+            client_kwargs["endpoint_url"] = signer.kms_endpoint_url
+
+        kms_client = boto3_module.client("kms", **client_kwargs)
+        response = kms_client.sign(
+            KeyId=signer.kms_key_id,
+            Message=signing_input,
+            MessageType="RAW",
+            SigningAlgorithm="RSASSA_PKCS1_V1_5_SHA_256",
+        )
+    except Exception as exc:
+        return None, f"AWS KMS signing failed: {exc.__class__.__name__}."
+
+    signature = response.get("Signature")
+    if not isinstance(signature, (bytes, bytearray)) or not signature:
+        return None, "AWS KMS signing response did not include a valid signature."
+    return bytes(signature), None
 
 
 def _base64url_encode(value: bytes) -> str:

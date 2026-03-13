@@ -12,6 +12,7 @@ Contains specialized analyzers for:
 
 from mcp_security_scanner.analyzers.base import BaseAnalyzer, Finding, Severity
 from mcp_security_scanner.analyzers.cross_tool import AttackChain, CrossToolAnalyzer
+from mcp_security_scanner.analyzers.dynamic import DynamicAnalyzer
 from mcp_security_scanner.analyzers.escalation import CapabilityRiskProfile, EscalationAnalyzer
 from mcp_security_scanner.analyzers.injection import PromptInjectionAnalyzer
 from mcp_security_scanner.analyzers.poisoning import ToolPoisoningAnalyzer
@@ -22,6 +23,7 @@ __all__ = [
     "BaseAnalyzer",
     "CapabilityRiskProfile",
     "CrossToolAnalyzer",
+    "DynamicAnalyzer",
     "EscalationAnalyzer",
     "Finding",
     "PromptInjectionAnalyzer",

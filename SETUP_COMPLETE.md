@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-7A Implementation State
+# Setup Complete — Sprint 1-8A Implementation State
 
-This file records the actual implementation status after Sprint 7A.
+This file records the actual implementation status after Sprint 8A.
 
 ## Completed Work
 
@@ -276,6 +276,52 @@ This file records the actual implementation status after Sprint 7A.
   - finding categories unchanged (`auth_config_error`, `auth_token_error`)
   - `config` continues scanning after per-server auth failures
 
+### Sprint 7B (OAuth Provider Integrations v2, AWS KMS First)
+
+- `private_key_jwt` signer source support expanded with AWS KMS:
+  - `client_assertion_kms_key_id` (new signer source)
+  - optional `client_assertion_kms_region`
+  - optional `client_assertion_kms_endpoint_url`
+- signer source exclusivity hardened for `private_key_jwt`:
+  - exactly one source is required: `client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`
+- JWT assertion signing supports:
+  - PEM key signing (existing)
+  - AWS KMS `Sign` API (`RSASSA_PKCS1_V1_5_SHA_256`) when KMS source is selected
+- token request semantics are unchanged:
+  - `client_assertion_type` + `client_assertion` sent
+  - `client_secret` omitted for `private_key_jwt`
+
+### Sprint 7C (Transport-Level mTLS Propagation, Config-Only)
+
+- network transport entries now support top-level mTLS fields:
+  - `mtls_cert_file` (optional)
+  - `mtls_key_file` (optional)
+  - `mtls_ca_bundle_file` (optional)
+- validation rules implemented for top-level transport mTLS:
+  - `mtls_cert_file` + `mtls_key_file` must be provided together
+  - configured file paths must exist
+  - invalid config produces finding and `config` scan continues
+- discovery connector now applies top-level mTLS to transport HTTP clients:
+  - `sse`: via custom `httpx_client_factory`
+  - `streamable-http`: via configured `httpx.AsyncClient`
+- OAuth token-endpoint mTLS under `auth.mtls_*` is preserved and independent from transport-level mTLS
+
+### Sprint 8A (Dynamic Analyzer v1, Opt-In)
+
+- new `DynamicAnalyzer` added to analyzer package
+- rollout model:
+  - opt-in flag `--dynamic` added to `server` and `config`
+  - default analyzer pipeline is unchanged when flag is not provided
+- dynamic path behavior:
+  - keeps connector session open during analysis
+  - executes bounded safe probes against tool call surfaces
+  - emits dynamic findings through the existing finding/report model
+- dynamic finding categories:
+  - `dynamic_tool_execution_error` (`medium`, `LLM07`)
+  - `dynamic_sensitive_output` (`high`, `LLM06`)
+  - `dynamic_command_execution_signal` (`high`, `LLM07`)
+- report formats and exit-code contract are unchanged
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -288,9 +334,9 @@ This file records the actual implementation status after Sprint 7A.
 
 ## Current Non-Goals / Deferred
 
-- OAuth provider integrations beyond current config-only scope (external KMS-backed signing, transport-level mTLS propagation)
 - advanced persistent secret-store backends beyond keyring/fallback file model
-- further analyzer expansion beyond current core (`StaticAnalyzer`, `PromptInjectionAnalyzer`, `EscalationAnalyzer`, `ToolPoisoningAnalyzer`, `CrossToolAnalyzer`)
+- URL positional auth/mTLS UX (still config-only)
+- dynamic analyzer expansion/hardening beyond current opt-in v1
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-7A scope.
+Current index for the implemented Sprint 1-8A scope.
 
 ## Status Snapshot
 
@@ -20,6 +20,9 @@ Current index for the implemented Sprint 1-7A scope.
 - Sprint 6G: done (persistent cache hardening with strict lock, corrupt recovery, v2 metadata envelope, key rotation command)
 - Sprint 6H: done (OAuth hardening+ with multi-key historical decrypt recovery and shared transient retry policy)
 - Sprint 7A: done (OAuth provider integrations v1: `private_key_jwt` + token endpoint mTLS for config auth)
+- Sprint 7B: done (OAuth provider integrations v2: `private_key_jwt` supports AWS KMS signer source)
+- Sprint 7C: done (transport-level mTLS propagation for `sse` and `streamable-http` config entries)
+- Sprint 8A: done (Dynamic Analyzer v1 added as opt-in via `--dynamic`)
 
 ## Top-Level Docs
 
@@ -47,11 +50,14 @@ Current index for the implemented Sprint 1-7A scope.
     - key metadata handling (`active` + `historical` key sets with `key_id` + `fernet_key`) and `mcp-scan cache rotate`
     - historical key retention (max 3) and deterministic decrypt recovery (`key_id` match -> active -> historical)
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
-  - `private_key_jwt` signer inputs (`client_assertion_key_env` or `client_assertion_key_file`, optional `client_assertion_kid`)
+  - `private_key_jwt` signer inputs with exclusivity (`client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`), optional `client_assertion_kid`
+  - optional AWS KMS signer tuning (`client_assertion_kms_region`, `client_assertion_kms_endpoint_url`)
   - OAuth token endpoint mTLS inputs (`mtls_cert_file`, `mtls_key_file`, optional `mtls_ca_bundle_file`)
+  - transport-level mTLS normalization for config network entries (`mtls_cert_file`, `mtls_key_file`, `mtls_ca_bundle_file`)
   - OAuth Authorization header precedence (`auth.scheme` > `token_type` > `Bearer`)
   - Shared transient retry policy for OAuth token/device/refresh/auth-code endpoint calls (`429/5xx` + timeout/connection errors)
   - Refresh fallback on `invalid_grant`/`invalid_token` with headless-safe behavior
+  - dynamic scan path enabled by `--dynamic` for `server`/`config` with connector-backed tool probes
 
 - `src/mcp_security_scanner/discovery.py`
   - `MCPServerConnector` with `stdio`, `sse`, and `streamable-http` transports
@@ -80,6 +86,8 @@ Current index for the implemented Sprint 1-7A scope.
   - tool metadata poisoning checks (`instruction`, `schema_payload`, `behavior_drift`)
 - `src/mcp_security_scanner/analyzers/cross_tool.py`
   - cross-tool attack-chain checks (`secret_exfiltration`, `file_to_exec`, `sql_to_write`, `prompt_to_exec`)
+- `src/mcp_security_scanner/analyzers/dynamic.py`
+  - opt-in runtime probe checks (`dynamic_tool_execution_error`, `dynamic_sensitive_output`, `dynamic_command_execution_signal`)
 
 ## Tests
 
@@ -88,6 +96,7 @@ Current index for the implemented Sprint 1-7A scope.
 - `tests/test_mutation.py`: baseline-v1, deterministic hash, mutation diff logic
 - `tests/test_reporter.py`: JSON/HTML/SARIF formatting
 - `tests/analyzers/`: analyzer unit tests
+- `tests/analyzers/test_dynamic.py`: dynamic analyzer runtime probe behavior
 
 ## Quality Commands
 
@@ -100,6 +109,6 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- OAuth provider integrations beyond current config-only auth scope (external KMS signing, transport-level mTLS propagation)
 - advanced persistent secret-store options beyond keyring/fallback file model
-- further analyzer expansion beyond current core (Static + PromptInjection + Escalation + ToolPoisoning + CrossTool)
+- URL positional auth/mTLS UX (currently config-only)
+- dynamic analyzer hardening and broader probe coverage beyond current opt-in v1

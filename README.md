@@ -7,14 +7,16 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-7A)
+## Current Scope (Sprint 1-8A)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
-- OAuth provider integrations v1 in `config` auth: `token_endpoint_auth_method=private_key_jwt` and optional token-endpoint mTLS
+- OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
+- OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
+- Dynamic analyzer v1 available as opt-in (`--dynamic`) for `server` and `config` scans
 - Default analyzers enabled in scan flows:
   - `StaticAnalyzer`
   - `PromptInjectionAnalyzer`
@@ -43,6 +45,9 @@ mcp-scan server "python -m my_mcp_server" --format json
 
 # Scan a URL target (auto-detected: streamable-http, fallback to sse)
 mcp-scan server "https://example.com/sse" --format html --output report.html
+
+# Run dynamic probes in addition to default analyzers (opt-in)
+mcp-scan server "python -m my_mcp_server" --dynamic --format json
 
 # Build baseline from live server snapshot
 mcp-scan baseline "python -m my_mcp_server" --save baseline.json
@@ -77,6 +82,9 @@ Supported entry styles:
       "transport": "sse",
       "url": "https://example.com/sse",
       "headers": {"X-Trace": "req-42"},
+      "mtls_cert_file": "/etc/mcp/transport-client.crt",
+      "mtls_key_file": "/etc/mcp/transport-client.key",
+      "mtls_ca_bundle_file": "/etc/mcp/transport-ca.pem",
       "auth": {"type": "bearer", "token_env": "MCP_BEARER_TOKEN"}
     },
     "remote-streamable": {
@@ -98,7 +106,9 @@ Supported entry styles:
         "token_url": "https://auth.example.com/oauth/token",
         "client_id_env": "MCP_OAUTH_CLIENT_ID",
         "token_endpoint_auth_method": "private_key_jwt",
-        "client_assertion_key_env": "MCP_OAUTH_ASSERTION_KEY_PEM",
+        "client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd",
+        "client_assertion_kms_region": "eu-west-1",
+        "client_assertion_kms_endpoint_url": "https://kms.eu-west-1.amazonaws.com",
         "client_assertion_kid": "key-2026-03",
         "mtls_cert_file": "/etc/mcp/oauth-client.crt",
         "mtls_key_file": "/etc/mcp/oauth-client.key",
@@ -158,13 +168,21 @@ Notes:
   - `client_secret_basic` (`oauth_device_code` requires `client_secret_env` when used)
   - `private_key_jwt` (`oauth_client_credentials` + `oauth_device_code`; `oauth_auth_code_pkce` remains unchanged)
 - `private_key_jwt` validation rules:
-  - exactly one of `client_assertion_key_env` or `client_assertion_key_file` is required
+  - exactly one signing source is required:
+    - `client_assertion_key_env`
+    - `client_assertion_key_file`
+    - `client_assertion_kms_key_id` (AWS KMS signing)
+  - optional KMS tuning: `client_assertion_kms_region`, `client_assertion_kms_endpoint_url`
   - optional `client_assertion_kid` is propagated into JWT header
   - v1 signing algorithm is `RS256`
 - token endpoint mTLS options for OAuth auth entries:
   - `mtls_cert_file` + `mtls_key_file` must be provided together
   - optional `mtls_ca_bundle_file` is used as request verify bundle
-  - mTLS is applied only to OAuth token endpoint calls (not discovery transport connections)
+  - mTLS is applied only to OAuth token endpoint calls
+- transport-level mTLS options for network entries (`sse`, `streamable-http`):
+  - top-level `mtls_cert_file` + `mtls_key_file` must be provided together
+  - optional top-level `mtls_ca_bundle_file` is used as connection verify bundle
+  - applies to discovery transport HTTP client setup (independent from `auth.mtls_*`)
 - OAuth token cache key is deterministic: `namespace + token_url + client_id + scope + audience`
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
@@ -199,6 +217,9 @@ Notes:
   - retryable statuses: `429`, `500`, `502`, `503`, `504`
   - retryable transport errors: timeout/connection/network
   - max `2` retries (total `3` attempts), short bounded backoff
+- dynamic analyzer v1 is opt-in:
+  - enable with `--dynamic` on `server` and `config`
+  - default pipeline remains unchanged when flag is omitted
 - Refresh fallback behavior:
   - if refresh fails with `invalid_grant` / `invalid_token`, scanner drops cached refresh token and retries primary grant once
   - if retry requires interaction in headless mode, `auth_token_error` is emitted and scan continues
@@ -257,9 +278,9 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 7A)
+## Roadmap (Post Sprint 8A)
 
 Deferred items:
-- OAuth provider integrations beyond current config-only scope (external KMS-backed signing, transport-level mTLS propagation)
 - advanced persistent secret-store backends beyond keyring/fallback file model
-- further analyzer expansion beyond current core (`Static`, `PromptInjection`, `Escalation`, `ToolPoisoning`, `CrossTool`)
+- URL positional auth/mTLS UX (currently config-only)
+- dynamic analyzer expansion/hardening beyond current opt-in v1

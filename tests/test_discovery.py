@@ -79,7 +79,7 @@ class TestMCPServerConnector:
             await connector.connect({"type": "stdio", "command": f"{sys.executable} -V", "env": "bad"})
 
     @pytest.mark.asyncio
-    async def test_connect_rejects_invalid_sse_config(self):
+    async def test_connect_rejects_invalid_sse_config(self, tmp_path: Path):
         """Connector should validate URL and headers payloads for network transports."""
         connector = MCPServerConnector("test_server")
 
@@ -110,6 +110,27 @@ class TestMCPServerConnector:
                     "type": "streamable_http",
                     "url": "https://example.com/mcp",
                     "headers": "Authorization: Bearer token",
+                }
+            )
+
+        with pytest.raises(ValueError, match="mtls_cert_file and config.mtls_key_file must be provided together"):
+            await connector.connect(
+                {
+                    "type": "sse",
+                    "url": "https://example.com/sse",
+                    "mtls_cert_file": "/tmp/client.crt",
+                }
+            )
+
+        cert_file = tmp_path / "client.crt"
+        cert_file.write_text("cert", encoding="utf-8")
+        with pytest.raises(ValueError, match="config.mtls_key_file path does not exist"):
+            await connector.connect(
+                {
+                    "type": "streamable-http",
+                    "url": "https://example.com/mcp",
+                    "mtls_cert_file": str(cert_file),
+                    "mtls_key_file": str(tmp_path / "missing.key"),
                 }
             )
 
@@ -263,6 +284,75 @@ class TestMCPServerConnector:
         assert captured["session_closed"] is True
 
     @pytest.mark.asyncio
+    async def test_connect_sse_passes_top_level_mtls_to_httpx_factory(self, monkeypatch, tmp_path: Path):
+        """SSE path should propagate top-level mTLS fields into created HTTP client."""
+        captured: dict[str, object] = {}
+
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        ca_file = tmp_path / "ca.pem"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        ca_file.write_text("ca", encoding="utf-8")
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs: object) -> None:
+                captured["httpx_kwargs"] = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+        class FakeSSEContext:
+            async def __aenter__(self) -> tuple[object, object]:
+                return object(), object()
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+        class FakeClientSession:
+            def __init__(self, read_stream: object, write_stream: object) -> None:
+                del read_stream, write_stream
+
+            async def __aenter__(self) -> "FakeClientSession":
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            async def initialize(self) -> None:
+                return None
+
+        def fake_sse_client(url: str, **kwargs: object) -> FakeSSEContext:
+            del url
+            httpx_factory = kwargs["httpx_client_factory"]
+            assert callable(httpx_factory)
+            httpx_factory(headers={"X-Trace": "1"}, timeout=None, auth=None)
+            return FakeSSEContext()
+
+        monkeypatch.setattr(discovery_module, "sse_client", fake_sse_client)
+        monkeypatch.setattr(discovery_module, "ClientSession", FakeClientSession)
+        monkeypatch.setattr(discovery_module.httpx, "AsyncClient", FakeAsyncClient)
+
+        connector = MCPServerConnector("sse_server")
+        connected = await connector.connect(
+            {
+                "type": "sse",
+                "url": "https://example.com/sse",
+                "mtls_cert_file": str(cert_file),
+                "mtls_key_file": str(key_file),
+                "mtls_ca_bundle_file": str(ca_file),
+            }
+        )
+
+        assert connected is True
+        assert captured["httpx_kwargs"]["cert"] == (str(cert_file), str(key_file))
+        assert captured["httpx_kwargs"]["verify"] == str(ca_file)
+        await connector.disconnect()
+
+    @pytest.mark.asyncio
     async def test_connect_streamable_http_and_get_server_capabilities(self, monkeypatch):
         """Connector should use streamable-http transport APIs when configured."""
         captured: dict[str, object] = {}
@@ -397,6 +487,74 @@ class TestMCPServerConnector:
         await connector.disconnect()
         assert captured["streamable_closed"] is True
         assert captured["session_closed"] is True
+
+    @pytest.mark.asyncio
+    async def test_connect_streamable_http_passes_top_level_mtls_to_http_client(self, monkeypatch, tmp_path: Path):
+        """Streamable HTTP path should propagate top-level mTLS fields into AsyncClient kwargs."""
+        captured: dict[str, object] = {}
+
+        cert_file = tmp_path / "client.crt"
+        key_file = tmp_path / "client.key"
+        ca_file = tmp_path / "ca.pem"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        ca_file.write_text("ca", encoding="utf-8")
+
+        class FakeAsyncClient:
+            def __init__(self, **kwargs: object) -> None:
+                self.kwargs = kwargs
+                captured["httpx_kwargs"] = kwargs
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+        class FakeStreamableContext:
+            async def __aenter__(self) -> tuple[object, object]:
+                return object(), object()
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+        class FakeClientSession:
+            def __init__(self, read_stream: object, write_stream: object) -> None:
+                del read_stream, write_stream
+
+            async def __aenter__(self) -> "FakeClientSession":
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb) -> None:
+                del exc_type, exc, tb
+
+            async def initialize(self) -> None:
+                return None
+
+        def fake_streamable_client(url: str, **kwargs: object) -> FakeStreamableContext:
+            captured["url"] = url
+            captured["streamable_kwargs"] = kwargs
+            return FakeStreamableContext()
+
+        monkeypatch.setattr(discovery_module.httpx, "AsyncClient", FakeAsyncClient)
+        monkeypatch.setattr(discovery_module, "streamable_http_client", fake_streamable_client)
+        monkeypatch.setattr(discovery_module, "ClientSession", FakeClientSession)
+
+        connector = MCPServerConnector("streamable_server")
+        connected = await connector.connect(
+            {
+                "type": "streamable-http",
+                "url": "https://example.com/mcp",
+                "mtls_cert_file": str(cert_file),
+                "mtls_key_file": str(key_file),
+                "mtls_ca_bundle_file": str(ca_file),
+            }
+        )
+
+        assert connected is True
+        assert captured["httpx_kwargs"]["cert"] == (str(cert_file), str(key_file))
+        assert captured["httpx_kwargs"]["verify"] == str(ca_file)
+        await connector.disconnect()
 
     @pytest.mark.asyncio
     async def test_connect_and_get_server_capabilities(self):

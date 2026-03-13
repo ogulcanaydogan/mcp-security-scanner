@@ -4308,7 +4308,23 @@ class TestCLIHelpers:
         )
         assert signer is None
         assert env_var is None
-        assert error == "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file."
+        assert (
+            error == "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file or "
+            "auth.client_assertion_kms_key_id."
+        )
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {
+                "client_assertion_key_env": "KEY_ENV",
+                "client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd",
+            }
+        )
+        assert signer is None
+        assert env_var is None
+        assert (
+            error == "Provide exactly one of auth.client_assertion_key_env or auth.client_assertion_key_file or "
+            "auth.client_assertion_kms_key_id."
+        )
 
         signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer({"client_assertion_key_env": 9})
         assert signer is None
@@ -4370,6 +4386,37 @@ class TestCLIHelpers:
         assert error is None
         assert env_var is None
         assert signer is not None
+        assert signer.signing_source == "pem"
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {"client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd"}
+        )
+        assert error is None
+        assert env_var is None
+        assert signer is not None
+        assert signer.signing_source == "aws_kms"
+        assert signer.kms_key_id == "arn:aws:kms:eu-west-1:111122223333:key/abcd"
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {
+                "client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd",
+                "client_assertion_kms_endpoint_url": "https://kms.eu-west-1.amazonaws.com",
+            }
+        )
+        assert error is None
+        assert env_var is None
+        assert signer is not None
+        assert signer.kms_endpoint_url == "https://kms.eu-west-1.amazonaws.com"
+
+        signer, env_var, error = cli_module._resolve_oauth_private_key_jwt_signer(
+            {
+                "client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd",
+                "client_assertion_kms_endpoint_url": "ftp://kms.invalid",
+            }
+        )
+        assert signer is None
+        assert env_var is None
+        assert error == "auth.client_assertion_kms_endpoint_url must be a valid http/https URL."
 
     def test_validate_private_key_jwt_signing_key_and_assertion(self):
         """Signing-key helper and assertion builder should validate and emit JWT claims."""
@@ -4402,6 +4449,79 @@ class TestCLIHelpers:
         assert claims_payload["aud"] == "https://auth.example.com/token"
         assert claims_payload["exp"] > claims_payload["iat"]
         assert isinstance(claims_payload["jti"], str) and claims_payload["jti"]
+
+    def test_sign_private_key_jwt_with_aws_kms_paths(self, monkeypatch):
+        """AWS KMS signing helper should cover missing-key, import, failure, and success paths."""
+        signer = cli_module.OAuthPrivateKeyJWTSigner(signing_source="aws_kms", kms_key_id=None)
+        signature, signature_error = cli_module._sign_private_key_jwt_with_aws_kms(b"payload", signer)
+        assert signature is None
+        assert signature_error == "auth.client_assertion_kms_key_id is required for AWS KMS signing."
+
+        signer = cli_module.OAuthPrivateKeyJWTSigner(
+            signing_source="aws_kms",
+            kms_key_id="arn:aws:kms:eu-west-1:111122223333:key/abcd",
+        )
+
+        monkeypatch.setattr(
+            cli_module.importlib, "import_module", lambda name: (_ for _ in ()).throw(ModuleNotFoundError())
+        )
+        signature, signature_error = cli_module._sign_private_key_jwt_with_aws_kms(b"payload", signer)
+        assert signature is None
+        assert signature_error is not None
+        assert "boto3 is required" in signature_error
+
+        class FakeKMSClient:
+            @staticmethod
+            def sign(**kwargs: object) -> dict[str, object]:
+                del kwargs
+                return {"Signature": b"signed-by-kms"}
+
+        class FakeBoto3:
+            @staticmethod
+            def client(service_name: str, **kwargs: object) -> FakeKMSClient:
+                assert service_name == "kms"
+                assert kwargs["region_name"] == "eu-west-1"
+                return FakeKMSClient()
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", lambda name: FakeBoto3())
+        signer = cli_module.OAuthPrivateKeyJWTSigner(
+            signing_source="aws_kms",
+            kms_key_id="arn:aws:kms:eu-west-1:111122223333:key/abcd",
+            kms_region="eu-west-1",
+        )
+        signature, signature_error = cli_module._sign_private_key_jwt_with_aws_kms(b"payload", signer)
+        assert signature_error is None
+        assert signature == b"signed-by-kms"
+
+    def test_build_private_key_jwt_client_assertion_with_aws_kms_signer(self, monkeypatch):
+        """JWT assertion builder should use AWS KMS helper when signer source is aws_kms."""
+        signer = cli_module.OAuthPrivateKeyJWTSigner(
+            signing_source="aws_kms",
+            kms_key_id="arn:aws:kms:eu-west-1:111122223333:key/abcd",
+            kid="kms-key",
+        )
+
+        monkeypatch.setattr(
+            cli_module,
+            "_sign_private_key_jwt_with_aws_kms",
+            lambda signing_input, signer: (b"kms-signature", None),
+        )
+        assertion, assertion_error = cli_module._build_private_key_jwt_client_assertion(
+            token_url="https://auth.example.com/token",
+            client_id="client-kms",
+            signer=signer,
+        )
+
+        assert assertion_error is None
+        assert assertion is not None
+        header_segment, claims_segment, signature_segment = assertion.split(".")
+        assert signature_segment
+        padded_header = header_segment + "=" * ((4 - len(header_segment) % 4) % 4)
+        padded_claims = claims_segment + "=" * ((4 - len(claims_segment) % 4) % 4)
+        header_payload = json.loads(base64.urlsafe_b64decode(padded_header.encode("ascii")).decode("utf-8"))
+        claims_payload = json.loads(base64.urlsafe_b64decode(padded_claims.encode("ascii")).decode("utf-8"))
+        assert header_payload["kid"] == "kms-key"
+        assert claims_payload["iss"] == "client-kms"
 
     def test_request_oauth_form_payload_private_key_jwt_and_mtls_paths(self, monkeypatch):
         """OAuth form helper should handle private_key_jwt requirements and mTLS kwargs."""
@@ -4804,7 +4924,7 @@ class TestCLIHelpers:
             token_endpoint_auth_method: str,
             timeout_seconds: int,
             client_assertion_signer: cli_module.OAuthPrivateKeyJWTSigner | None,
-            mtls_config: cli_module.OAuthMTLSConfig | None,
+            mtls_config: cli_module.OAuthMTLSConfig | None = None,
         ) -> tuple[str | None, float | None, str | None, int | None]:
             del scope, audience, timeout_seconds
             assert token_url == "https://auth.example.com/token"
@@ -4921,6 +5041,106 @@ class TestCLIHelpers:
         assert connector_config is not None
         assert connector_config["headers"]["Authorization"] == "Bearer device-token"
 
+    def test_build_connector_config_oauth_private_key_jwt_with_aws_kms(self, monkeypatch):
+        """Config auth should support private_key_jwt signer source from AWS KMS."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-kms")
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str | None,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+            client_assertion_signer: cli_module.OAuthPrivateKeyJWTSigner | None,
+            mtls_config: cli_module.OAuthMTLSConfig | None = None,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del scope, audience, timeout_seconds
+            assert token_url == "https://auth.example.com/token"
+            assert client_id == "client-kms"
+            assert client_secret is None
+            assert token_endpoint_auth_method == "private_key_jwt"
+            assert client_assertion_signer is not None
+            assert client_assertion_signer.signing_source == "aws_kms"
+            assert client_assertion_signer.kms_key_id == "arn:aws:kms:eu-west-1:111122223333:key/abcd"
+            assert client_assertion_signer.kms_region == "eu-west-1"
+            assert client_assertion_signer.kms_endpoint_url == "https://kms.eu-west-1.amazonaws.com"
+            assert mtls_config is None
+            return "kms-token", 300.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_kms_server",
+            raw_server_config={
+                "transport": "streamable-http",
+                "url": "https://example.com/mcp",
+                "auth": {
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd",
+                    "client_assertion_kms_region": "eu-west-1",
+                    "client_assertion_kms_endpoint_url": "https://kms.eu-west-1.amazonaws.com",
+                },
+            },
+            timeout=9,
+        )
+
+        assert finding is None
+        assert connector_config is not None
+        assert connector_config["headers"]["Authorization"] == "Bearer kms-token"
+
+    def test_build_connector_config_network_transport_top_level_mtls(self, tmp_path: Path):
+        """Network transport entry should pass validated top-level mTLS fields into connector config."""
+        cert_file = tmp_path / "transport-client.crt"
+        key_file = tmp_path / "transport-client.key"
+        ca_file = tmp_path / "transport-ca.pem"
+        cert_file.write_text("cert", encoding="utf-8")
+        key_file.write_text("key", encoding="utf-8")
+        ca_file.write_text("ca", encoding="utf-8")
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="sse_mtls_server",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "headers": {"X-Trace": "abc"},
+                "mtls_cert_file": str(cert_file),
+                "mtls_key_file": str(key_file),
+                "mtls_ca_bundle_file": str(ca_file),
+            },
+            timeout=11,
+        )
+
+        assert finding is None
+        assert connector_config is not None
+        assert connector_config["mtls_cert_file"] == str(cert_file)
+        assert connector_config["mtls_key_file"] == str(key_file)
+        assert connector_config["mtls_ca_bundle_file"] == str(ca_file)
+        assert connector_config["headers"]["X-Trace"] == "abc"
+
+    def test_build_connector_config_network_transport_invalid_top_level_mtls(self):
+        """Invalid top-level mTLS fields should produce invalid_config_entry findings."""
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="sse_bad_mtls_server",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "mtls_cert_file": "/tmp/client.crt",
+            },
+            timeout=11,
+        )
+
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "invalid_config_entry"
+        assert "mtls_cert_file and mtls_key_file must be provided together." in finding.description
+
     def test_build_connector_config_oauth_private_key_jwt_and_mtls_config_errors(self, monkeypatch):
         """Config auth should emit auth_config_error for private_key_jwt and mTLS validation issues."""
         monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-jwt")
@@ -4963,6 +5183,27 @@ class TestCLIHelpers:
         assert finding is not None
         assert finding.category == "auth_config_error"
         assert "client_assertion_key_env" in finding.evidence
+
+        connector_config, finding = _build_connector_config_from_config_entry(
+            server_name="oauth_client_kms_endpoint_error",
+            raw_server_config={
+                "transport": "sse",
+                "url": "https://example.com/sse",
+                "auth": {
+                    "type": "oauth_client_credentials",
+                    "token_url": "https://auth.example.com/token",
+                    "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "client_assertion_kms_key_id": "arn:aws:kms:eu-west-1:111122223333:key/abcd",
+                    "client_assertion_kms_endpoint_url": "ftp://kms.invalid",
+                },
+            },
+            timeout=7,
+        )
+        assert connector_config is None
+        assert finding is not None
+        assert finding.category == "auth_config_error"
+        assert "client_assertion_kms_endpoint_url" in finding.evidence
 
         connector_config, finding = _build_connector_config_from_config_entry(
             server_name="oauth_client_mtls_error",
