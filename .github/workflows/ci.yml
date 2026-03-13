@@ -146,10 +146,9 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Sign release with Sigstore
-        uses: sigstore/gh-action-sigstore-python@v2.1.1
+        uses: sigstore/gh-action-sigstore-python@v3.2.0
         with:
           inputs: ./dist/*.tar.gz
-          release: true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
