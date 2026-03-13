@@ -7,12 +7,13 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-6G)
+## Current Scope (Sprint 1-6H)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
-- Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management)
+- Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
+- OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - Default analyzers enabled in scan flows:
   - `StaticAnalyzer`
   - `PromptInjectionAnalyzer`
@@ -164,7 +165,9 @@ Notes:
   - lock file: `~/.cache/mcp-security-scanner/oauth-cache-v1.lock` (exclusive lock with retry; timeout falls back to in-memory/live token flow)
   - encrypted payload envelope: `schema_version`, `key_id`, `updated_at`, `entries` (v2)
   - encryption key lookup: OS keyring (`service="mcp-security-scanner"`, `username="oauth-cache-key-v1"`) then fallback key file `~/.config/mcp-security-scanner/cache.key`
-  - key material stores `key_id` + `fernet_key`; legacy raw key format remains readable
+  - key metadata stores `active` + `historical` key entries (`key_id` + `fernet_key`); legacy raw key format remains readable
+  - decrypt recovery order: payload `key_id` match when possible, then active key, then historical keys (deterministic order)
+  - historical key retention is bounded (max 3); `cache rotate` promotes current active key into historical set
   - fallback key file is created with `0600` permissions
   - cache/key file mode hardening uses best-effort `0600`
   - corrupt or undecryptable cache payloads are quarantined as `oauth-cache-v1.json.enc.corrupt.<timestamp>`
@@ -178,6 +181,10 @@ Notes:
   - `auth.scheme` (if provided)
   - token response `token_type` (if present)
   - fallback `Bearer`
+- OAuth token/device/refresh/auth-code endpoint calls use shared transient retry policy:
+  - retryable statuses: `429`, `500`, `502`, `503`, `504`
+  - retryable transport errors: timeout/connection/network
+  - max `2` retries (total `3` attempts), short bounded backoff
 - Refresh fallback behavior:
   - if refresh fails with `invalid_grant` / `invalid_token`, scanner drops cached refresh token and retries primary grant once
   - if retry requires interaction in headless mode, `auth_token_error` is emitted and scan continues
@@ -236,9 +243,9 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 6G)
+## Roadmap (Post Sprint 6H)
 
 Deferred items:
-- OAuth advanced provider-specific flows beyond current config-only v1
-- multi-key historical decrypt and optional advanced persistent secret-store backends
+- OAuth advanced provider integrations beyond current config-only scope (`private_key_jwt`, mTLS, external KMS-backed token exchange)
+- advanced persistent secret-store backends beyond keyring/fallback file model
 - further analyzer expansion beyond current core (`Static`, `PromptInjection`, `Escalation`, `ToolPoisoning`, `CrossTool`)

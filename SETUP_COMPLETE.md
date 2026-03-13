@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-6G Implementation State
+# Setup Complete — Sprint 1-6H Implementation State
 
-This file records the actual implementation status after Sprint 6G.
+This file records the actual implementation status after Sprint 6H.
 
 ## Completed Work
 
@@ -225,6 +225,28 @@ This file records the actual implementation status after Sprint 6G.
   - rotates active key and re-encrypts cache entries
   - exit `0` on success, exit `2` on operational failure
 
+### Sprint 6H (OAuth Hardening+, Config-Only)
+
+- persistent cache key management extended to active + historical key-set model:
+  - encrypt path always uses active key
+  - decrypt recovery supports deterministic key fallback across active/historical keys
+  - historical key retention is bounded (`max 3`, oldest pruned)
+- `cache rotate` behavior extended:
+  - generates new active key
+  - previous active key is retained in historical set (bounded/pruned)
+  - cache payload schema remains `v2`
+- OAuth provider compatibility hardened:
+  - token parse normalization improved for heterogeneous providers (JSON + form-encoded variants)
+  - token scheme resolution remains deterministic: `auth.scheme` > normalized `token_type` > `Bearer`
+  - shared transient retry policy added for OAuth endpoint requests:
+    - retryable HTTP statuses: `429`, `500`, `502`, `503`, `504`
+    - retryable transport errors: timeout/connection/network errors
+    - max `2` retries (total `3` attempts) with short bounded backoff
+- error contract is unchanged:
+  - `auth_config_error` for config/env/schema issues
+  - `auth_token_error` for token/device/refresh/auth-code endpoint failures
+  - per-server failures remain non-fatal in `config` scans
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -237,8 +259,8 @@ This file records the actual implementation status after Sprint 6G.
 
 ## Current Non-Goals / Deferred
 
-- OAuth advanced provider-specific flows beyond current config-only auth v1
-- multi-key historical decrypt and advanced persistent secret-store options
+- OAuth advanced provider integrations beyond current config-only scope (`private_key_jwt`, mTLS, external KMS-backed token exchange)
+- advanced persistent secret-store backends beyond keyring/fallback file model
 - further analyzer expansion beyond current core (`StaticAnalyzer`, `PromptInjectionAnalyzer`, `EscalationAnalyzer`, `ToolPoisoningAnalyzer`, `CrossToolAnalyzer`)
 - visual/report schema refactors beyond current formatter behavior
 

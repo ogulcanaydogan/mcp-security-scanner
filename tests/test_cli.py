@@ -1613,8 +1613,8 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_FILE", tmp_path / "oauth-cache-v1.json.enc")
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_LOCK_FILE", tmp_path / "oauth-cache-v1.lock")
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_KEY_FILE", tmp_path / "cache.key")
-        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_material_from_keyring", lambda: None)
-        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_material_to_keyring", lambda key_material: False)
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_keyring", lambda: None)
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_set_to_keyring", lambda key_set: False)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -1622,24 +1622,25 @@ class TestCLICommands:
         assert result.exit_code == 0
         assert "source=file" in result.output
         key_payload = json.loads((tmp_path / "cache.key").read_text(encoding="utf-8"))
-        assert "key_id" in key_payload
-        assert "fernet_key" in key_payload
+        assert "active" in key_payload
+        assert "key_id" in key_payload["active"]
+        assert "fernet_key" in key_payload["active"]
 
     def test_cache_rotate_command_success_with_keyring(self, monkeypatch, tmp_path: Path):
         """Cache rotate should report keyring source when keyring write succeeds."""
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_FILE", tmp_path / "oauth-cache-v1.json.enc")
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_LOCK_FILE", tmp_path / "oauth-cache-v1.lock")
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_KEY_FILE", tmp_path / "cache.key")
-        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_material_from_keyring", lambda: None)
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_keyring", lambda: None)
 
         wrote: list[str] = []
 
-        def fake_write_to_keyring(key_material: cli_module.OAuthCacheKeyMaterial) -> bool:
-            wrote.append(key_material.key_id)
+        def fake_write_to_keyring(key_set: cli_module.OAuthCacheKeySet) -> bool:
+            wrote.append(key_set.active.key_id)
             return True
 
-        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_material_to_keyring", fake_write_to_keyring)
-        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_material_to_file", lambda key_material: False)
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_set_to_keyring", fake_write_to_keyring)
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_set_to_file", lambda key_set: False)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2069,8 +2070,8 @@ class TestCLIHelpers:
         assert second_connector["headers"]["Authorization"] == "Bearer token-2"
         assert call_count["value"] == 2
 
-    def test_resolve_oauth_cache_key_material_prefers_keyring(self, monkeypatch):
-        """Key material resolver should prefer keyring over fallback key file."""
+    def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
+        """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
         file_calls = {"value": 0}
 
@@ -2084,21 +2085,23 @@ class TestCLIHelpers:
             fernet_key=b"ZmFrZV9rZXlfZm9yX3Rlc3RpbmdfMTExMTExMTExMTE=",
             source="file",
         )
+        keyring_set = cli_module.OAuthCacheKeySet(active=keyring_material, historical=(), source="keyring")
+        file_set = cli_module.OAuthCacheKeySet(active=file_material, historical=(), source="file")
 
-        def fake_keyring() -> cli_module.OAuthCacheKeyMaterial | None:
+        def fake_keyring() -> cli_module.OAuthCacheKeySet | None:
             keyring_calls["value"] += 1
-            return keyring_material
+            return keyring_set
 
-        def fake_file() -> cli_module.OAuthCacheKeyMaterial | None:
+        def fake_file() -> cli_module.OAuthCacheKeySet | None:
             file_calls["value"] += 1
-            return file_material
+            return file_set
 
-        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_material_from_keyring", fake_keyring)
-        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_material_from_file", fake_file)
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_keyring", fake_keyring)
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_file", fake_file)
 
-        resolved_material = cli_module._resolve_oauth_cache_key_material(create_if_missing=False)
+        resolved_key_set = cli_module._resolve_oauth_cache_key_set(create_if_missing=False)
 
-        assert resolved_material == keyring_material
+        assert resolved_key_set == keyring_set
         assert keyring_calls["value"] == 1
         assert file_calls["value"] == 0
 
@@ -3015,6 +3018,254 @@ class TestCLIHelpers:
         assert payload["error"] == "invalid_grant"
         assert payload["error_description"] == "Bad token"
 
+    def test_request_oauth_form_payload_retries_retryable_status(self, monkeypatch):
+        """OAuth form helper should retry once on retryable HTTP status codes."""
+        calls = {"value": 0}
+        sleeps: list[float] = []
+
+        class RetryResponse:
+            status_code = 429
+            text = ""
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {"error": "temporarily_unavailable"}
+
+        class SuccessResponse:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {"access_token": "token-ok"}
+
+        def fake_post(url: str, data: dict[str, str], headers: dict[str, str], timeout: int) -> object:
+            del url, data, headers, timeout
+            calls["value"] += 1
+            if calls["value"] == 1:
+                return RetryResponse()
+            return SuccessResponse()
+
+        monkeypatch.setattr(cli_module.httpx, "post", fake_post)
+        monkeypatch.setattr(cli_module, "_oauth_sleep", lambda seconds: sleeps.append(seconds))
+
+        payload, request_error, http_status = cli_module._request_oauth_form_payload(
+            endpoint_url="https://auth.example.com/token",
+            request_data={"grant_type": "client_credentials", "client_id": "client-a"},
+            timeout_seconds=5,
+            endpoint_name="Token endpoint",
+        )
+
+        assert request_error is None
+        assert http_status == 200
+        assert payload == {"access_token": "token-ok"}
+        assert calls["value"] == 2
+        assert sleeps == [cli_module._oauth_request_backoff_seconds(1)]
+
+    def test_load_oauth_cache_entries_locked_requires_key_set(self):
+        """Locked cache loader should reject missing key_set/key_material input."""
+        entries, load_error = cli_module._load_oauth_cache_entries_locked()
+        assert entries == {}
+        assert load_error is not None
+        assert "required" in load_error
+
+    def test_load_oauth_cache_entries_locked_handles_read_error(self, monkeypatch):
+        """Locked cache loader should return deterministic read error on OSError."""
+        encryption_key = cli_module._generate_fernet_key()
+        assert encryption_key is not None
+        key_set = cli_module.OAuthCacheKeySet(
+            active=cli_module.OAuthCacheKeyMaterial(
+                key_id="k_read",
+                fernet_key=encryption_key,
+                source="test",
+            ),
+            historical=(),
+            source="test",
+        )
+
+        class FakeCachePath:
+            @staticmethod
+            def read_bytes() -> bytes:
+                raise OSError("read failed")
+
+        monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_FILE", FakeCachePath())
+
+        entries, load_error = cli_module._load_oauth_cache_entries_locked(key_set=key_set, recover_corrupt=False)
+        assert entries == {}
+        assert load_error == "Unable to read OAuth cache file."
+
+    def test_parse_oauth_cache_entries_rejects_non_object_entries(self):
+        """Cache payload parser should reject non-object entries field."""
+        entries, parse_error = cli_module._parse_oauth_cache_entries_from_payload(
+            {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": [],
+            }
+        )
+        assert entries == {}
+        assert parse_error is not None
+        assert "entries" in parse_error
+
+    def test_parse_oauth_cache_key_set_with_historical_and_prune(self):
+        """Key-set parser should keep active key and prune historical list deterministically."""
+        keys: list[str] = []
+        for _ in range(5):
+            generated = cli_module._generate_fernet_key()
+            assert generated is not None
+            keys.append(generated.decode("ascii"))
+
+        raw_payload = json.dumps(
+            {
+                "active": {"key_id": "k_active", "fernet_key": keys[0]},
+                "historical": [
+                    {"key_id": "k_h1", "fernet_key": keys[1]},
+                    {"key_id": "k_h2", "fernet_key": keys[2]},
+                    {"key_id": "k_h1", "fernet_key": keys[1]},
+                    {"key_id": "k_h3", "fernet_key": keys[3]},
+                    {"key_id": "k_h4", "fernet_key": keys[4]},
+                ],
+            }
+        )
+
+        parsed = cli_module._parse_oauth_cache_key_set(raw_payload, source="file")
+        assert parsed is not None
+        assert parsed.active.key_id == "k_active"
+        assert [item.key_id for item in parsed.historical] == ["k_h1", "k_h2", "k_h3"]
+
+    def test_parse_oauth_cache_key_set_rejects_invalid_active_payload(self):
+        """Key-set parser should reject invalid active payload objects."""
+        parsed = cli_module._parse_oauth_cache_key_set(
+            json.dumps(
+                {
+                    "active": {"key_id": "", "fernet_key": "bad"},
+                    "historical": [],
+                }
+            ),
+            source="file",
+        )
+        assert parsed is None
+
+    def test_parse_oauth_cache_key_set_supports_legacy_metadata_shape(self):
+        """Key-set parser should support legacy single-object key metadata."""
+        encryption_key = cli_module._generate_fernet_key()
+        assert encryption_key is not None
+        parsed = cli_module._parse_oauth_cache_key_set(
+            json.dumps({"key_id": "k_legacy", "fernet_key": encryption_key.decode("ascii")}),
+            source="file",
+        )
+        assert parsed is not None
+        assert parsed.active.key_id == "k_legacy"
+        assert parsed.historical == ()
+
+    def test_store_oauth_cache_key_set_returns_none_when_all_stores_fail(self, monkeypatch):
+        """Key-set store should return None when both keyring and file stores fail."""
+        encryption_key = cli_module._generate_fernet_key()
+        assert encryption_key is not None
+        key_set = cli_module.OAuthCacheKeySet(
+            active=cli_module.OAuthCacheKeyMaterial(
+                key_id="k_store_fail",
+                fernet_key=encryption_key,
+                source="test",
+            ),
+            historical=(),
+            source="test",
+        )
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_set_to_keyring", lambda value: False)
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_set_to_file", lambda value: False)
+        assert cli_module._store_oauth_cache_key_set(key_set) is None
+
+    def test_resolve_oauth_cache_key_set_creates_when_missing(self, monkeypatch):
+        """Resolver should generate/store a new key-set when missing and allowed."""
+        encryption_key = cli_module._generate_fernet_key()
+        assert encryption_key is not None
+        generated_key = cli_module.OAuthCacheKeyMaterial(
+            key_id="k_generated",
+            fernet_key=encryption_key,
+            source="generated",
+        )
+        stored_key_set = cli_module.OAuthCacheKeySet(active=generated_key, historical=(), source="file")
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_keyring", lambda: None)
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_file", lambda: None)
+        monkeypatch.setattr(cli_module, "_generate_oauth_cache_key_material", lambda: generated_key)
+        monkeypatch.setattr(cli_module, "_store_oauth_cache_key_set", lambda key_set: stored_key_set)
+
+        resolved = cli_module._resolve_oauth_cache_key_set(create_if_missing=True)
+        assert resolved == stored_key_set
+
+    def test_write_oauth_cache_entries_locked_returns_false_on_encrypt_failure(self, monkeypatch):
+        """Locked cache writer should fail when encryption helper returns None."""
+        encryption_key = cli_module._generate_fernet_key()
+        assert encryption_key is not None
+        key_set = cli_module.OAuthCacheKeySet(
+            active=cli_module.OAuthCacheKeyMaterial(
+                key_id="k_write_fail",
+                fernet_key=encryption_key,
+                source="test",
+            ),
+            historical=(),
+            source="test",
+        )
+        monkeypatch.setattr(cli_module, "_encrypt_oauth_cache_payload", lambda entries, key_material: None)
+        assert cli_module._write_oauth_cache_entries_locked(key_set=key_set, entries={}) is False
+
+    def test_build_oauth_decrypt_candidates_deduplicates_by_key_id(self):
+        """Decrypt candidates should skip duplicate and empty key IDs."""
+        encryption_key = cli_module._generate_fernet_key()
+        assert encryption_key is not None
+        active = cli_module.OAuthCacheKeyMaterial(key_id="k_primary", fernet_key=encryption_key, source="test")
+        duplicate = cli_module.OAuthCacheKeyMaterial(key_id="k_primary", fernet_key=encryption_key, source="test")
+        empty = cli_module.OAuthCacheKeyMaterial(key_id=" ", fernet_key=encryption_key, source="test")
+        secondary = cli_module.OAuthCacheKeyMaterial(key_id="k_secondary", fernet_key=encryption_key, source="test")
+        key_set = cli_module.OAuthCacheKeySet(active=active, historical=(duplicate, empty, secondary), source="test")
+
+        candidates = cli_module._build_oauth_decrypt_candidates(key_set)
+        assert [item.key_id for item in candidates] == ["k_primary", "k_secondary"]
+
+    def test_decrypt_oauth_cache_payload_with_key_set_prefers_matching_key_id(self):
+        """Decrypt helper should prefer payload matching key_id when multiple keys can decrypt."""
+        pytest.importorskip("cryptography")
+        shared_key = cli_module._generate_fernet_key()
+        assert shared_key is not None
+
+        from cryptography.fernet import Fernet
+
+        payload = {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "key_id": "k_hist",
+            "entries": {},
+        }
+        encrypted_payload = Fernet(shared_key).encrypt(json.dumps(payload).encode("utf-8"))
+
+        active = cli_module.OAuthCacheKeyMaterial(key_id="k_active", fernet_key=shared_key, source="test")
+        historical = cli_module.OAuthCacheKeyMaterial(key_id="k_hist", fernet_key=shared_key, source="test")
+        key_set = cli_module.OAuthCacheKeySet(active=active, historical=(historical,), source="test")
+
+        parsed_payload = cli_module._decrypt_oauth_cache_payload_with_key_set(encrypted_payload, key_set)
+        assert parsed_payload is not None
+        assert parsed_payload["key_id"] == "k_hist"
+
+    def test_decrypt_oauth_cache_payload_with_key_set_fallback_without_key_id(self):
+        """Decrypt helper should return fallback payload when no key_id is present."""
+        pytest.importorskip("cryptography")
+        shared_key = cli_module._generate_fernet_key()
+        assert shared_key is not None
+
+        from cryptography.fernet import Fernet
+
+        payload = {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k": {"access_token": "token"}},
+        }
+        encrypted_payload = Fernet(shared_key).encrypt(json.dumps(payload).encode("utf-8"))
+
+        active = cli_module.OAuthCacheKeyMaterial(key_id="k_active", fernet_key=shared_key, source="test")
+        historical = cli_module.OAuthCacheKeyMaterial(key_id="k_hist", fernet_key=shared_key, source="test")
+        key_set = cli_module.OAuthCacheKeySet(active=active, historical=(historical,), source="test")
+
+        parsed_payload = cli_module._decrypt_oauth_cache_payload_with_key_set(encrypted_payload, key_set)
+        assert parsed_payload == payload
+
     def test_oauth_persistent_cache_encrypt_decrypt_roundtrip(self):
         """Encrypted cache payload should decrypt back to original entries."""
         pytest.importorskip("cryptography")
@@ -3606,7 +3857,7 @@ class TestCLIHelpers:
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_FILE", cache_file)
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_KEY_FILE", key_file)
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_LOCK_FILE", lock_file)
-        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_material_from_keyring", lambda: None)
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_keyring", lambda: None)
 
         encryption_key = cli_module._generate_fernet_key()
         assert encryption_key is not None
@@ -3739,7 +3990,7 @@ class TestCLIHelpers:
         cache_file.write_bytes(b"encrypted-bytes")
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_FILE", cache_file)
         monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_LOCK_FILE", lock_file)
-        monkeypatch.setattr(cli_module, "_resolve_oauth_cache_key_material", lambda create_if_missing: None)
+        monkeypatch.setattr(cli_module, "_resolve_oauth_cache_key_set", lambda create_if_missing: None)
 
         with pytest.raises(RuntimeError, match="cache exists"):
             cli_module._rotate_oauth_persistent_cache_key()
@@ -3851,7 +4102,7 @@ class TestCLIHelpers:
                 source="generated",
             ),
         )
-        monkeypatch.setattr(cli_module, "_store_oauth_cache_key_material", lambda key_material: None)
+        monkeypatch.setattr(cli_module, "_store_oauth_cache_key_set", lambda key_set: None)
 
         with pytest.raises(RuntimeError, match="Failed to store rotated cache key"):
             cli_module._rotate_oauth_persistent_cache_key()

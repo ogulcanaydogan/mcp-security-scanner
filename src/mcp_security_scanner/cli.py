@@ -58,6 +58,10 @@ _OAUTH_PERSISTENT_KEYRING_SERVICE = "mcp-security-scanner"
 _OAUTH_PERSISTENT_KEYRING_USERNAME = "oauth-cache-key-v1"
 _OAUTH_CACHE_LOCK_TIMEOUT_SECONDS = 2.0
 _OAUTH_CACHE_LOCK_RETRY_SECONDS = 0.05
+_OAUTH_HISTORICAL_KEY_LIMIT = 3
+_OAUTH_FORM_REQUEST_MAX_RETRIES = 2
+_OAUTH_FORM_REQUEST_BASE_BACKOFF_SECONDS = 0.2
+_OAUTH_RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,15 @@ class OAuthCacheKeyMaterial:
     key_id: str
     fernet_key: bytes
     source: str
+
+
+@dataclass(frozen=True)
+class OAuthCacheKeySet:
+    """Resolved OAuth cache key set with active and historical keys."""
+
+    active: OAuthCacheKeyMaterial
+    historical: tuple[OAuthCacheKeyMaterial, ...] = ()
+    source: str = "unknown"
 
 
 @click.group()
@@ -1520,15 +1533,28 @@ def _build_oauth_auth_header_value(
         return "", "auth.scheme must be a string when provided."
 
     if isinstance(explicit_scheme_value, str):
-        resolved_scheme = explicit_scheme_value.strip()
+        resolved_scheme = _normalize_oauth_scheme(explicit_scheme_value)
     elif token_type is not None and token_type.strip():
-        resolved_scheme = token_type.strip()
+        resolved_scheme = _normalize_oauth_scheme(token_type)
     else:
         resolved_scheme = "Bearer"
 
     if resolved_scheme:
         return f"{resolved_scheme} {token_value}".strip(), None
     return token_value, None
+
+
+def _normalize_oauth_scheme(value: str | None) -> str | None:
+    """Normalize auth scheme tokens with sensible casing for known schemes."""
+    normalized_text = _optional_non_empty_text(value)
+    if normalized_text is None:
+        return None
+    lowered = normalized_text.lower()
+    if lowered == "bearer":
+        return "Bearer"
+    if lowered == "dpop":
+        return "DPoP"
+    return normalized_text
 
 
 def _extract_auth_env_var(auth_value: Any) -> str | None:
@@ -2370,7 +2396,7 @@ def _request_oauth_auth_code_token(
 
     expires_in = _coerce_expires_in_value(payload.get("expires_in"))
     refresh_token = _optional_non_empty_text(payload.get("refresh_token"))
-    token_type = _optional_non_empty_text(payload.get("token_type"))
+    token_type = _normalize_oauth_scheme(_optional_non_empty_text(payload.get("token_type")))
     return access_token, expires_in, refresh_token, None, http_status, token_type
 
 
@@ -2473,7 +2499,7 @@ def _poll_oauth_device_code_token(
             return None, None, None, request_error, http_status, None
         assert payload is not None
 
-        error_code = _optional_non_empty_text(payload.get("error"))
+        error_code, error_description = _extract_oauth_error_fields(payload)
         if error_code is not None:
             if error_code == "authorization_pending":
                 _sleep_until_deadline(interval_seconds=current_interval, deadline=deadline)
@@ -2487,7 +2513,6 @@ def _poll_oauth_device_code_token(
             if error_code == "expired_token":
                 return None, None, None, "Device code expired before authorization completed.", http_status, None
 
-            error_description = _optional_non_empty_text(payload.get("error_description"))
             if error_description is not None:
                 return (
                     None,
@@ -2508,7 +2533,7 @@ def _poll_oauth_device_code_token(
 
         expires_in = _coerce_expires_in_value(payload.get("expires_in"))
         refresh_token = _optional_non_empty_text(payload.get("refresh_token"))
-        token_type = _optional_non_empty_text(payload.get("token_type"))
+        token_type = _normalize_oauth_scheme(_optional_non_empty_text(payload.get("token_type")))
         return access_token, expires_in, refresh_token, None, http_status, token_type
 
 
@@ -2549,7 +2574,7 @@ def _request_oauth_refresh_token(
 
     expires_in = _coerce_expires_in_value(payload.get("expires_in"))
     next_refresh_token = _optional_non_empty_text(payload.get("refresh_token"))
-    token_type = _optional_non_empty_text(payload.get("token_type"))
+    token_type = _normalize_oauth_scheme(_optional_non_empty_text(payload.get("token_type")))
     return access_token, expires_in, next_refresh_token, None, http_status, token_type
 
 
@@ -2562,7 +2587,7 @@ def _request_oauth_form_payload(
     client_secret: str | None = None,
     token_endpoint_auth_method: str = "client_secret_post",
 ) -> tuple[dict[str, Any] | None, str | None, int | None]:
-    """Execute OAuth form POST and parse JSON payload."""
+    """Execute OAuth form POST with transient retry and parse provider payload."""
     request_headers = {"Content-Type": "application/x-www-form-urlencoded"}
     request_body = dict(request_data)
 
@@ -2582,41 +2607,99 @@ def _request_oauth_form_payload(
     else:
         return None, f"{endpoint_name} received unsupported token endpoint auth method.", None
 
-    try:
-        response = httpx.post(
-            endpoint_url,
-            data=request_body,
-            headers=request_headers,
-            timeout=timeout_seconds,
-        )
-    except httpx.HTTPError as exc:
-        return None, f"{endpoint_name} request failed: {exc}", None
+    last_request_error: str | None = None
+    last_http_status: int | None = None
 
-    http_status = response.status_code
+    for attempt in range(_OAUTH_FORM_REQUEST_MAX_RETRIES + 1):
+        try:
+            response = httpx.post(
+                endpoint_url,
+                data=request_body,
+                headers=request_headers,
+                timeout=timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            last_request_error = f"{endpoint_name} request failed: {exc}"
+            last_http_status = None
+            if _is_retryable_oauth_exception(exc) and attempt < _OAUTH_FORM_REQUEST_MAX_RETRIES:
+                _oauth_sleep(_oauth_request_backoff_seconds(attempt + 1))
+                continue
+            return None, last_request_error, None
+
+        http_status = response.status_code
+        payload, payload_error = _parse_oauth_response_payload(response=response, endpoint_name=endpoint_name)
+
+        if _is_retryable_oauth_status(http_status) and attempt < _OAUTH_FORM_REQUEST_MAX_RETRIES:
+            _oauth_sleep(_oauth_request_backoff_seconds(attempt + 1))
+            continue
+
+        if payload_error is not None:
+            return None, payload_error, http_status
+        assert payload is not None
+        return payload, None, http_status
+
+    return None, last_request_error or "OAuth request failed after retries.", last_http_status
+
+
+def _parse_oauth_response_payload(response: Any, endpoint_name: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse OAuth response payload as JSON object, with form-encoded fallback."""
+    http_status = _coerce_optional_int(getattr(response, "status_code", None)) or 0
+    response_text = str(getattr(response, "text", ""))
+
     try:
         payload = response.json()
     except ValueError:
-        form_payload = _parse_form_encoded_payload(response.text)
+        form_payload = _parse_form_encoded_payload(response_text)
         if form_payload is not None:
-            return form_payload, None, http_status
+            return form_payload, None
         if http_status >= 400:
-            return None, f"{endpoint_name} returned HTTP {http_status}.", http_status
-        return None, f"{endpoint_name} returned a non-JSON response.", http_status
+            return None, f"{endpoint_name} returned HTTP {http_status}."
+        return None, f"{endpoint_name} returned a non-JSON response."
 
     if not isinstance(payload, dict):
-        return None, f"{endpoint_name} response must be a JSON object.", http_status
-    return payload, None, http_status
+        return None, f"{endpoint_name} response must be a JSON object."
+    return payload, None
+
+
+def _is_retryable_oauth_status(http_status: int | None) -> bool:
+    """Return True when OAuth HTTP status should be retried."""
+    if http_status is None:
+        return False
+    return http_status in _OAUTH_RETRYABLE_HTTP_STATUS_CODES
+
+
+def _is_retryable_oauth_exception(exc: Exception) -> bool:
+    """Return True for transient OAuth transport exceptions."""
+    return isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.ConnectError))
+
+
+def _oauth_request_backoff_seconds(retry_attempt: int) -> float:
+    """Return bounded backoff for OAuth retry attempts."""
+    return min(1.0, _OAUTH_FORM_REQUEST_BASE_BACKOFF_SECONDS * float(max(1, retry_attempt)))
 
 
 def _extract_oauth_error_reason(payload: dict[str, Any], http_status: int) -> str:
     """Render deterministic OAuth error reason from endpoint payload."""
-    error_code = _optional_non_empty_text(payload.get("error"))
-    error_description = _optional_non_empty_text(payload.get("error_description"))
+    error_code, error_description = _extract_oauth_error_fields(payload)
     if error_code is None:
         return f"OAuth endpoint returned HTTP {http_status}."
     if error_description is None:
         return f"OAuth endpoint returned error '{error_code}' (HTTP {http_status})."
     return f"OAuth endpoint returned error '{error_code}' (HTTP {http_status}): {error_description}."
+
+
+def _extract_oauth_error_fields(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract normalized OAuth error code and description from heterogeneous provider payloads."""
+    error_code = _optional_non_empty_text(payload.get("error")) or _optional_non_empty_text(payload.get("error_code"))
+    if error_code is not None:
+        error_code = error_code.strip().lower()
+
+    error_description = (
+        _optional_non_empty_text(payload.get("error_description"))
+        or _optional_non_empty_text(payload.get("error_message"))
+        or _optional_non_empty_text(payload.get("message"))
+    )
+    return error_code, error_description
 
 
 def _coerce_client_credentials_token_response(
@@ -2631,7 +2714,7 @@ def _coerce_client_credentials_token_response(
                 _coerce_expires_in_value(expires_in),
                 _optional_non_empty_text(token_error),
                 _coerce_optional_int(http_status),
-                _optional_non_empty_text(token_type),
+                _normalize_oauth_scheme(_optional_non_empty_text(token_type)),
             )
         if len(result) == 4:
             token_value, expires_in, token_error, http_status = result
@@ -2658,7 +2741,7 @@ def _coerce_oauth_token_with_refresh_response(
                 _optional_non_empty_text(refresh_token),
                 _optional_non_empty_text(token_error),
                 _coerce_optional_int(http_status),
-                _optional_non_empty_text(token_type),
+                _normalize_oauth_scheme(_optional_non_empty_text(token_type)),
             )
         if len(result) == 5:
             token_value, expires_in, refresh_token, token_error, http_status = result
@@ -2816,7 +2899,7 @@ def _request_oauth_client_credentials_token(
         return None, None, "Token endpoint response is missing a non-empty access_token.", http_status, None
 
     expires_in = _coerce_expires_in_value(payload.get("expires_in"))
-    token_type = _optional_non_empty_text(payload.get("token_type"))
+    token_type = _normalize_oauth_scheme(_optional_non_empty_text(payload.get("token_type")))
     return token_value, expires_in, None, http_status, token_type
 
 
@@ -2890,11 +2973,11 @@ def _load_oauth_persistent_cache_entries() -> dict[str, dict[str, Any]]:
     if lock_handle is None:
         return {}
     try:
-        key_material = _resolve_oauth_cache_key_material(create_if_missing=True)
-        if key_material is None:
+        key_set = _resolve_oauth_cache_key_set(create_if_missing=True)
+        if key_set is None:
             return {}
         entries, _ = _load_oauth_cache_entries_locked(
-            key_material=key_material,
+            key_set=key_set,
             recover_corrupt=True,
         )
         return entries
@@ -2908,12 +2991,12 @@ def _persist_oauth_cache_entry(cache_key: str) -> None:
     if lock_handle is None:
         return
     try:
-        key_material = _resolve_oauth_cache_key_material(create_if_missing=True)
-        if key_material is None:
+        key_set = _resolve_oauth_cache_key_set(create_if_missing=True)
+        if key_set is None:
             return
 
         persistent_entries, _ = _load_oauth_cache_entries_locked(
-            key_material=key_material,
+            key_set=key_set,
             recover_corrupt=True,
         )
         in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
@@ -2922,7 +3005,7 @@ def _persist_oauth_cache_entry(cache_key: str) -> None:
         else:
             persistent_entries.pop(cache_key, None)
 
-        _write_oauth_cache_entries_locked(key_material=key_material, entries=persistent_entries)
+        _write_oauth_cache_entries_locked(key_set=key_set, entries=persistent_entries)
     finally:
         _release_oauth_cache_lock(lock_handle)
 
@@ -2933,12 +3016,12 @@ def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
     if lock_handle is None:
         raise RuntimeError(lock_error or "Unable to acquire OAuth cache lock.")
     try:
-        current_key_material = _resolve_oauth_cache_key_material(create_if_missing=False)
+        current_key_set = _resolve_oauth_cache_key_set(create_if_missing=False)
         if _OAUTH_PERSISTENT_CACHE_FILE.exists():
-            if current_key_material is None:
+            if current_key_set is None:
                 raise RuntimeError("OAuth cache exists but cache key could not be resolved.")
             current_entries, load_error = _load_oauth_cache_entries_locked(
-                key_material=current_key_material,
+                key_set=current_key_set,
                 recover_corrupt=False,
             )
             if load_error is not None:
@@ -2946,17 +3029,28 @@ def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
         else:
             current_entries = {}
 
-        next_key_material = _generate_oauth_cache_key_material()
-        stored_key_material = _store_oauth_cache_key_material(next_key_material)
-        if stored_key_material is None:
+        next_active_key = _generate_oauth_cache_key_material()
+        next_historical_keys: list[OAuthCacheKeyMaterial] = []
+        if current_key_set is not None:
+            next_historical_keys.append(current_key_set.active)
+            next_historical_keys.extend(current_key_set.historical)
+        pruned_historical = _prune_oauth_historical_keys(next_historical_keys)
+
+        next_key_set = OAuthCacheKeySet(
+            active=next_active_key,
+            historical=pruned_historical,
+            source="generated",
+        )
+        stored_key_set = _store_oauth_cache_key_set(next_key_set)
+        if stored_key_set is None:
             raise RuntimeError("Failed to store rotated cache key.")
 
-        if not _write_oauth_cache_entries_locked(key_material=stored_key_material, entries=current_entries):
+        if not _write_oauth_cache_entries_locked(key_set=stored_key_set, entries=current_entries):
             raise RuntimeError("Failed to write encrypted cache payload with rotated key.")
 
         return {
-            "source": stored_key_material.source,
-            "key_id": stored_key_material.key_id,
+            "source": stored_key_set.source,
+            "key_id": stored_key_set.active.key_id,
             "entry_count": len(current_entries),
         }
     finally:
@@ -2964,10 +3058,21 @@ def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
 
 
 def _load_oauth_cache_entries_locked(
-    key_material: OAuthCacheKeyMaterial,
-    recover_corrupt: bool,
+    key_set: OAuthCacheKeySet | None = None,
+    recover_corrupt: bool = False,
+    key_material: OAuthCacheKeyMaterial | None = None,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     """Read and normalize encrypted cache entries while lock is held."""
+    resolved_key_set = key_set
+    if resolved_key_set is None and key_material is not None:
+        resolved_key_set = OAuthCacheKeySet(
+            active=key_material,
+            historical=(),
+            source=key_material.source,
+        )
+    if resolved_key_set is None:
+        return {}, "OAuth cache key set is required."
+
     try:
         encrypted_payload = _OAUTH_PERSISTENT_CACHE_FILE.read_bytes()
     except FileNotFoundError:
@@ -2976,9 +3081,9 @@ def _load_oauth_cache_entries_locked(
         return {}, "Unable to read OAuth cache file."
 
     _ensure_file_mode(_OAUTH_PERSISTENT_CACHE_FILE, mode=0o600)
-    payload = _decrypt_oauth_cache_payload(
+    payload = _decrypt_oauth_cache_payload_with_key_set(
         encrypted_payload=encrypted_payload,
-        encryption_key=key_material.fernet_key,
+        key_set=resolved_key_set,
     )
     if payload is None:
         if recover_corrupt:
@@ -2995,11 +3100,11 @@ def _load_oauth_cache_entries_locked(
     return entries, None
 
 
-def _write_oauth_cache_entries_locked(key_material: OAuthCacheKeyMaterial, entries: dict[str, dict[str, Any]]) -> bool:
+def _write_oauth_cache_entries_locked(key_set: OAuthCacheKeySet, entries: dict[str, dict[str, Any]]) -> bool:
     """Write encrypted cache entries while lock is held."""
     encrypted_payload = _encrypt_oauth_cache_payload(
         entries=entries,
-        key_material=key_material,
+        key_material=key_set.active,
     )
     if encrypted_payload is None:
         return False
@@ -3024,42 +3129,48 @@ def _parse_oauth_cache_entries_from_payload(payload: dict[str, Any]) -> tuple[di
     return normalized_entries, None
 
 
-def _resolve_oauth_cache_key_material(create_if_missing: bool) -> OAuthCacheKeyMaterial | None:
-    """Resolve cache key material from keyring first, then fallback key file."""
-    key_material = _read_oauth_cache_key_material_from_keyring()
-    if key_material is not None:
-        return key_material
+def _resolve_oauth_cache_key_set(create_if_missing: bool) -> OAuthCacheKeySet | None:
+    """Resolve cache key set from keyring first, then fallback key file."""
+    key_set = _read_oauth_cache_key_set_from_keyring()
+    if key_set is not None:
+        return key_set
 
-    key_material = _read_oauth_cache_key_material_from_file()
-    if key_material is not None:
-        return key_material
+    key_set = _read_oauth_cache_key_set_from_file()
+    if key_set is not None:
+        return key_set
 
     if not create_if_missing:
         return None
 
-    generated_material = _generate_oauth_cache_key_material()
-    return _store_oauth_cache_key_material(generated_material)
+    generated_key = _generate_oauth_cache_key_material()
+    generated_key_set = OAuthCacheKeySet(active=generated_key, historical=(), source="generated")
+    return _store_oauth_cache_key_set(generated_key_set)
 
 
-def _store_oauth_cache_key_material(key_material: OAuthCacheKeyMaterial) -> OAuthCacheKeyMaterial | None:
-    """Persist key material to preferred store and return resolved source."""
-    if _write_oauth_cache_key_material_to_keyring(key_material):
-        return OAuthCacheKeyMaterial(
-            key_id=key_material.key_id,
-            fernet_key=key_material.fernet_key,
+def _store_oauth_cache_key_set(key_set: OAuthCacheKeySet) -> OAuthCacheKeySet | None:
+    """Persist key set to preferred store and return resolved source."""
+    sanitized_set = OAuthCacheKeySet(
+        active=key_set.active,
+        historical=_prune_oauth_historical_keys(list(key_set.historical)),
+        source=key_set.source,
+    )
+    if _write_oauth_cache_key_set_to_keyring(sanitized_set):
+        return OAuthCacheKeySet(
+            active=sanitized_set.active,
+            historical=sanitized_set.historical,
             source="keyring",
         )
-    if _write_oauth_cache_key_material_to_file(key_material):
-        return OAuthCacheKeyMaterial(
-            key_id=key_material.key_id,
-            fernet_key=key_material.fernet_key,
+    if _write_oauth_cache_key_set_to_file(sanitized_set):
+        return OAuthCacheKeySet(
+            active=sanitized_set.active,
+            historical=sanitized_set.historical,
             source="file",
         )
     return None
 
 
-def _read_oauth_cache_key_material_from_keyring() -> OAuthCacheKeyMaterial | None:
-    """Read cache key metadata from OS keyring."""
+def _read_oauth_cache_key_set_from_keyring() -> OAuthCacheKeySet | None:
+    """Read cache key-set metadata from OS keyring."""
     try:
         keyring_module = cast(Any, importlib.import_module("keyring"))
     except Exception:
@@ -3073,17 +3184,17 @@ def _read_oauth_cache_key_material_from_keyring() -> OAuthCacheKeyMaterial | Non
     except Exception:
         return None
 
-    return _parse_oauth_cache_key_material(raw_value, source="keyring")
+    return _parse_oauth_cache_key_set(raw_value, source="keyring")
 
 
-def _write_oauth_cache_key_material_to_keyring(key_material: OAuthCacheKeyMaterial) -> bool:
-    """Store cache key metadata in keyring when possible."""
+def _write_oauth_cache_key_set_to_keyring(key_set: OAuthCacheKeySet) -> bool:
+    """Store cache key-set metadata in keyring when possible."""
     try:
         keyring_module = cast(Any, importlib.import_module("keyring"))
     except Exception:
         return False
 
-    serialized_value = _serialize_oauth_cache_key_material(key_material)
+    serialized_value = _serialize_oauth_cache_key_set(key_set)
     if serialized_value is None:
         return False
 
@@ -3098,8 +3209,8 @@ def _write_oauth_cache_key_material_to_keyring(key_material: OAuthCacheKeyMateri
     return True
 
 
-def _read_oauth_cache_key_material_from_file() -> OAuthCacheKeyMaterial | None:
-    """Read cache key metadata from fallback key file."""
+def _read_oauth_cache_key_set_from_file() -> OAuthCacheKeySet | None:
+    """Read cache key-set metadata from fallback key file."""
     try:
         raw_value = _OAUTH_PERSISTENT_KEY_FILE.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -3108,19 +3219,19 @@ def _read_oauth_cache_key_material_from_file() -> OAuthCacheKeyMaterial | None:
         return None
 
     _ensure_file_mode(_OAUTH_PERSISTENT_KEY_FILE, mode=0o600)
-    return _parse_oauth_cache_key_material(raw_value, source="file")
+    return _parse_oauth_cache_key_set(raw_value, source="file")
 
 
-def _write_oauth_cache_key_material_to_file(key_material: OAuthCacheKeyMaterial) -> bool:
-    """Write cache key metadata to fallback file with strict file mode."""
-    serialized_value = _serialize_oauth_cache_key_material(key_material)
+def _write_oauth_cache_key_set_to_file(key_set: OAuthCacheKeySet) -> bool:
+    """Write cache key-set metadata to fallback file with strict file mode."""
+    serialized_value = _serialize_oauth_cache_key_set(key_set)
     if serialized_value is None:
         return False
     return _atomic_write_bytes(path=_OAUTH_PERSISTENT_KEY_FILE, data=serialized_value.encode("utf-8"), mode=0o600)
 
 
-def _parse_oauth_cache_key_material(raw_value: Any, source: str) -> OAuthCacheKeyMaterial | None:
-    """Parse metadata key format with backward-compatible raw-key fallback."""
+def _parse_oauth_cache_key_set(raw_value: Any, source: str) -> OAuthCacheKeySet | None:
+    """Parse key-set metadata with backward-compatible legacy key formats."""
     if isinstance(raw_value, bytes):
         normalized_value = raw_value.decode("utf-8", errors="ignore").strip()
     elif isinstance(raw_value, str):
@@ -3131,48 +3242,208 @@ def _parse_oauth_cache_key_material(raw_value: Any, source: str) -> OAuthCacheKe
     if not normalized_value:
         return None
 
+    parsed_value: Any
     try:
         parsed_value = json.loads(normalized_value)
     except json.JSONDecodeError:
         parsed_value = None
 
     if isinstance(parsed_value, dict):
-        key_id_value = parsed_value.get("key_id")
-        fernet_key_value = parsed_value.get("fernet_key")
-        if isinstance(key_id_value, str) and key_id_value.strip():
-            parsed_fernet_key = _coerce_fernet_key(fernet_key_value)
-            if parsed_fernet_key is not None:
-                return OAuthCacheKeyMaterial(
-                    key_id=key_id_value.strip(),
-                    fernet_key=parsed_fernet_key,
-                    source=source,
-                )
+        active_payload = parsed_value.get("active")
+        historical_payload = parsed_value.get("historical")
+        if isinstance(active_payload, dict):
+            active_key = _parse_oauth_cache_key_material_from_dict(active_payload, source=source)
+            if active_key is None:
+                return None
+            historical_keys: list[OAuthCacheKeyMaterial] = []
+            if isinstance(historical_payload, list):
+                for item in historical_payload:
+                    if not isinstance(item, dict):
+                        continue
+                    parsed_historical = _parse_oauth_cache_key_material_from_dict(item, source=source)
+                    if parsed_historical is not None and parsed_historical.key_id != active_key.key_id:
+                        historical_keys.append(parsed_historical)
+            return OAuthCacheKeySet(
+                active=active_key,
+                historical=_prune_oauth_historical_keys(historical_keys),
+                source=source,
+            )
+
+        legacy_active = _parse_oauth_cache_key_material_from_dict(parsed_value, source=source)
+        if legacy_active is not None:
+            return OAuthCacheKeySet(active=legacy_active, historical=(), source=source)
 
     parsed_raw_key = _coerce_fernet_key(normalized_value)
     if parsed_raw_key is None:
         return None
-
-    return OAuthCacheKeyMaterial(
-        key_id=f"legacy-{source}",
-        fernet_key=parsed_raw_key,
+    return OAuthCacheKeySet(
+        active=OAuthCacheKeyMaterial(
+            key_id=f"legacy-{source}",
+            fernet_key=parsed_raw_key,
+            source=source,
+        ),
+        historical=(),
         source=source,
     )
 
 
-def _serialize_oauth_cache_key_material(key_material: OAuthCacheKeyMaterial) -> str | None:
-    """Serialize key metadata envelope for keyring/file storage."""
+def _parse_oauth_cache_key_material_from_dict(value: dict[str, Any], source: str) -> OAuthCacheKeyMaterial | None:
+    """Parse one key-material object with key_id + fernet_key."""
+    key_id_value = value.get("key_id")
+    fernet_key_value = value.get("fernet_key")
+    if not isinstance(key_id_value, str) or not key_id_value.strip():
+        return None
+    parsed_fernet_key = _coerce_fernet_key(fernet_key_value)
+    if parsed_fernet_key is None:
+        return None
+    return OAuthCacheKeyMaterial(
+        key_id=key_id_value.strip(),
+        fernet_key=parsed_fernet_key,
+        source=source,
+    )
+
+
+def _serialize_oauth_cache_key_set(key_set: OAuthCacheKeySet) -> str | None:
+    """Serialize key-set metadata envelope for keyring/file storage."""
+    active_payload = _serialize_oauth_cache_key_material_payload(key_set.active)
+    if active_payload is None:
+        return None
+
+    historical_payload: list[dict[str, str]] = []
+    for item in _prune_oauth_historical_keys(list(key_set.historical)):
+        if item.key_id == key_set.active.key_id:
+            continue
+        serialized_item = _serialize_oauth_cache_key_material_payload(item)
+        if serialized_item is not None:
+            historical_payload.append(serialized_item)
+
+    payload = {
+        "active": active_payload,
+        "historical": historical_payload,
+    }
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _serialize_oauth_cache_key_material_payload(key_material: OAuthCacheKeyMaterial) -> dict[str, str] | None:
+    """Serialize key material to dict payload."""
     if not key_material.key_id.strip():
         return None
     try:
         encoded_key = key_material.fernet_key.decode("ascii")
     except UnicodeDecodeError:
         return None
-
-    payload = {
+    return {
         "key_id": key_material.key_id,
         "fernet_key": encoded_key,
     }
-    return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _prune_oauth_historical_keys(values: list[OAuthCacheKeyMaterial]) -> tuple[OAuthCacheKeyMaterial, ...]:
+    """Deduplicate historical keys and keep newest-first entries up to configured limit."""
+    deduped: list[OAuthCacheKeyMaterial] = []
+    seen_ids: set[str] = set()
+    for item in values:
+        key_id = item.key_id.strip()
+        if not key_id or key_id in seen_ids:
+            continue
+        seen_ids.add(key_id)
+        deduped.append(item)
+    return tuple(deduped[:_OAUTH_HISTORICAL_KEY_LIMIT])
+
+
+def _build_oauth_decrypt_candidates(key_set: OAuthCacheKeySet) -> list[OAuthCacheKeyMaterial]:
+    """Build deterministic decrypt candidates: active first, then historical."""
+    candidates = [key_set.active, *list(key_set.historical)]
+    deduped: list[OAuthCacheKeyMaterial] = []
+    seen_ids: set[str] = set()
+    for item in candidates:
+        key_id = item.key_id.strip()
+        if not key_id or key_id in seen_ids:
+            continue
+        seen_ids.add(key_id)
+        deduped.append(item)
+    return deduped
+
+
+def _decrypt_oauth_cache_payload_with_key_set(
+    encrypted_payload: bytes,
+    key_set: OAuthCacheKeySet,
+) -> dict[str, Any] | None:
+    """Decrypt payload using active/historical keys, preferring key_id match when present."""
+    fallback_payload: dict[str, Any] | None = None
+    for candidate in _build_oauth_decrypt_candidates(key_set):
+        payload = _decrypt_oauth_cache_payload(
+            encrypted_payload=encrypted_payload,
+            encryption_key=candidate.fernet_key,
+        )
+        if payload is None:
+            continue
+        payload_key_id = _optional_non_empty_text(payload.get("key_id"))
+        if payload_key_id is not None and payload_key_id == candidate.key_id:
+            return payload
+        if fallback_payload is None:
+            fallback_payload = payload
+    return fallback_payload
+
+
+def _resolve_oauth_cache_key_material(create_if_missing: bool) -> OAuthCacheKeyMaterial | None:
+    """Backward-compatible resolver returning active key material."""
+    key_set = _resolve_oauth_cache_key_set(create_if_missing=create_if_missing)
+    if key_set is None:
+        return None
+    return key_set.active
+
+
+def _store_oauth_cache_key_material(key_material: OAuthCacheKeyMaterial) -> OAuthCacheKeyMaterial | None:
+    """Backward-compatible store for single key material."""
+    key_set = OAuthCacheKeySet(active=key_material, historical=(), source=key_material.source)
+    stored = _store_oauth_cache_key_set(key_set)
+    if stored is None:
+        return None
+    return OAuthCacheKeyMaterial(
+        key_id=stored.active.key_id,
+        fernet_key=stored.active.fernet_key,
+        source=stored.source,
+    )
+
+
+def _read_oauth_cache_key_material_from_keyring() -> OAuthCacheKeyMaterial | None:
+    """Backward-compatible keyring reader returning active key material."""
+    key_set = _read_oauth_cache_key_set_from_keyring()
+    if key_set is None:
+        return None
+    return key_set.active
+
+
+def _write_oauth_cache_key_material_to_keyring(key_material: OAuthCacheKeyMaterial) -> bool:
+    """Backward-compatible keyring writer for one key material."""
+    return _write_oauth_cache_key_set_to_keyring(OAuthCacheKeySet(active=key_material, historical=()))
+
+
+def _read_oauth_cache_key_material_from_file() -> OAuthCacheKeyMaterial | None:
+    """Backward-compatible file reader returning active key material."""
+    key_set = _read_oauth_cache_key_set_from_file()
+    if key_set is None:
+        return None
+    return key_set.active
+
+
+def _write_oauth_cache_key_material_to_file(key_material: OAuthCacheKeyMaterial) -> bool:
+    """Backward-compatible file writer for one key material."""
+    return _write_oauth_cache_key_set_to_file(OAuthCacheKeySet(active=key_material, historical=()))
+
+
+def _parse_oauth_cache_key_material(raw_value: Any, source: str) -> OAuthCacheKeyMaterial | None:
+    """Backward-compatible key parser returning active key material."""
+    key_set = _parse_oauth_cache_key_set(raw_value, source=source)
+    if key_set is None:
+        return None
+    return key_set.active
+
+
+def _serialize_oauth_cache_key_material(key_material: OAuthCacheKeyMaterial) -> str | None:
+    """Backward-compatible key serializer for one active key."""
+    return _serialize_oauth_cache_key_set(OAuthCacheKeySet(active=key_material, historical=()))
 
 
 def _resolve_oauth_cache_encryption_key() -> bytes | None:

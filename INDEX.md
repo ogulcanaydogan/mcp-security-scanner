@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-6G scope.
+Current index for the implemented Sprint 1-6H scope.
 
 ## Status Snapshot
 
@@ -18,6 +18,7 @@ Current index for the implemented Sprint 1-6G scope.
 - Sprint 6E: done (`oauth` provider edge-case hardening, `client_secret_basic`, refresh fallback)
 - Sprint 6F: done (optional secure persistent OAuth cache with keyring+encrypted file fallback)
 - Sprint 6G: done (persistent cache hardening with strict lock, corrupt recovery, v2 metadata envelope, key rotation command)
+- Sprint 6H: done (OAuth hardening+ with multi-key historical decrypt recovery and shared transient retry policy)
 
 ## Top-Level Docs
 
@@ -42,9 +43,11 @@ Current index for the implemented Sprint 1-6G scope.
     - strict lock file with retry/timeout and non-fatal bypass
     - corrupt cache quarantine (`*.corrupt.<timestamp>`)
     - v2 cache envelope (`schema_version`, `key_id`, `updated_at`, `entries`) with v1 backward compatibility
-    - key metadata handling (`key_id` + `fernet_key`) and `mcp-scan cache rotate`
+    - key metadata handling (`active` + `historical` key sets with `key_id` + `fernet_key`) and `mcp-scan cache rotate`
+    - historical key retention (max 3) and deterministic decrypt recovery (`key_id` match -> active -> historical)
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic`) for config OAuth entries
   - OAuth Authorization header precedence (`auth.scheme` > `token_type` > `Bearer`)
+  - Shared transient retry policy for OAuth token/device/refresh/auth-code endpoint calls (`429/5xx` + timeout/connection errors)
   - Refresh fallback on `invalid_grant`/`invalid_token` with headless-safe behavior
 
 - `src/mcp_security_scanner/discovery.py`
@@ -94,6 +97,6 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- OAuth advanced session flows and provider-specific edge-case handling beyond current config-only auth v1
-- multi-key historical decrypt and advanced persistent secret-store options
+- OAuth advanced provider integrations beyond current config-only auth scope (`private_key_jwt`, mTLS, external KMS flows)
+- advanced persistent secret-store options beyond keyring/fallback file model
 - further analyzer expansion beyond current core (Static + PromptInjection + Escalation + ToolPoisoning + CrossTool)
