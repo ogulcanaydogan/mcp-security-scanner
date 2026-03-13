@@ -159,7 +159,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 filterwarnings = [
-    "ignore:.*Event loop is closed.*:pytest.PytestUnraisableExceptionWarning",
+    "ignore:.*BaseSubprocessTransport.__del__.*:pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.run]
