@@ -7,13 +7,13 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8G)
+## Current Scope (Sprint 1-8H)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
-- Advanced persistent OAuth cache backends (`auth.cache.backend=aws_secrets_manager|gcp_secret_manager`) for config-based OAuth flows
+- Advanced persistent OAuth cache backends (`auth.cache.backend=aws_secrets_manager|gcp_secret_manager|azure_key_vault`) for config-based OAuth flows
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
@@ -174,6 +174,24 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-azure-cache": {
+      "transport": "sse",
+      "url": "https://example.com/sse",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "azure_key_vault",
+          "azure_vault_url": "https://mcp-security.vault.azure.net",
+          "azure_secret_name": "mcp-security-scanner-oauth-cache",
+          "azure_secret_version": "latest"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -241,11 +259,14 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, or `gcp_secret_manager`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `gcp_secret_manager`, or `azure_key_vault`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing
   - `gcp_secret_name` (required when `backend=gcp_secret_manager`, format `projects/<project>/secrets/<secret>`)
   - optional `gcp_endpoint_url` for GCP client endpoint routing (ADC auth)
+  - `azure_vault_url` (required when `backend=azure_key_vault`, format `https://<name>.vault.azure.net`)
+  - `azure_secret_name` (required when `backend=azure_key_vault`, Azure Key Vault secret-name rules)
+  - optional `azure_secret_version` (default `latest`)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -271,6 +292,11 @@ Notes:
     - writes use new secret versions via `projects/.../secrets/.../versions/latest` read + `add_secret_version` write
     - secret must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
     - optional `gcp_endpoint_url` is supported for custom endpoint routing; auth uses ADC
+  - `backend=azure_key_vault`:
+    - cache payload is stored as a single JSON envelope in the configured Azure Key Vault secret (`auth.cache.azure_secret_name`)
+    - auth uses Azure SDK default credential chain (`DefaultAzureCredential`), no new CLI credential flags
+    - secret must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
+    - optional `azure_secret_version` controls read version (default `latest`); writes create a new secret version
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
@@ -354,7 +380,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8E)
+## Roadmap (Post Sprint 8H)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, and `gcp_secret_manager`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, and `azure_key_vault`

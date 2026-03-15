@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8G Implementation State
+# Setup Complete — Sprint 1-8H Implementation State
 
-This file records the actual implementation status after Sprint 8G.
+This file records the actual implementation status after Sprint 8H.
 
 ## Completed Work
 
@@ -427,6 +427,28 @@ This file records the actual implementation status after Sprint 8G.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8H (Advanced Secret-Store Backend v3: Azure Key Vault)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+- Azure backend contract:
+  - required: `azure_vault_url` (`https://<name>.vault.azure.net`)
+  - required: `azure_secret_name`
+  - optional: `azure_secret_version` (default `latest`)
+  - auth model: Azure SDK default credential chain (`DefaultAzureCredential`)
+  - pre-provisioned secret model (scanner does not create missing secret names)
+- Azure backend behavior:
+  - read from configured secret name/version via Key Vault `get_secret`
+  - persist via `set_secret` as JSON cache envelope payload (`schema_version`, `updated_at`, `entries`)
+  - provider/read/write/parse errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -439,7 +461,7 @@ This file records the actual implementation status after Sprint 8G.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, and `gcp_secret_manager`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, and `azure_key_vault`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

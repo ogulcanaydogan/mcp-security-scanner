@@ -54,10 +54,12 @@ _OAUTH_AUTH_TYPES = {"oauth_client_credentials", "oauth_device_code", "oauth_aut
 _OAUTH_CACHE_BACKEND_LOCAL = "local"
 _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER = "aws_secrets_manager"
 _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER = "gcp_secret_manager"
+_OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT = "azure_key_vault"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
     _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER,
+    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -86,6 +88,9 @@ class OAuthCacheSettings:
     aws_endpoint_url: str | None = None
     gcp_secret_name: str | None = None
     gcp_endpoint_url: str | None = None
+    azure_vault_url: str | None = None
+    azure_secret_name: str | None = None
+    azure_secret_version: str | None = "latest"
 
 
 @dataclass(frozen=True)
@@ -2201,13 +2206,16 @@ def _coerce_oauth_cache_settings(
             "aws_endpoint_url",
             "gcp_secret_name",
             "gcp_endpoint_url",
+            "azure_vault_url",
+            "azure_secret_name",
+            "azure_secret_version",
         }
     ]
     if unknown_fields:
         return (
             None,
             "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_region, aws_endpoint_url, "
-            "gcp_secret_name, gcp_endpoint_url.",
+            "gcp_secret_name, gcp_endpoint_url, azure_vault_url, azure_secret_name, azure_secret_version.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2274,6 +2282,33 @@ def _coerce_oauth_cache_settings(
         if parsed_gcp_endpoint_url.scheme not in {"http", "https"} or not parsed_gcp_endpoint_url.netloc:
             return None, "auth.cache.gcp_endpoint_url must be a valid http/https URL."
 
+    azure_vault_url_value = cache_value.get("azure_vault_url")
+    if azure_vault_url_value is not None and (
+        not isinstance(azure_vault_url_value, str) or not azure_vault_url_value.strip()
+    ):
+        return None, "auth.cache.azure_vault_url must be a non-empty string when provided."
+    azure_vault_url = azure_vault_url_value.strip() if isinstance(azure_vault_url_value, str) else None
+    if azure_vault_url is not None and not _is_valid_azure_vault_url(azure_vault_url):
+        return None, "auth.cache.azure_vault_url must be a valid https://<name>.vault.azure.net URL."
+
+    azure_secret_name_value = cache_value.get("azure_secret_name")
+    if azure_secret_name_value is not None and (
+        not isinstance(azure_secret_name_value, str) or not azure_secret_name_value.strip()
+    ):
+        return None, "auth.cache.azure_secret_name must be a non-empty string when provided."
+    azure_secret_name = azure_secret_name_value.strip() if isinstance(azure_secret_name_value, str) else None
+    if azure_secret_name is not None and not _is_valid_azure_secret_name(azure_secret_name):
+        return None, "auth.cache.azure_secret_name must match Azure secret naming rules ([0-9A-Za-z-], max 127)."
+
+    azure_secret_version_value = cache_value.get("azure_secret_version", "latest")
+    if azure_secret_version_value is not None and (
+        not isinstance(azure_secret_version_value, str) or not azure_secret_version_value.strip()
+    ):
+        return None, "auth.cache.azure_secret_version must be a non-empty string when provided."
+    azure_secret_version = (
+        azure_secret_version_value.strip() if isinstance(azure_secret_version_value, str) else "latest"
+    )
+
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         if aws_secret_id is None:
             return (
@@ -2286,6 +2321,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
                 "auth.cache.backend='gcp_secret_manager'.",
             )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
     elif backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         if gcp_secret_name is None:
             return (
@@ -2297,6 +2338,35 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
                 "when auth.cache.backend='aws_secrets_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+    elif backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
+        if azure_vault_url is None:
+            return (
+                None,
+                "auth.cache.azure_vault_url is required when auth.cache.backend='azure_key_vault'.",
+            )
+        if azure_secret_name is None:
+            return (
+                None,
+                "auth.cache.azure_secret_name is required when auth.cache.backend='azure_key_vault'.",
+            )
+        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
+                "when auth.cache.backend='aws_secrets_manager'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
             )
     else:
         if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
@@ -2311,6 +2381,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
                 "auth.cache.backend='gcp_secret_manager'.",
             )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
 
     return (
         OAuthCacheSettings(
@@ -2322,6 +2398,9 @@ def _coerce_oauth_cache_settings(
             aws_endpoint_url=aws_endpoint_url,
             gcp_secret_name=gcp_secret_name,
             gcp_endpoint_url=gcp_endpoint_url,
+            azure_vault_url=azure_vault_url,
+            azure_secret_name=azure_secret_name,
+            azure_secret_version=azure_secret_version,
         ),
         None,
     )
@@ -2330,6 +2409,20 @@ def _coerce_oauth_cache_settings(
 def _is_valid_gcp_secret_name(value: str) -> bool:
     """Validate gcp secret name shape: projects/<project>/secrets/<secret>."""
     return re.fullmatch(r"projects/[^/]+/secrets/[^/]+", value) is not None
+
+
+def _is_valid_azure_vault_url(value: str) -> bool:
+    """Validate Azure Key Vault URL shape: https://<name>.vault.azure.net."""
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return False
+    host = parsed.netloc.lower()
+    return host.endswith(".vault.azure.net")
+
+
+def _is_valid_azure_secret_name(value: str) -> bool:
+    """Validate Azure Key Vault secret name shape."""
+    return re.fullmatch(r"[0-9A-Za-z-]{1,127}", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -4031,6 +4124,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_aws(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         return _load_oauth_persistent_cache_entries_from_gcp(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
+        return _load_oauth_persistent_cache_entries_from_azure(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -4060,6 +4155,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         _persist_oauth_cache_entry_gcp(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
+        _persist_oauth_cache_entry_azure(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -4129,6 +4227,27 @@ def _persist_oauth_cache_entry_gcp(cache_key: str, cache_settings: OAuthCacheSet
         persistent_entries.pop(cache_key, None)
 
     _write_oauth_cache_payload_to_gcp(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _load_oauth_persistent_cache_entries_from_azure(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Azure Key Vault; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_azure(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_azure(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Azure Key Vault; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_azure(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_azure(cache_settings=cache_settings, entries=persistent_entries)
 
 
 def _build_aws_secrets_manager_client(cache_settings: OAuthCacheSettings) -> Any | None:
@@ -4306,6 +4425,84 @@ def _write_oauth_cache_payload_to_gcp(cache_settings: OAuthCacheSettings, entrie
                 "payload": {"data": serialized_payload},
             }
         )
+    except Exception:
+        return False
+    return True
+
+
+def _build_azure_key_vault_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create Azure Key Vault SecretClient for OAuth cache backend."""
+    if cache_settings.azure_vault_url is None:
+        return None
+
+    try:
+        identity_module = importlib.import_module("azure.identity")
+        keyvault_module = importlib.import_module("azure.keyvault.secrets")
+    except Exception:
+        return None
+
+    try:
+        credential = cast(Any, identity_module).DefaultAzureCredential()
+        return cast(Any, keyvault_module).SecretClient(
+            vault_url=cache_settings.azure_vault_url,
+            credential=credential,
+        )
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_azure(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from Azure Key Vault secret."""
+    if cache_settings.azure_secret_name is None:
+        return None
+
+    client = _build_azure_key_vault_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    version = cache_settings.azure_secret_version or "latest"
+    try:
+        secret_bundle = client.get_secret(name=cache_settings.azure_secret_name, version=version)
+    except Exception:
+        return None
+
+    secret_value = getattr(secret_bundle, "value", None)
+    if not isinstance(secret_value, str) or not secret_value.strip():
+        return None
+
+    try:
+        payload = json.loads(secret_value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_azure(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to Azure Key Vault secret."""
+    if cache_settings.azure_secret_name is None:
+        return False
+
+    client = _build_azure_key_vault_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    # Pre-provisioned mode: do not auto-create a missing secret.
+    try:
+        client.get_secret(name=cache_settings.azure_secret_name)
+    except Exception:
+        return False
+
+    try:
+        client.set_secret(name=cache_settings.azure_secret_name, value=serialized_payload)
     except Exception:
         return False
     return True

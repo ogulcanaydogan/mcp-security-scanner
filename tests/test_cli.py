@@ -2533,6 +2533,30 @@ class TestCLIHelpers:
         assert settings.gcp_secret_name == "projects/demo-project/secrets/mcp-oauth-cache"
         assert settings.gcp_endpoint_url == "https://secretmanager.googleapis.com"
 
+    def test_coerce_oauth_cache_settings_accepts_azure_backend(self):
+        """OAuth cache settings should accept azure_key_vault backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "https://mcp-security.vault.azure.net",
+                    "azure_secret_name": "mcp-security-oauth-cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "azure_key_vault"
+        assert settings.azure_vault_url == "https://mcp-security.vault.azure.net"
+        assert settings.azure_secret_name == "mcp-security-oauth-cache"
+        assert settings.azure_secret_version == "latest"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -2575,6 +2599,54 @@ class TestCLIHelpers:
                     "gcp_endpoint_url": "ftp://invalid",
                 },
                 "auth.cache.gcp_endpoint_url must be a valid http/https URL.",
+            ),
+            (
+                {"backend": "azure_key_vault"},
+                "auth.cache.azure_vault_url is required",
+            ),
+            (
+                {
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "http://mcp-security.vault.azure.net",
+                    "azure_secret_name": "mcp-security-oauth-cache",
+                },
+                "auth.cache.azure_vault_url must be a valid https://<name>.vault.azure.net URL.",
+            ),
+            (
+                {
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "https://example.com",
+                    "azure_secret_name": "mcp-security-oauth-cache",
+                },
+                "auth.cache.azure_vault_url must be a valid https://<name>.vault.azure.net URL.",
+            ),
+            (
+                {
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "https://mcp-security.vault.azure.net",
+                },
+                "auth.cache.azure_secret_name is required",
+            ),
+            (
+                {
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "https://mcp-security.vault.azure.net",
+                    "azure_secret_name": "invalid/name",
+                },
+                "auth.cache.azure_secret_name must match Azure secret naming rules",
+            ),
+            (
+                {"backend": "local", "azure_vault_url": "https://mcp-security.vault.azure.net"},
+                "only supported when auth.cache.backend='azure_key_vault'",
+            ),
+            (
+                {
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "https://mcp-security.vault.azure.net",
+                    "azure_secret_name": "mcp-security-oauth-cache",
+                    "azure_secret_version": "",
+                },
+                "auth.cache.azure_secret_version must be a non-empty string when provided.",
             ),
         ],
     )
@@ -2899,6 +2971,166 @@ class TestCLIHelpers:
                 namespace="gcp-prod",
                 backend="gcp_secret_manager",
                 gcp_secret_name="projects/demo-project/secrets/mcp-oauth-cache",
+            )
+        )
+        assert entries == {}
+
+    def test_azure_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """Azure Key Vault backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-azure")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-azure")
+
+        class _SecretBundle:
+            def __init__(self, value: str) -> None:
+                self.value = value
+
+        class FakeSecretClient:
+            secret_payload: ClassVar[str] = json.dumps(
+                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                sort_keys=True,
+            )
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get_secret(self, *, name: str, version: str | None = None) -> _SecretBundle:
+                assert name == "mcp-security-oauth-cache"
+                if version is not None:
+                    assert version == "latest"
+                return _SecretBundle(self.__class__.secret_payload)
+
+            def set_secret(self, *, name: str, value: str) -> dict[str, object]:
+                assert name == "mcp-security-oauth-cache"
+                self.__class__.secret_payload = value
+                return {}
+
+        class FakeDefaultAzureCredential:
+            def __init__(self) -> None:
+                pass
+
+        class FakeAzureIdentityModule:
+            DefaultAzureCredential = FakeDefaultAzureCredential
+
+        class FakeAzureKeyVaultSecretsModule:
+            SecretClient = FakeSecretClient
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "azure.identity":
+                return FakeAzureIdentityModule
+            if module_name == "azure.keyvault.secrets":
+                return FakeAzureKeyVaultSecretsModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-azure-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "azure-prod",
+                    "backend": "azure_key_vault",
+                    "azure_vault_url": "https://mcp-security.vault.azure.net",
+                    "azure_secret_name": "mcp-security-oauth-cache",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_azure_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-azure-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_azure_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-azure-token"
+        assert call_count["value"] == 1
+
+        persisted_payload = json.loads(FakeSecretClient.secret_payload)
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert any(
+            item.get("vault_url") == "https://mcp-security.vault.azure.net" for item in FakeSecretClient.client_kwargs
+        )
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_azure_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """Azure backend cache load should bypass provider errors without raising."""
+
+        class UnauthorizedError(Exception):
+            pass
+
+        class FakeSecretClient:
+            def get_secret(self, *, name: str, version: str | None = None) -> dict[str, object]:
+                del name, version
+                raise UnauthorizedError("denied")
+
+        class FakeDefaultAzureCredential:
+            def __init__(self) -> None:
+                pass
+
+        class FakeAzureIdentityModule:
+            DefaultAzureCredential = FakeDefaultAzureCredential
+
+        class FakeAzureKeyVaultSecretsModule:
+            SecretClient = FakeSecretClient
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "azure.identity":
+                return FakeAzureIdentityModule
+            if module_name == "azure.keyvault.secrets":
+                return FakeAzureKeyVaultSecretsModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="azure-prod",
+                backend="azure_key_vault",
+                azure_vault_url="https://mcp-security.vault.azure.net",
+                azure_secret_name="mcp-security-oauth-cache",
             )
         )
         assert entries == {}
