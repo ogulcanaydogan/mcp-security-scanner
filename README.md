@@ -7,13 +7,13 @@
 Security scanner for Model Context Protocol (MCP) servers.  
 Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8H)
+## Current Scope (Sprint 1-8I)
 
 - `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
 - CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
-- Advanced persistent OAuth cache backends (`auth.cache.backend=aws_secrets_manager|gcp_secret_manager|azure_key_vault`) for config-based OAuth flows
+- Advanced persistent OAuth cache backends (`auth.cache.backend=aws_secrets_manager|gcp_secret_manager|azure_key_vault|hashicorp_vault`) for config-based OAuth flows
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
@@ -192,6 +192,25 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-vault-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "hashicorp_vault",
+          "vault_url": "https://vault.example.com",
+          "vault_secret_path": "kv/mcp-security-scanner/oauth-cache",
+          "vault_token_env": "VAULT_TOKEN",
+          "vault_namespace": "platform-security"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -259,7 +278,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `gcp_secret_manager`, or `azure_key_vault`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, or `hashicorp_vault`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing
   - `gcp_secret_name` (required when `backend=gcp_secret_manager`, format `projects/<project>/secrets/<secret>`)
@@ -267,6 +286,10 @@ Notes:
   - `azure_vault_url` (required when `backend=azure_key_vault`, format `https://<name>.vault.azure.net`)
   - `azure_secret_name` (required when `backend=azure_key_vault`, Azure Key Vault secret-name rules)
   - optional `azure_secret_version` (default `latest`)
+  - `vault_url` (required when `backend=hashicorp_vault`, `http/https`)
+  - `vault_secret_path` (required when `backend=hashicorp_vault`, KV path)
+  - optional `vault_token_env` (Vault token env var name; defaults to `VAULT_TOKEN`)
+  - optional `vault_namespace`
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -297,6 +320,11 @@ Notes:
     - auth uses Azure SDK default credential chain (`DefaultAzureCredential`), no new CLI credential flags
     - secret must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
     - optional `azure_secret_version` controls read version (default `latest`); writes create a new secret version
+  - `backend=hashicorp_vault`:
+    - cache payload is stored as a single JSON envelope in configured Vault KV v2 secret path (`auth.cache.vault_secret_path`)
+    - auth uses configured token env (`vault_token_env`) or `VAULT_TOKEN` fallback
+    - optional Vault enterprise namespace is supported via `vault_namespace`
+    - secret path must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
@@ -380,7 +408,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8H)
+## Roadmap (Post Sprint 8I)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, and `azure_key_vault`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`

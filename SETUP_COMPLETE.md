@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8H Implementation State
+# Setup Complete — Sprint 1-8I Implementation State
 
-This file records the actual implementation status after Sprint 8H.
+This file records the actual implementation status after Sprint 8I.
 
 ## Completed Work
 
@@ -449,6 +449,29 @@ This file records the actual implementation status after Sprint 8H.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8I (Advanced Secret-Store Backend v4: HashiCorp Vault)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+- HashiCorp Vault backend contract:
+  - required: `vault_url` (`http://` or `https://`)
+  - required: `vault_secret_path` (KV path)
+  - optional: `vault_token_env` (uses env var name for Vault token; defaults to `VAULT_TOKEN`)
+  - optional: `vault_namespace`
+  - pre-provisioned secret path model (scanner does not create missing paths)
+- HashiCorp Vault backend behavior:
+  - read from configured KV v2 path (`read_secret_version`)
+  - persist via `create_or_update_secret` with single JSON envelope payload (`schema_version`, `updated_at`, `entries`)
+  - provider/read/write/parse errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -461,7 +484,7 @@ This file records the actual implementation status after Sprint 8H.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, and `azure_key_vault`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

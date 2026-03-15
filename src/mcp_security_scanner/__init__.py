@@ -5,7 +5,7 @@ This package detects prompt injection, tool poisoning, capability escalation,
 and rug-pull attacks in MCP servers. Findings are mapped to OWASP LLM Top 10.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 __author__ = "Ogulcan Aydogan"
 __license__ = "Apache-2.0"
 
