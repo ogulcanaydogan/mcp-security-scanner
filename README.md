@@ -3,29 +3,55 @@
 [![CI](https://github.com/ogulcanaydogan/mcp-security-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/ogulcanaydogan/mcp-security-scanner/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-%3E%3D80%25-green.svg)](.)
+[![PyPI](https://img.shields.io/pypi/v/ogulcanaydogan-mcp-security-scanner.svg)](https://pypi.org/project/ogulcanaydogan-mcp-security-scanner/)
 
-Security scanner for Model Context Protocol (MCP) servers.  
-Scans MCP capabilities, runs analyzer checks, and exports findings in `json`, `html`, or `sarif`.
+Security scanner for Model Context Protocol (MCP) servers.
+It analyzes server capabilities, detects policy and runtime risks, and exports findings as `json`, `html`, or `sarif`.
 
-## Current Scope (Sprint 1-8I)
+## Why This Project
 
-- `stdio`, `sse`, and `streamable-http` transport support in discovery/connector layer
-- CLI commands implemented: `server`, `config`, `baseline`, `compare`, `cache rotate`
+- Secure MCP integrations before production rollout.
+- Detect static misconfiguration and capability risk early.
+- Compare baseline snapshots to catch risky tool mutations.
+- Optionally run bounded dynamic probes with `--dynamic`.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  A["Target Input (server/config/baseline/compare)"] --> B["Connector Discovery (stdio/sse/streamable-http)"]
+  B --> C["Tool + Resource Snapshot"]
+  C --> D["Static Analyzer Pipeline"]
+  D --> E["Report Builder (json/html/sarif)"]
+  C --> F["Baseline Engine (hash + mutation diff)"]
+  A --> G["Optional Auth Resolver (config + URL JSON auth/mTLS)"]
+  G --> B
+  A --> H["Optional Dynamic Probes (--dynamic)"]
+  H --> E
+  F --> E
+```
+
+## Capability Snapshot (Sprint 1-8I)
+
+| Area | Status |
+|---|---|
+| Transports | `stdio`, `sse`, `streamable-http` |
+| Commands | `server`, `config`, `baseline`, `compare`, `cache rotate` |
+| Default analyzers | `Static`, `PromptInjection`, `Escalation`, `ToolPoisoning`, `CrossTool` |
+| Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
+| OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
+| Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault` |
+| mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
+| Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
+
+## Current Scope Details
+
 - `config` supports auth/session flow v1 for network transports (`bearer`, `api_key`, `session_cookie`, `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce`)
 - Optional persistent OAuth cache hardening (strict lock, corruption recovery, metadata key management, multi-key recovery)
-- Advanced persistent OAuth cache backends (`auth.cache.backend=aws_secrets_manager|gcp_secret_manager|azure_key_vault|hashicorp_vault`) for config-based OAuth flows
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
-- OAuth token-endpoint mTLS (`auth.mtls_*`) and transport-level discovery mTLS (`mtls_*` on network entries)
-- Dynamic analyzer hardening (opt-in `--dynamic`) with bounded probe policy, deterministic ordering, and noise suppression
-- Dynamic analyzer expansion (opt-in `--dynamic`) with semantic probe variants and stronger false-positive suppression
 - Release stabilization (Sprint 8D): PyPI distribution name switched to `ogulcanaydogan-mcp-security-scanner` to avoid name collision
-- Default analyzers enabled in scan flows:
-  - `StaticAnalyzer`
-  - `PromptInjectionAnalyzer`
-  - `EscalationAnalyzer`
-  - `ToolPoisoningAnalyzer`
-  - `CrossToolAnalyzer`
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
