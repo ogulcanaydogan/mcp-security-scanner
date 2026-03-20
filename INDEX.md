@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8I scope.
+Current index for the implemented Sprint 1-8J scope.
 
 ## Status Snapshot
 
@@ -31,6 +31,7 @@ Current index for the implemented Sprint 1-8I scope.
 - Sprint 8G: done (advanced OAuth cache backend v2 with GCP Secret Manager, ADC-first, pre-provisioned secret model)
 - Sprint 8H: done (advanced OAuth cache backend v3 with Azure Key Vault, default-credential auth, pre-provisioned secret model)
 - Sprint 8I: done (advanced OAuth cache backend v4 with HashiCorp Vault, token-env/default-chain auth, pre-provisioned secret path model)
+- Sprint 8J: done (release hardening: idempotent GitHub release creation/upload, publish timeout/concurrency guard, single-owner PyPI operations checklist)
 
 ## Top-Level Docs
 
@@ -44,6 +45,7 @@ Current index for the implemented Sprint 1-8I scope.
 - PyPI distribution name: `ogulcanaydogan-mcp-security-scanner`
 - Python package/module path unchanged: `mcp_security_scanner`
 - CLI entrypoint unchanged: `mcp-scan`
+- GitHub release publishing path: idempotent `gh release` create/upload in CI publish job
 
 ## Source Map
 

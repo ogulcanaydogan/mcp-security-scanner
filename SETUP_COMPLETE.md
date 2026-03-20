@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8I Implementation State
+# Setup Complete — Sprint 1-8J Implementation State
 
-This file records the actual implementation status after Sprint 8I.
+This file records the actual implementation status after Sprint 8J.
 
 ## Completed Work
 
@@ -471,6 +471,18 @@ This file records the actual implementation status after Sprint 8I.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 8J (Release Hardening + v0.1.5)
+
+- CI publish workflow hardened:
+  - replaced `softprops/action-gh-release@v2` with idempotent `gh release` create/upload flow
+  - added `publish` job timeout guard (`timeout-minutes`)
+  - added tag-scoped publish concurrency guard (`cancel-in-progress: false`)
+- OIDC publish and Sigstore signing flow are preserved.
+- release/docs hardening:
+  - single-owner PyPI operations checklist documented (2FA/recovery/publisher hygiene)
+  - release scope expanded from Sprint 1-8I to Sprint 1-8J state tracking
+- scanner runtime and CLI behavior are unchanged.
 
 ## Exit Code Contract (Current)
 

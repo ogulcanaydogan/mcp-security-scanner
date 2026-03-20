@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8I)
+## Capability Snapshot (Sprint 1-8J)
 
 | Area | Status |
 |---|---|
@@ -42,6 +42,7 @@ flowchart LR
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
 | Persistent cache backends | `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault` |
+| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release upload/create |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
 
@@ -52,6 +53,7 @@ flowchart LR
 - OAuth provider hardening+ (tolerant token parsing and transient retry policy for token endpoints)
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - Release stabilization (Sprint 8D): PyPI distribution name switched to `ogulcanaydogan-mcp-security-scanner` to avoid name collision
+- Release hardening (Sprint 8J): publish workflow uses idempotent `gh release` create/upload path and tag-scoped publish concurrency guard
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -70,6 +72,18 @@ git clone https://github.com/ogulcanaydogan/mcp-security-scanner.git
 cd mcp-security-scanner
 pip install -e .[dev]
 ```
+
+## PyPI Operations Checklist (Single Owner)
+
+Current owner model is single-account (`ogulcan`). Keep these controls in place:
+
+- Ensure PyPI 2FA is enabled and recovery codes are stored offline.
+- Keep account email access current and verified before release windows.
+- In project publishing settings, keep exactly one active trusted publisher for:
+  - repository `ogulcanaydogan/mcp-security-scanner`
+  - workflow `ci.yml`
+  - environment `(Any)` (empty)
+- Remove stale duplicate/pending publisher records for the same project.
 
 ## Quick Start
 
@@ -434,7 +448,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8I)
+## Roadmap (Post Sprint 8J)
 
 Deferred items:
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
