@@ -60,6 +60,7 @@ _OAUTH_CACHE_BACKEND_HASHICORP_VAULT = "hashicorp_vault"
 _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS = "kubernetes_secrets"
 _OAUTH_CACHE_BACKEND_OCI_VAULT = "oci_vault"
 _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS = "doppler_secrets"
+_OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT = "onepassword_connect"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -70,6 +71,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS,
     _OAUTH_CACHE_BACKEND_OCI_VAULT,
     _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS,
+    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -118,6 +120,11 @@ class OAuthCacheSettings:
     doppler_secret_name: str | None = None
     doppler_token_env: str | None = None
     doppler_api_url: str | None = None
+    op_connect_host: str | None = None
+    op_vault_id: str | None = None
+    op_item_id: str | None = None
+    op_field_label: str | None = None
+    op_connect_token_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2252,6 +2259,11 @@ def _coerce_oauth_cache_settings(
             "doppler_secret_name",
             "doppler_token_env",
             "doppler_api_url",
+            "op_connect_host",
+            "op_vault_id",
+            "op_item_id",
+            "op_field_label",
+            "op_connect_token_env",
         }
     ]
     if unknown_fields:
@@ -2263,7 +2275,8 @@ def _coerce_oauth_cache_settings(
             "vault_url, vault_secret_path, vault_token_env, vault_namespace, "
             "k8s_secret_namespace, k8s_secret_name, k8s_secret_key, "
             "oci_secret_ocid, oci_region, oci_endpoint_url, "
-            "doppler_project, doppler_config, doppler_secret_name, doppler_token_env, doppler_api_url.",
+            "doppler_project, doppler_config, doppler_secret_name, doppler_token_env, doppler_api_url, "
+            "op_connect_host, op_vault_id, op_item_id, op_field_label, op_connect_token_env.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2503,6 +2516,43 @@ def _coerce_oauth_cache_settings(
         if parsed_doppler_api_url.scheme != "https" or not parsed_doppler_api_url.netloc:
             return None, "auth.cache.doppler_api_url must be a valid https URL."
 
+    op_connect_host_value = cache_value.get("op_connect_host")
+    if op_connect_host_value is not None and (
+        not isinstance(op_connect_host_value, str) or not op_connect_host_value.strip()
+    ):
+        return None, "auth.cache.op_connect_host must be a non-empty string when provided."
+    op_connect_host = op_connect_host_value.strip() if isinstance(op_connect_host_value, str) else None
+    if op_connect_host is not None:
+        parsed_op_connect_host = urlparse(op_connect_host)
+        if parsed_op_connect_host.scheme != "https" or not parsed_op_connect_host.netloc:
+            return None, "auth.cache.op_connect_host must be a valid https URL."
+
+    op_vault_id_value = cache_value.get("op_vault_id")
+    if op_vault_id_value is not None and (not isinstance(op_vault_id_value, str) or not op_vault_id_value.strip()):
+        return None, "auth.cache.op_vault_id must be a non-empty string when provided."
+    op_vault_id = op_vault_id_value.strip() if isinstance(op_vault_id_value, str) else None
+
+    op_item_id_value = cache_value.get("op_item_id")
+    if op_item_id_value is not None and (not isinstance(op_item_id_value, str) or not op_item_id_value.strip()):
+        return None, "auth.cache.op_item_id must be a non-empty string when provided."
+    op_item_id = op_item_id_value.strip() if isinstance(op_item_id_value, str) else None
+
+    op_field_label_value = cache_value.get("op_field_label")
+    if op_field_label_value is not None and (
+        not isinstance(op_field_label_value, str) or not op_field_label_value.strip()
+    ):
+        return None, "auth.cache.op_field_label must be a non-empty string when provided."
+    op_field_label = op_field_label_value.strip() if isinstance(op_field_label_value, str) else None
+
+    op_connect_token_env_value = cache_value.get("op_connect_token_env")
+    if op_connect_token_env_value is not None and (
+        not isinstance(op_connect_token_env_value, str) or not op_connect_token_env_value.strip()
+    ):
+        return None, "auth.cache.op_connect_token_env must be a non-empty string when provided."
+    op_connect_token_env = op_connect_token_env_value.strip() if isinstance(op_connect_token_env_value, str) else None
+    if op_connect_token_env is not None and not _is_valid_env_var_name(op_connect_token_env):
+        return None, "auth.cache.op_connect_token_env must be a valid environment variable name."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -2515,6 +2565,20 @@ def _coerce_oauth_cache_settings(
             "auth.cache.doppler_project, auth.cache.doppler_config, auth.cache.doppler_secret_name, "
             "auth.cache.doppler_token_env, and auth.cache.doppler_api_url are only supported when "
             "auth.cache.backend='doppler_secrets'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT and (
+        op_connect_host is not None
+        or op_vault_id is not None
+        or op_item_id is not None
+        or op_field_label is not None
+        or op_connect_token_env is not None
+    ):
+        return (
+            None,
+            "auth.cache.op_connect_host, auth.cache.op_vault_id, auth.cache.op_item_id, "
+            "auth.cache.op_field_label, and auth.cache.op_connect_token_env are only supported when "
+            "auth.cache.backend='onepassword_connect'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -2917,6 +2981,75 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
                 "supported when auth.cache.backend='oci_vault'.",
             )
+    elif backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
+        if op_connect_host is None:
+            return (
+                None,
+                "auth.cache.op_connect_host is required when auth.cache.backend='onepassword_connect'.",
+            )
+        if op_vault_id is None:
+            return (
+                None,
+                "auth.cache.op_vault_id is required when auth.cache.backend='onepassword_connect'.",
+            )
+        if op_item_id is None:
+            return (
+                None,
+                "auth.cache.op_item_id is required when auth.cache.backend='onepassword_connect'.",
+            )
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
+        if doppler_project is not None or doppler_config is not None or doppler_secret_name is not None:
+            return (
+                None,
+                "auth.cache.doppler_project, auth.cache.doppler_config, and auth.cache.doppler_secret_name are "
+                "only supported when auth.cache.backend='doppler_secrets'.",
+            )
     else:
         if (
             aws_secret_id is not None
@@ -3003,6 +3136,19 @@ def _coerce_oauth_cache_settings(
                 else ("DOPPLER_TOKEN" if backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS else None)
             ),
             doppler_api_url=doppler_api_url,
+            op_connect_host=op_connect_host,
+            op_vault_id=op_vault_id,
+            op_item_id=op_item_id,
+            op_field_label=(
+                op_field_label
+                if op_field_label is not None
+                else ("oauth_cache" if backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT else None)
+            ),
+            op_connect_token_env=(
+                op_connect_token_env
+                if op_connect_token_env is not None
+                else ("OP_CONNECT_TOKEN" if backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT else None)
+            ),
         ),
         None,
     )
@@ -4768,6 +4914,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_oci(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
         return _load_oauth_persistent_cache_entries_from_doppler(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
+        return _load_oauth_persistent_cache_entries_from_onepassword_connect(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -4815,6 +4963,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
         _persist_oauth_cache_entry_doppler(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
+        _persist_oauth_cache_entry_onepassword_connect(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -5892,6 +6043,204 @@ def _write_oauth_cache_payload_to_doppler(
                     "secrets": {cache_settings.doppler_secret_name: serialized_payload},
                 },
             )
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_onepassword_connect(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from 1Password Connect item field; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_onepassword_connect(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_onepassword_connect(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to 1Password Connect item field; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_onepassword_connect(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_onepassword_connect(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_onepassword_connect_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create 1Password Connect API client for OAuth cache backend."""
+    token_env_name = cache_settings.op_connect_token_env or "OP_CONNECT_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    host_url = (cache_settings.op_connect_host or "").strip().rstrip("/")
+    if not host_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=host_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"Bearer {token_value}",
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _read_onepassword_connect_item(client: httpx.Client, cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read a single pre-provisioned 1Password Connect item from configured vault/item IDs."""
+    if cache_settings.op_vault_id is None or cache_settings.op_item_id is None:
+        return None
+
+    path = f"/v1/vaults/{cache_settings.op_vault_id}/items/{cache_settings.op_item_id}"
+    try:
+        response = client.get(path)
+    except Exception:
+        return None
+
+    if response.status_code == 404:
+        return {}
+    try:
+        response.raise_for_status()
+    except Exception:
+        return None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _read_oauth_cache_payload_from_onepassword_connect(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from 1Password Connect pre-provisioned item field."""
+    if cache_settings.op_vault_id is None or cache_settings.op_item_id is None:
+        return None
+    field_label = cache_settings.op_field_label or "oauth_cache"
+
+    client = _build_onepassword_connect_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        item_payload = _read_onepassword_connect_item(client=client, cache_settings=cache_settings)
+    finally:
+        client.close()
+
+    if item_payload is None:
+        return None
+    if not item_payload:
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    fields = item_payload.get("fields")
+    if not isinstance(fields, list):
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    field_value: str | None = None
+    for raw_field in fields:
+        if not isinstance(raw_field, dict):
+            continue
+        label_value = raw_field.get("label")
+        id_value = raw_field.get("id")
+        if label_value == field_label or id_value == field_label:
+            value = raw_field.get("value")
+            if isinstance(value, str) and value.strip():
+                field_value = value
+            break
+
+    if field_value is None:
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    try:
+        payload = json.loads(field_value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_onepassword_connect(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing 1Password Connect item field."""
+    if cache_settings.op_vault_id is None or cache_settings.op_item_id is None:
+        return False
+    field_label = cache_settings.op_field_label or "oauth_cache"
+
+    client = _build_onepassword_connect_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        item_payload = _read_onepassword_connect_item(client=client, cache_settings=cache_settings)
+        if item_payload is None:
+            return False
+
+        # Pre-provisioned mode: require item and field to already exist.
+        fields = item_payload.get("fields")
+        if not item_payload or not isinstance(fields, list):
+            return False
+
+        target_index: int | None = None
+        for index, raw_field in enumerate(fields):
+            if not isinstance(raw_field, dict):
+                continue
+            label_value = raw_field.get("label")
+            id_value = raw_field.get("id")
+            if label_value == field_label or id_value == field_label:
+                target_index = index
+                break
+        if target_index is None:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        updated_item_payload = dict(item_payload)
+        updated_fields: list[dict[str, Any]] = []
+        for raw_field in fields:
+            if isinstance(raw_field, dict):
+                updated_fields.append(dict(raw_field))
+            else:
+                updated_fields.append({})
+        updated_fields[target_index]["value"] = serialized_payload
+        updated_item_payload["fields"] = updated_fields
+
+        path = f"/v1/vaults/{cache_settings.op_vault_id}/items/{cache_settings.op_item_id}"
+        try:
+            response = client.put(path, json=updated_item_payload)
         except Exception:
             return False
         if response.status_code == 404:

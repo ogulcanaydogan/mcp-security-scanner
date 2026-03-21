@@ -2100,6 +2100,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_oci_secrets_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_oci_vault_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_doppler_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_onepassword_connect_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2716,6 +2717,56 @@ class TestCLIHelpers:
         assert settings.doppler_token_env == "DOPPLER_TOKEN_PROD"
         assert settings.doppler_api_url == "https://api.doppler.com"
 
+    def test_coerce_oauth_cache_settings_accepts_onepassword_connect_backend(self):
+        """OAuth cache settings should accept onepassword_connect backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "onepassword_connect",
+                    "op_connect_host": "https://op-connect.example.com",
+                    "op_vault_id": "vault-123",
+                    "op_item_id": "item-456",
+                    "op_field_label": "oauth_cache",
+                    "op_connect_token_env": "OP_CONNECT_TOKEN_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "onepassword_connect"
+        assert settings.op_connect_host == "https://op-connect.example.com"
+        assert settings.op_vault_id == "vault-123"
+        assert settings.op_item_id == "item-456"
+        assert settings.op_field_label == "oauth_cache"
+        assert settings.op_connect_token_env == "OP_CONNECT_TOKEN_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_onepassword_defaults(self):
+        """OAuth cache settings should apply default onepassword_connect optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "onepassword_connect",
+                    "op_connect_host": "https://op-connect.example.com",
+                    "op_vault_id": "vault-123",
+                    "op_item_id": "item-456",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.op_field_label == "oauth_cache"
+        assert settings.op_connect_token_env == "OP_CONNECT_TOKEN"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -2925,6 +2976,43 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "doppler_project": "security-platform"},
                 "only supported when auth.cache.backend='doppler_secrets'",
+            ),
+            (
+                {"backend": "onepassword_connect"},
+                "auth.cache.op_connect_host is required",
+            ),
+            (
+                {"backend": "onepassword_connect", "op_connect_host": "http://op-connect.example.com"},
+                "auth.cache.op_connect_host must be a valid https URL.",
+            ),
+            (
+                {
+                    "backend": "onepassword_connect",
+                    "op_connect_host": "https://op-connect.example.com",
+                },
+                "auth.cache.op_vault_id is required",
+            ),
+            (
+                {
+                    "backend": "onepassword_connect",
+                    "op_connect_host": "https://op-connect.example.com",
+                    "op_vault_id": "vault-123",
+                },
+                "auth.cache.op_item_id is required",
+            ),
+            (
+                {
+                    "backend": "onepassword_connect",
+                    "op_connect_host": "https://op-connect.example.com",
+                    "op_vault_id": "vault-123",
+                    "op_item_id": "item-456",
+                    "op_connect_token_env": "9INVALID",
+                },
+                "auth.cache.op_connect_token_env must be a valid environment variable name.",
+            ),
+            (
+                {"backend": "local", "op_connect_host": "https://op-connect.example.com"},
+                "only supported when auth.cache.backend='onepassword_connect'",
             ),
         ],
     )
@@ -4495,6 +4583,288 @@ class TestCLIHelpers:
             )
         )
         assert entries == {}
+
+    def test_onepassword_connect_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """1Password Connect backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-op")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-op")
+        monkeypatch.setenv("OP_CONNECT_TOKEN", "op-token-test")
+
+        class FakeHTTPError(Exception):
+            pass
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise FakeHTTPError(f"status={self.status_code}")
+
+        class FakeOnePasswordConnectClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+            put_payloads: ClassVar[list[dict[str, object]]] = []
+            item_payload: ClassVar[dict[str, object]] = {
+                "id": "item-456",
+                "vault": {"id": "vault-123"},
+                "fields": [
+                    {
+                        "id": "oauth_cache",
+                        "label": "oauth_cache",
+                        "value": json.dumps(
+                            {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                            sort_keys=True,
+                        ),
+                    }
+                ],
+            }
+
+            def __init__(self, **kwargs: object) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/v1/vaults/vault-123/items/item-456"
+                return FakeResponse(status_code=200, json_data=json.loads(json.dumps(self.__class__.item_payload)))
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v1/vaults/vault-123/items/item-456"
+                raw_payload = kwargs.get("json")
+                assert isinstance(raw_payload, dict)
+                self.__class__.put_payloads.append(dict(raw_payload))
+                self.__class__.item_payload = json.loads(json.dumps(raw_payload))
+                return FakeResponse(status_code=200, json_data={"ok": True})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeOnePasswordConnectClient)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-op-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "op-prod",
+                    "backend": "onepassword_connect",
+                    "op_connect_host": "https://op-connect.example.com",
+                    "op_vault_id": "vault-123",
+                    "op_item_id": "item-456",
+                    "op_field_label": "oauth_cache",
+                    "op_connect_token_env": "OP_CONNECT_TOKEN",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_op_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-op-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_op_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-op-token"
+        assert call_count["value"] == 1
+
+        item_fields = FakeOnePasswordConnectClient.item_payload.get("fields")
+        assert isinstance(item_fields, list)
+        assert item_fields
+        cached_value = item_fields[0].get("value")
+        assert isinstance(cached_value, str)
+        persisted_payload = json.loads(cached_value)
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert FakeOnePasswordConnectClient.put_payloads
+        assert any(
+            item.get("base_url") == "https://op-connect.example.com"
+            for item in FakeOnePasswordConnectClient.client_kwargs
+        )
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_onepassword_connect_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """1Password Connect backend cache load should bypass provider errors without raising."""
+        monkeypatch.setenv("OP_CONNECT_TOKEN", "op-token-test")
+
+        class FakeOnePasswordConnectClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str) -> dict[str, object]:
+                del path
+                raise RuntimeError("denied")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeOnePasswordConnectClient)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="op-prod",
+                backend="onepassword_connect",
+                op_connect_host="https://op-connect.example.com",
+                op_vault_id="vault-123",
+                op_item_id="item-456",
+                op_field_label="oauth_cache",
+                op_connect_token_env="OP_CONNECT_TOKEN",
+            )
+        )
+        assert entries == {}
+
+    def test_onepassword_connect_write_bypasses_missing_field(self, monkeypatch):
+        """1Password Connect backend write should fail closed when target field is missing."""
+        monkeypatch.setenv("OP_CONNECT_TOKEN", "op-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeOnePasswordConnectClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/v1/vaults/vault-123/items/item-456"
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "id": "item-456",
+                        "fields": [{"id": "other", "label": "other", "value": "{}"}],
+                    },
+                )
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                raise AssertionError("put should not be called when target field is missing")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeOnePasswordConnectClient)
+
+        success = cli_module._write_oauth_cache_payload_to_onepassword_connect(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="op-prod",
+                backend="onepassword_connect",
+                op_connect_host="https://op-connect.example.com",
+                op_vault_id="vault-123",
+                op_item_id="item-456",
+                op_field_label="oauth_cache",
+                op_connect_token_env="OP_CONNECT_TOKEN",
+            ),
+            entries={},
+        )
+        assert success is False
+
+    def test_onepassword_connect_write_bypasses_http_errors(self, monkeypatch):
+        """1Password Connect backend write should fail closed on update HTTP failures."""
+        monkeypatch.setenv("OP_CONNECT_TOKEN", "op-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeOnePasswordConnectClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                self._put_calls = 0
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/v1/vaults/vault-123/items/item-456"
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "id": "item-456",
+                        "fields": [{"id": "oauth_cache", "label": "oauth_cache", "value": "{}"}],
+                    },
+                )
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v1/vaults/vault-123/items/item-456"
+                del kwargs
+                self._put_calls += 1
+                if self._put_calls == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                return FakeResponse(status_code=500, json_data={})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeOnePasswordConnectClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="op-prod",
+            backend="onepassword_connect",
+            op_connect_host="https://op-connect.example.com",
+            op_vault_id="vault-123",
+            op_item_id="item-456",
+            op_field_label="oauth_cache",
+            op_connect_token_env="OP_CONNECT_TOKEN",
+        )
+
+        assert (
+            cli_module._write_oauth_cache_payload_to_onepassword_connect(cache_settings=settings, entries={}) is False
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_onepassword_connect(cache_settings=settings, entries={}) is False
+        )
 
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
@@ -6284,6 +6654,7 @@ class TestCLIHelpers:
             ("kubernetes_secrets", "_load_oauth_persistent_cache_entries_from_kubernetes"),
             ("oci_vault", "_load_oauth_persistent_cache_entries_from_oci"),
             ("doppler_secrets", "_load_oauth_persistent_cache_entries_from_doppler"),
+            ("onepassword_connect", "_load_oauth_persistent_cache_entries_from_onepassword_connect"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -6300,6 +6671,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_kubernetes",
             "_load_oauth_persistent_cache_entries_from_oci",
             "_load_oauth_persistent_cache_entries_from_doppler",
+            "_load_oauth_persistent_cache_entries_from_onepassword_connect",
         }
 
         for name in backend_loaders:
@@ -6337,6 +6709,7 @@ class TestCLIHelpers:
             ("kubernetes_secrets", "_persist_oauth_cache_entry_kubernetes"),
             ("oci_vault", "_persist_oauth_cache_entry_oci"),
             ("doppler_secrets", "_persist_oauth_cache_entry_doppler"),
+            ("onepassword_connect", "_persist_oauth_cache_entry_onepassword_connect"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -6353,6 +6726,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_kubernetes",
             "_persist_oauth_cache_entry_oci",
             "_persist_oauth_cache_entry_doppler",
+            "_persist_oauth_cache_entry_onepassword_connect",
         }
 
         for name in backend_persisters:
@@ -6507,6 +6881,22 @@ class TestCLIHelpers:
                     doppler_config="prd",
                     doppler_secret_name="MCP_OAUTH_CACHE",
                     doppler_token_env="DOPPLER_TOKEN",
+                ),
+            ),
+            (
+                "_build_onepassword_connect_http_client",
+                None,
+                "_read_oauth_cache_payload_from_onepassword_connect",
+                "_write_oauth_cache_payload_to_onepassword_connect",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="onepassword_connect",
+                    op_connect_host="https://op-connect.example.com",
+                    op_vault_id="vault-123",
+                    op_item_id="item-456",
+                    op_field_label="oauth_cache",
+                    op_connect_token_env="OP_CONNECT_TOKEN",
                 ),
             ),
         ],

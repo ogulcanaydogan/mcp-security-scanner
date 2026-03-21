@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8O)
+## Capability Snapshot (Sprint 1-8P)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -59,6 +59,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8M): added `oci_vault` backend (resource principal first, OCI config fallback, pre-provisioned secret model)
 - Release + contract hardening (Sprint 8N): pre-publish tag/version guard, post-publish PyPI visibility retry check, and shared OAuth cache backend invariant tests
 - OAuth cache provider expansion (Sprint 8O): added `doppler_secrets` backend (env-token auth, pre-provisioned secret model)
+- OAuth cache provider expansion (Sprint 8P): added `onepassword_connect` backend (env-token auth, pre-provisioned item/field model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -312,6 +313,26 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-onepassword-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "onepassword_connect",
+          "op_connect_host": "https://op-connect.example.com",
+          "op_vault_id": "vault-uuid-or-id",
+          "op_item_id": "item-uuid",
+          "op_field_label": "oauth_cache",
+          "op_connect_token_env": "OP_CONNECT_TOKEN"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -379,7 +400,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, or `doppler_secrets`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, or `onepassword_connect`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -403,6 +424,11 @@ Notes:
   - `doppler_secret_name` (required when `backend=doppler_secrets`)
   - optional `doppler_token_env` (default `DOPPLER_TOKEN`)
   - optional `doppler_api_url` (`https` URL; defaults to Doppler API)
+  - `op_connect_host` (required when `backend=onepassword_connect`, `https` URL)
+  - `op_vault_id` (required when `backend=onepassword_connect`)
+  - `op_item_id` (required when `backend=onepassword_connect`)
+  - optional `op_field_label` (default `oauth_cache`)
+  - optional `op_connect_token_env` (default `OP_CONNECT_TOKEN`)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -458,6 +484,12 @@ Notes:
       (`auth.cache.doppler_project` / `auth.cache.doppler_config` / `auth.cache.doppler_secret_name`)
     - auth uses env token only (`auth.cache.doppler_token_env`, default `DOPPLER_TOKEN`)
     - secret must be pre-provisioned; scanner updates existing secret key and does not auto-create missing secrets
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=onepassword_connect`:
+    - cache payload is stored as a single JSON envelope in configured 1Password Connect item field
+      (`auth.cache.op_connect_host` / `auth.cache.op_vault_id` / `auth.cache.op_item_id` / `auth.cache.op_field_label`)
+    - auth uses env token only (`auth.cache.op_connect_token_env`, default `OP_CONNECT_TOKEN`)
+    - item+field must be pre-provisioned; scanner updates existing field value and does not auto-create missing item/field
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
@@ -542,7 +574,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8O)
+## Roadmap (Post Sprint 8P)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, and `doppler_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, and `onepassword_connect`
