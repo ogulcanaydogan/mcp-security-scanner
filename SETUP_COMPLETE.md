@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8L Implementation State
+# Setup Complete — Sprint 1-8M Implementation State
 
-This file records the actual implementation status after Sprint 8L.
+This file records the actual implementation status after Sprint 8M.
 
 ## Completed Work
 
@@ -529,6 +529,31 @@ This file records the actual implementation status after Sprint 8L.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8M (Advanced Secret-Store Backend v7: OCI Vault)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+- OCI backend contract:
+  - required: `oci_secret_ocid`
+  - optional: `oci_region`, `oci_endpoint_url`
+  - pre-provisioned secret model (scanner does not auto-create missing secrets)
+- OCI backend behavior:
+  - auth chain: Resource Principal signer first; config/profile fallback via OCI config file
+  - reads secret bundle content via OCI data-plane and parses JSON envelope payload
+  - writes new secret content version via OCI management-plane
+  - provider/read/write/parse/auth errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -541,7 +566,7 @@ This file records the actual implementation status after Sprint 8L.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, and `kubernetes_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, and `oci_vault`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

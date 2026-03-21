@@ -2634,6 +2634,31 @@ class TestCLIHelpers:
         assert settings.k8s_secret_name == "oauth-cache"
         assert settings.k8s_secret_key == "oauth_cache"
 
+    def test_coerce_oauth_cache_settings_accepts_oci_backend(self):
+        """OAuth cache settings should accept oci_vault backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "oci_vault",
+                    "oci_secret_ocid": "ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+                    "oci_region": "eu-frankfurt-1",
+                    "oci_endpoint_url": "https://vaults.eu-frankfurt-1.oci.oraclecloud.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "oci_vault"
+        assert settings.oci_secret_ocid == "ocid1.secret.oc1.iad.exampleuniqueid1234567890"
+        assert settings.oci_region == "eu-frankfurt-1"
+        assert settings.oci_endpoint_url == "https://vaults.eu-frankfurt-1.oci.oraclecloud.com"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -2783,6 +2808,26 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "k8s_secret_name": "oauth-cache"},
                 "only supported when auth.cache.backend='kubernetes_secrets'",
+            ),
+            (
+                {"backend": "oci_vault"},
+                "auth.cache.oci_secret_ocid is required",
+            ),
+            (
+                {"backend": "oci_vault", "oci_secret_ocid": "invalid"},
+                "auth.cache.oci_secret_ocid must be a valid OCI OCID.",
+            ),
+            (
+                {
+                    "backend": "oci_vault",
+                    "oci_secret_ocid": "ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+                    "oci_endpoint_url": "ftp://invalid",
+                },
+                "auth.cache.oci_endpoint_url must be a valid http/https URL.",
+            ),
+            (
+                {"backend": "local", "oci_secret_ocid": "ocid1.secret.oc1.iad.exampleuniqueid1234567890"},
+                "only supported when auth.cache.backend='oci_vault'",
             ),
         ],
     )
@@ -3742,6 +3787,464 @@ class TestCLIHelpers:
             )
         )
         assert entries == {}
+
+    def test_oci_vault_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """OCI Vault backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-oci")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-oci")
+
+        class _SecretState:
+            payload: ClassVar[str] = base64.b64encode(
+                json.dumps(
+                    {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).decode("ascii")
+
+        class FakeSecretsClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+
+            def __init__(self, config: dict[str, object], **kwargs: object) -> None:
+                self.__class__.client_kwargs.append({"config": dict(config), **kwargs})
+
+            def get_secret_bundle(self, *, secret_id: str) -> types.SimpleNamespace:
+                assert secret_id == "ocid1.secret.oc1.iad.exampleuniqueid1234567890"
+                return types.SimpleNamespace(
+                    data=types.SimpleNamespace(
+                        secret_bundle_content=types.SimpleNamespace(content=_SecretState.payload)
+                    )
+                )
+
+        class FakeBase64SecretContentDetails:
+            def __init__(self, *, content_type: str, content: str) -> None:
+                assert content_type == "BASE64"
+                self.content = content
+
+        class FakeUpdateSecretDetails:
+            def __init__(self, *, secret_content: FakeBase64SecretContentDetails) -> None:
+                self.secret_content = secret_content
+
+        class FakeVaultsClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+
+            def __init__(self, config: dict[str, object], **kwargs: object) -> None:
+                self.__class__.client_kwargs.append({"config": dict(config), **kwargs})
+
+            def get_secret(self, *, secret_id: str) -> dict[str, object]:
+                assert secret_id == "ocid1.secret.oc1.iad.exampleuniqueid1234567890"
+                return {}
+
+            def update_secret(
+                self, *, secret_id: str, update_secret_details: FakeUpdateSecretDetails
+            ) -> dict[str, object]:
+                assert secret_id == "ocid1.secret.oc1.iad.exampleuniqueid1234567890"
+                _SecretState.payload = update_secret_details.secret_content.content
+                return {}
+
+        class FakeSignersModule:
+            signer_calls: ClassVar[int] = 0
+
+            @classmethod
+            def get_resource_principals_signer(cls) -> object:
+                cls.signer_calls += 1
+                raise RuntimeError("resource-principal-unavailable")
+
+        class FakeOCIConfigModule:
+            from_file_calls: ClassVar[int] = 0
+
+            @classmethod
+            def from_file(cls, **kwargs: object) -> dict[str, str]:
+                cls.from_file_calls += 1
+                del kwargs
+                return {"region": "us-ashburn-1"}
+
+        class FakeOCIModule:
+            config = FakeOCIConfigModule
+            auth = types.SimpleNamespace(signers=FakeSignersModule)
+            secrets = types.SimpleNamespace(SecretsClient=FakeSecretsClient)
+            vault = types.SimpleNamespace(
+                VaultsClient=FakeVaultsClient,
+                models=types.SimpleNamespace(
+                    Base64SecretContentDetails=FakeBase64SecretContentDetails,
+                    UpdateSecretDetails=FakeUpdateSecretDetails,
+                ),
+            )
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "oci":
+                return FakeOCIModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-oci-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "oci-prod",
+                    "backend": "oci_vault",
+                    "oci_secret_ocid": "ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+                    "oci_region": "eu-frankfurt-1",
+                    "oci_endpoint_url": "https://vaults.eu-frankfurt-1.oci.oraclecloud.com",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_oci_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-oci-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_oci_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-oci-token"
+        assert call_count["value"] == 1
+
+        persisted_payload = json.loads(base64.b64decode(_SecretState.payload.encode("ascii")).decode("utf-8"))
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert FakeSignersModule.signer_calls >= 1
+        assert FakeOCIConfigModule.from_file_calls >= 1
+        assert any(
+            item.get("service_endpoint") == "https://vaults.eu-frankfurt-1.oci.oraclecloud.com"
+            for item in FakeSecretsClient.client_kwargs
+        )
+        assert any(item.get("config", {}).get("region") == "eu-frankfurt-1" for item in FakeSecretsClient.client_kwargs)
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_build_oci_secrets_client_prefers_resource_principal(self, monkeypatch):
+        """OCI client builder should prefer resource principal signer over config-file fallback."""
+
+        class FakeSecretsClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+
+            def __init__(self, config: dict[str, object], **kwargs: object) -> None:
+                self.__class__.client_kwargs.append({"config": dict(config), **kwargs})
+
+        class FakeSignersModule:
+            signer_calls: ClassVar[int] = 0
+
+            @classmethod
+            def get_resource_principals_signer(cls) -> object:
+                cls.signer_calls += 1
+                return object()
+
+        class FakeOCIConfigModule:
+            from_file_calls: ClassVar[int] = 0
+
+            @classmethod
+            def from_file(cls, **kwargs: object) -> dict[str, str]:
+                cls.from_file_calls += 1
+                del kwargs
+                return {"region": "us-ashburn-1"}
+
+        class FakeOCIModule:
+            config = FakeOCIConfigModule
+            auth = types.SimpleNamespace(signers=FakeSignersModule)
+            secrets = types.SimpleNamespace(SecretsClient=FakeSecretsClient)
+            vault = types.SimpleNamespace(VaultsClient=FakeSecretsClient, models=types.SimpleNamespace())
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "oci":
+                return FakeOCIModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        client = cli_module._build_oci_secrets_client(
+            cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="oci-prod",
+                backend="oci_vault",
+                oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+            )
+        )
+        assert client is not None
+        assert FakeSignersModule.signer_calls == 1
+        assert FakeOCIConfigModule.from_file_calls == 0
+
+    def test_oci_vault_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """OCI backend cache load should bypass provider errors without raising."""
+
+        class FakeSecretsClient:
+            def __init__(self, config: dict[str, object], **kwargs: object) -> None:
+                del config, kwargs
+
+            def get_secret_bundle(self, *, secret_id: str) -> dict[str, object]:
+                del secret_id
+                raise RuntimeError("forbidden")
+
+        class FakeSignersModule:
+            @staticmethod
+            def get_resource_principals_signer() -> object:
+                return object()
+
+        class FakeOCIModule:
+            config = types.SimpleNamespace(from_file=lambda **kwargs: {"region": "us-ashburn-1"})
+            auth = types.SimpleNamespace(signers=FakeSignersModule)
+            secrets = types.SimpleNamespace(SecretsClient=FakeSecretsClient)
+            vault = types.SimpleNamespace(VaultsClient=FakeSecretsClient, models=types.SimpleNamespace())
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "oci":
+                return FakeOCIModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="oci-prod",
+                backend="oci_vault",
+                oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+            )
+        )
+        assert entries == {}
+
+    def test_resolve_oci_auth_context_falls_back_to_config_chain(self, monkeypatch):
+        """OCI auth resolver should use config-file chain when resource principal is unavailable."""
+
+        class FakeSignersModule:
+            @staticmethod
+            def get_resource_principals_signer() -> object:
+                raise RuntimeError("resource principal unavailable")
+
+        class FakeOCIConfigModule:
+            kwargs_calls: ClassVar[list[dict[str, object]]] = []
+
+            @classmethod
+            def from_file(cls, **kwargs: object) -> dict[str, str]:
+                cls.kwargs_calls.append(dict(kwargs))
+                return {"region": "us-ashburn-1", "tenancy": "ocid1.tenancy.oc1..example"}
+
+        fake_oci_module = types.SimpleNamespace(
+            auth=types.SimpleNamespace(signers=FakeSignersModule),
+            config=FakeOCIConfigModule,
+        )
+
+        monkeypatch.setenv("OCI_CONFIG_FILE", "/tmp/oci-config")
+        monkeypatch.setenv("OCI_CONFIG_PROFILE", "PROD")
+        config, signer = cli_module._resolve_oci_auth_context(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="oci-prod",
+                backend="oci_vault",
+                oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+                oci_region="eu-frankfurt-1",
+            ),
+            oci_module=fake_oci_module,
+        )
+
+        assert signer is None
+        assert config is not None
+        assert config["region"] == "eu-frankfurt-1"
+        assert FakeOCIConfigModule.kwargs_calls == [
+            {
+                "file_location": "/tmp/oci-config",
+                "profile_name": "PROD",
+            }
+        ]
+
+    def test_resolve_oci_auth_context_returns_none_when_config_loader_missing(self):
+        """OCI auth resolver should return no auth context when no auth loaders are available."""
+
+        fake_oci_module = types.SimpleNamespace(
+            auth=types.SimpleNamespace(signers=types.SimpleNamespace()),
+            config=types.SimpleNamespace(),
+        )
+
+        config, signer = cli_module._resolve_oci_auth_context(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="oci-prod",
+                backend="oci_vault",
+                oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+            ),
+            oci_module=fake_oci_module,
+        )
+
+        assert config is None
+        assert signer is None
+
+    def test_read_oauth_cache_payload_from_oci_handles_empty_and_invalid_content(self, monkeypatch):
+        """OCI payload reader should handle empty and malformed secret content safely."""
+
+        def build_response(content: object) -> object:
+            return types.SimpleNamespace(
+                data=types.SimpleNamespace(
+                    secret_bundle_content=types.SimpleNamespace(content=content),
+                )
+            )
+
+        class FakeClient:
+            def __init__(self, response: object) -> None:
+                self._response = response
+
+            def get_secret_bundle(self, *, secret_id: str) -> object:
+                del secret_id
+                return self._response
+
+        cache_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="oci-prod",
+            backend="oci_vault",
+            oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+        )
+
+        monkeypatch.setattr(
+            cli_module,
+            "_build_oci_secrets_client",
+            lambda cache_settings: FakeClient(build_response("")),
+        )
+        empty_payload = cli_module._read_oauth_cache_payload_from_oci(cache_settings=cache_settings)
+        assert empty_payload == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+        monkeypatch.setattr(
+            cli_module,
+            "_build_oci_secrets_client",
+            lambda cache_settings: FakeClient(build_response("!!!")),
+        )
+        assert cli_module._read_oauth_cache_payload_from_oci(cache_settings=cache_settings) is None
+
+        non_dict_payload = base64.b64encode(b"[]").decode("ascii")
+        monkeypatch.setattr(
+            cli_module,
+            "_build_oci_secrets_client",
+            lambda cache_settings: FakeClient(build_response(non_dict_payload)),
+        )
+        assert cli_module._read_oauth_cache_payload_from_oci(cache_settings=cache_settings) is None
+
+    def test_write_oauth_cache_payload_to_oci_handles_missing_models_and_update_error(self, monkeypatch):
+        """OCI payload writer should fail closed when SDK models are missing or update fails."""
+
+        class FakeVaultClient:
+            def __init__(self, should_fail_update: bool) -> None:
+                self.should_fail_update = should_fail_update
+
+            def get_secret(self, *, secret_id: str) -> dict[str, str]:
+                del secret_id
+                return {"id": "existing"}
+
+            def update_secret(self, *, secret_id: str, update_secret_details: object) -> dict[str, str]:
+                del secret_id, update_secret_details
+                if self.should_fail_update:
+                    raise RuntimeError("update denied")
+                return {"status": "ok"}
+
+        class FakeBase64SecretContentDetails:
+            def __init__(self, *, content_type: str, content: str) -> None:
+                self.content_type = content_type
+                self.content = content
+
+        class FakeUpdateSecretDetails:
+            def __init__(self, *, secret_content: object) -> None:
+                self.secret_content = secret_content
+
+        cache_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="oci-prod",
+            backend="oci_vault",
+            oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+        )
+
+        monkeypatch.setattr(
+            cli_module,
+            "_build_oci_vault_client",
+            lambda cache_settings: FakeVaultClient(should_fail_update=False),
+        )
+        original_import_module = cli_module.importlib.import_module
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                types.SimpleNamespace(vault=types.SimpleNamespace(models=types.SimpleNamespace()))
+                if module_name == "oci"
+                else original_import_module(module_name)
+            ),
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_oci(
+                cache_settings=cache_settings,
+                entries={},
+            )
+            is False
+        )
+
+        monkeypatch.setattr(
+            cli_module,
+            "_build_oci_vault_client",
+            lambda cache_settings: FakeVaultClient(should_fail_update=True),
+        )
+        original_import_module = cli_module.importlib.import_module
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                types.SimpleNamespace(
+                    vault=types.SimpleNamespace(
+                        models=types.SimpleNamespace(
+                            Base64SecretContentDetails=FakeBase64SecretContentDetails,
+                            UpdateSecretDetails=FakeUpdateSecretDetails,
+                        )
+                    )
+                )
+                if module_name == "oci"
+                else original_import_module(module_name)
+            ),
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_oci(
+                cache_settings=cache_settings,
+                entries={},
+            )
+            is False
+        )
 
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""

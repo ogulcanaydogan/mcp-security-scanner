@@ -58,6 +58,7 @@ _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER = "gcp_secret_manager"
 _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT = "azure_key_vault"
 _OAUTH_CACHE_BACKEND_HASHICORP_VAULT = "hashicorp_vault"
 _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS = "kubernetes_secrets"
+_OAUTH_CACHE_BACKEND_OCI_VAULT = "oci_vault"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -66,6 +67,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT,
     _OAUTH_CACHE_BACKEND_HASHICORP_VAULT,
     _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS,
+    _OAUTH_CACHE_BACKEND_OCI_VAULT,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -105,6 +107,9 @@ class OAuthCacheSettings:
     k8s_secret_namespace: str | None = None
     k8s_secret_name: str | None = None
     k8s_secret_key: str | None = None
+    oci_secret_ocid: str | None = None
+    oci_region: str | None = None
+    oci_endpoint_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2231,6 +2236,9 @@ def _coerce_oauth_cache_settings(
             "k8s_secret_namespace",
             "k8s_secret_name",
             "k8s_secret_key",
+            "oci_secret_ocid",
+            "oci_region",
+            "oci_endpoint_url",
         }
     ]
     if unknown_fields:
@@ -2240,7 +2248,8 @@ def _coerce_oauth_cache_settings(
             "aws_region, aws_endpoint_url, "
             "gcp_secret_name, gcp_endpoint_url, azure_vault_url, azure_secret_name, azure_secret_version, "
             "vault_url, vault_secret_path, vault_token_env, vault_namespace, "
-            "k8s_secret_namespace, k8s_secret_name, k8s_secret_key.",
+            "k8s_secret_namespace, k8s_secret_name, k8s_secret_key, "
+            "oci_secret_ocid, oci_region, oci_endpoint_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2408,6 +2417,31 @@ def _coerce_oauth_cache_settings(
     if k8s_secret_key is not None and not _is_valid_k8s_secret_key(k8s_secret_key):
         return None, "auth.cache.k8s_secret_key must match Kubernetes Secret data key naming rules."
 
+    oci_secret_ocid_value = cache_value.get("oci_secret_ocid")
+    if oci_secret_ocid_value is not None and (
+        not isinstance(oci_secret_ocid_value, str) or not oci_secret_ocid_value.strip()
+    ):
+        return None, "auth.cache.oci_secret_ocid must be a non-empty string when provided."
+    oci_secret_ocid = oci_secret_ocid_value.strip() if isinstance(oci_secret_ocid_value, str) else None
+    if oci_secret_ocid is not None and not _is_valid_oci_secret_ocid(oci_secret_ocid):
+        return None, "auth.cache.oci_secret_ocid must be a valid OCI OCID."
+
+    oci_region_value = cache_value.get("oci_region")
+    if oci_region_value is not None and (not isinstance(oci_region_value, str) or not oci_region_value.strip()):
+        return None, "auth.cache.oci_region must be a non-empty string when provided."
+    oci_region = oci_region_value.strip() if isinstance(oci_region_value, str) else None
+
+    oci_endpoint_url_value = cache_value.get("oci_endpoint_url")
+    if oci_endpoint_url_value is not None and (
+        not isinstance(oci_endpoint_url_value, str) or not oci_endpoint_url_value.strip()
+    ):
+        return None, "auth.cache.oci_endpoint_url must be a non-empty string when provided."
+    oci_endpoint_url = oci_endpoint_url_value.strip() if isinstance(oci_endpoint_url_value, str) else None
+    if oci_endpoint_url is not None:
+        parsed_oci_endpoint_url = urlparse(oci_endpoint_url)
+        if parsed_oci_endpoint_url.scheme not in {"http", "https"} or not parsed_oci_endpoint_url.netloc:
+            return None, "auth.cache.oci_endpoint_url must be a valid http/https URL."
+
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         if aws_secret_id is None:
             return (
@@ -2447,6 +2481,12 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
             )
     elif backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
         if aws_ssm_parameter_name is None:
@@ -2488,6 +2528,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
             )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
     elif backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         if gcp_secret_name is None:
             return (
@@ -2528,6 +2574,12 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
             )
     elif backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
         if azure_vault_url is None:
@@ -2575,6 +2627,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
             )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
     elif backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
         if vault_url is None:
             return (
@@ -2615,6 +2673,12 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
             )
     elif backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
         if k8s_secret_namespace is None:
@@ -2662,6 +2726,59 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
                 "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
             )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
+    elif backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
+        if oci_secret_ocid is None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid is required when auth.cache.backend='oci_vault'.",
+            )
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
     else:
         if (
             aws_secret_id is not None
@@ -2704,6 +2821,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
             )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
 
     return (
         OAuthCacheSettings(
@@ -2730,6 +2853,9 @@ def _coerce_oauth_cache_settings(
                 if k8s_secret_key is not None
                 else ("oauth_cache" if backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS else None)
             ),
+            oci_secret_ocid=oci_secret_ocid,
+            oci_region=oci_region,
+            oci_endpoint_url=oci_endpoint_url,
         ),
         None,
     )
@@ -2767,6 +2893,11 @@ def _is_valid_k8s_resource_name(value: str) -> bool:
 def _is_valid_k8s_secret_key(value: str) -> bool:
     """Validate Kubernetes Secret data key naming shape."""
     return re.fullmatch(r"[A-Za-z0-9._-]{1,253}", value) is not None
+
+
+def _is_valid_oci_secret_ocid(value: str) -> bool:
+    """Validate generic OCI OCID shape for Vault secret identifiers."""
+    return re.fullmatch(r"ocid1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -4476,6 +4607,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_vault(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
         return _load_oauth_persistent_cache_entries_from_kubernetes(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
+        return _load_oauth_persistent_cache_entries_from_oci(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -4517,6 +4650,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
         _persist_oauth_cache_entry_kubernetes(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
+        _persist_oauth_cache_entry_oci(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -4672,6 +4808,27 @@ def _persist_oauth_cache_entry_kubernetes(cache_key: str, cache_settings: OAuthC
         persistent_entries.pop(cache_key, None)
 
     _write_oauth_cache_payload_to_kubernetes(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _load_oauth_persistent_cache_entries_from_oci(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from OCI Vault secret; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_oci(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_oci(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to OCI Vault secret; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_oci(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_oci(cache_settings=cache_settings, entries=persistent_entries)
 
 
 def _build_aws_secrets_manager_client(cache_settings: OAuthCacheSettings) -> Any | None:
@@ -5229,6 +5386,189 @@ def _write_oauth_cache_payload_to_kubernetes(
             name=cache_settings.k8s_secret_name,
             namespace=cache_settings.k8s_secret_namespace,
             body={"data": merged_data},
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _resolve_oci_auth_context(
+    cache_settings: OAuthCacheSettings, oci_module: Any
+) -> tuple[dict[str, Any] | None, Any | None]:
+    """Resolve OCI auth context by trying resource principal first, then config-file chain."""
+    auth_module = getattr(oci_module, "auth", None)
+    signers_module = getattr(auth_module, "signers", None)
+    get_resource_principals_signer = getattr(signers_module, "get_resource_principals_signer", None)
+    if callable(get_resource_principals_signer):
+        try:
+            signer = get_resource_principals_signer()
+            config: dict[str, Any] = {}
+            if cache_settings.oci_region is not None:
+                config["region"] = cache_settings.oci_region
+            return config, signer
+        except Exception:
+            pass
+
+    config_module = getattr(oci_module, "config", None)
+    from_file = getattr(config_module, "from_file", None)
+    if not callable(from_file):
+        return None, None
+
+    from_file_kwargs: dict[str, str] = {}
+    config_file = os.getenv("OCI_CONFIG_FILE", "").strip()
+    if config_file:
+        from_file_kwargs["file_location"] = config_file
+    profile_name = os.getenv("OCI_CONFIG_PROFILE", "").strip()
+    if profile_name:
+        from_file_kwargs["profile_name"] = profile_name
+
+    raw_config: Any
+    try:
+        raw_config = from_file(**from_file_kwargs)
+    except Exception:
+        return None, None
+    if not isinstance(raw_config, dict):
+        return None, None
+
+    resolved_config = dict(raw_config)
+    if cache_settings.oci_region is not None:
+        resolved_config["region"] = cache_settings.oci_region
+    return resolved_config, None
+
+
+def _build_oci_secrets_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create OCI SecretsClient for OAuth cache backend."""
+    try:
+        oci_module = importlib.import_module("oci")
+    except Exception:
+        return None
+
+    config, signer = _resolve_oci_auth_context(cache_settings=cache_settings, oci_module=oci_module)
+    if config is None and signer is None:
+        return None
+
+    secrets_module = getattr(oci_module, "secrets", None)
+    secrets_client_cls = getattr(secrets_module, "SecretsClient", None)
+    if secrets_client_cls is None:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if signer is not None:
+        client_kwargs["signer"] = signer
+    if cache_settings.oci_endpoint_url is not None:
+        client_kwargs["service_endpoint"] = cache_settings.oci_endpoint_url
+
+    try:
+        return secrets_client_cls(config or {}, **client_kwargs)
+    except Exception:
+        return None
+
+
+def _build_oci_vault_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create OCI VaultsClient for OAuth cache backend."""
+    try:
+        oci_module = importlib.import_module("oci")
+    except Exception:
+        return None
+
+    config, signer = _resolve_oci_auth_context(cache_settings=cache_settings, oci_module=oci_module)
+    if config is None and signer is None:
+        return None
+
+    vault_module = getattr(oci_module, "vault", None)
+    vaults_client_cls = getattr(vault_module, "VaultsClient", None)
+    if vaults_client_cls is None:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if signer is not None:
+        client_kwargs["signer"] = signer
+    if cache_settings.oci_endpoint_url is not None:
+        client_kwargs["service_endpoint"] = cache_settings.oci_endpoint_url
+
+    try:
+        return vaults_client_cls(config or {}, **client_kwargs)
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_oci(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from OCI Vault secret bundle."""
+    if cache_settings.oci_secret_ocid is None:
+        return None
+
+    client = _build_oci_secrets_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        response = client.get_secret_bundle(secret_id=cache_settings.oci_secret_ocid)
+    except Exception:
+        return None
+
+    bundle_data = getattr(response, "data", None)
+    secret_bundle_content = getattr(bundle_data, "secret_bundle_content", None)
+    encoded_payload = getattr(secret_bundle_content, "content", None)
+    if not isinstance(encoded_payload, str) or not encoded_payload.strip():
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    try:
+        raw_payload = base64.b64decode(encoded_payload, validate=True).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_oci(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to OCI Vault secret as a new secret version."""
+    if cache_settings.oci_secret_ocid is None:
+        return False
+
+    vault_client = _build_oci_vault_client(cache_settings=cache_settings)
+    if vault_client is None:
+        return False
+
+    try:
+        oci_module = importlib.import_module("oci")
+    except Exception:
+        return False
+
+    # Pre-provisioned mode: require secret to already exist.
+    try:
+        vault_client.get_secret(secret_id=cache_settings.oci_secret_ocid)
+    except Exception:
+        return False
+
+    vault_models = getattr(getattr(oci_module, "vault", None), "models", None)
+    base64_content_cls = getattr(vault_models, "Base64SecretContentDetails", None)
+    update_secret_details_cls = getattr(vault_models, "UpdateSecretDetails", None)
+    if base64_content_cls is None or update_secret_details_cls is None:
+        return False
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    encoded_payload = base64.b64encode(serialized_payload).decode("ascii")
+
+    try:
+        secret_content = base64_content_cls(content_type="BASE64", content=encoded_payload)
+        update_secret_details = update_secret_details_cls(secret_content=secret_content)
+        vault_client.update_secret(
+            secret_id=cache_settings.oci_secret_ocid,
+            update_secret_details=update_secret_details,
         )
     except Exception:
         return False
