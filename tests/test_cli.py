@@ -2610,6 +2610,30 @@ class TestCLIHelpers:
         assert settings.vault_token_env == "VAULT_TOKEN"
         assert settings.vault_namespace == "team-security"
 
+    def test_coerce_oauth_cache_settings_accepts_kubernetes_backend(self):
+        """OAuth cache settings should accept kubernetes_secrets backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "kubernetes_secrets",
+                    "k8s_secret_namespace": "mcp-security",
+                    "k8s_secret_name": "oauth-cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "kubernetes_secrets"
+        assert settings.k8s_secret_namespace == "mcp-security"
+        assert settings.k8s_secret_name == "oauth-cache"
+        assert settings.k8s_secret_key == "oauth_cache"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -2739,6 +2763,26 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "vault_url": "https://vault.example.com"},
                 "only supported when auth.cache.backend='hashicorp_vault'",
+            ),
+            (
+                {"backend": "kubernetes_secrets"},
+                "auth.cache.k8s_secret_namespace is required",
+            ),
+            (
+                {"backend": "kubernetes_secrets", "k8s_secret_namespace": "mcp-security"},
+                "auth.cache.k8s_secret_name is required",
+            ),
+            (
+                {
+                    "backend": "kubernetes_secrets",
+                    "k8s_secret_namespace": "INVALID/namespace",
+                    "k8s_secret_name": "oauth-cache",
+                },
+                "auth.cache.k8s_secret_namespace must match Kubernetes DNS subdomain naming rules.",
+            ),
+            (
+                {"backend": "local", "k8s_secret_name": "oauth-cache"},
+                "only supported when auth.cache.backend='kubernetes_secrets'",
             ),
         ],
     )
@@ -3520,6 +3564,181 @@ class TestCLIHelpers:
                 vault_url="https://vault.example.com",
                 vault_secret_path="kv/mcp-security/oauth-cache",
                 vault_token_env="VAULT_TOKEN_TEST",
+            )
+        )
+        assert entries == {}
+
+    def test_kubernetes_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """Kubernetes Secrets backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-k8s")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-k8s")
+
+        class FakeConfigError(Exception):
+            pass
+
+        class _Secret:
+            def __init__(self, data: dict[str, str] | None = None) -> None:
+                self.data = data or {}
+
+        class FakeCoreV1Api:
+            secret_data: ClassVar[dict[str, str]] = {
+                "oauth_cache": base64.b64encode(
+                    json.dumps(
+                        {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                        sort_keys=True,
+                    ).encode("utf-8")
+                ).decode("ascii")
+            }
+            patch_calls: ClassVar[int] = 0
+
+            def read_namespaced_secret(self, *, name: str, namespace: str) -> _Secret:
+                assert name == "oauth-cache"
+                assert namespace == "mcp-security"
+                return _Secret(dict(self.__class__.secret_data))
+
+            def patch_namespaced_secret(
+                self, *, name: str, namespace: str, body: dict[str, object]
+            ) -> dict[str, object]:
+                assert name == "oauth-cache"
+                assert namespace == "mcp-security"
+                data = body.get("data")
+                assert isinstance(data, dict)
+                assert "oauth_cache" in data
+                self.__class__.secret_data = {str(key): str(value) for key, value in data.items()}
+                self.__class__.patch_calls += 1
+                return {}
+
+        class FakeKubernetesClientModule:
+            CoreV1Api = FakeCoreV1Api
+
+        class FakeKubernetesConfigModule:
+            incluster_calls: ClassVar[int] = 0
+            kubeconfig_calls: ClassVar[int] = 0
+
+            @classmethod
+            def load_incluster_config(cls) -> None:
+                cls.incluster_calls += 1
+                raise FakeConfigError("incluster-unavailable")
+
+            @classmethod
+            def load_kube_config(cls) -> None:
+                cls.kubeconfig_calls += 1
+                return None
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "kubernetes.client":
+                return FakeKubernetesClientModule
+            if module_name == "kubernetes.config":
+                return FakeKubernetesConfigModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-k8s-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "k8s-prod",
+                    "backend": "kubernetes_secrets",
+                    "k8s_secret_namespace": "mcp-security",
+                    "k8s_secret_name": "oauth-cache",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_k8s_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-k8s-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_k8s_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-k8s-token"
+        assert call_count["value"] == 1
+        assert FakeCoreV1Api.patch_calls >= 1
+        assert FakeKubernetesConfigModule.incluster_calls >= 1
+        assert FakeKubernetesConfigModule.kubeconfig_calls >= 1
+
+        payload_b64 = FakeCoreV1Api.secret_data["oauth_cache"]
+        persisted_payload = json.loads(base64.b64decode(payload_b64.encode("ascii")).decode("utf-8"))
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_kubernetes_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """Kubernetes backend cache load should bypass provider errors without raising."""
+
+        class FakeKubernetesClientModule:
+            class CoreV1Api:
+                def read_namespaced_secret(self, *, name: str, namespace: str) -> dict[str, object]:
+                    del name, namespace
+                    raise RuntimeError("forbidden")
+
+        class FakeKubernetesConfigModule:
+            @staticmethod
+            def load_incluster_config() -> None:
+                return None
+
+            @staticmethod
+            def load_kube_config() -> None:
+                return None
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "kubernetes.client":
+                return FakeKubernetesClientModule
+            if module_name == "kubernetes.config":
+                return FakeKubernetesConfigModule
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="k8s-prod",
+                backend="kubernetes_secrets",
+                k8s_secret_namespace="mcp-security",
+                k8s_secret_name="oauth-cache",
             )
         )
         assert entries == {}

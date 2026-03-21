@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8K)
+## Capability Snapshot (Sprint 1-8L)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release upload/create |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -55,6 +55,7 @@ flowchart LR
 - Release stabilization (Sprint 8D): PyPI distribution name switched to `ogulcanaydogan-mcp-security-scanner` to avoid name collision
 - Release hardening (Sprint 8J): publish workflow uses idempotent `gh release` create/upload path and tag-scoped publish concurrency guard
 - OAuth cache provider expansion (Sprint 8K): added `aws_ssm_parameter_store` backend (pre-provisioned SecureString parameter model)
+- OAuth cache provider expansion (Sprint 8L): added `kubernetes_secrets` backend (in-cluster auth + kubeconfig fallback, pre-provisioned Secret model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -252,6 +253,24 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-k8s-cache": {
+      "transport": "sse",
+      "url": "https://example.com/sse",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "kubernetes_secrets",
+          "k8s_secret_namespace": "mcp-security",
+          "k8s_secret_name": "oauth-cache",
+          "k8s_secret_key": "oauth_cache"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -319,7 +338,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, or `hashicorp_vault`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, or `kubernetes_secrets`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -332,6 +351,9 @@ Notes:
   - `vault_secret_path` (required when `backend=hashicorp_vault`, KV path)
   - optional `vault_token_env` (Vault token env var name; defaults to `VAULT_TOKEN`)
   - optional `vault_namespace`
+  - `k8s_secret_namespace` (required when `backend=kubernetes_secrets`, Kubernetes namespace)
+  - `k8s_secret_name` (required when `backend=kubernetes_secrets`, Kubernetes Secret name)
+  - optional `k8s_secret_key` (default `oauth_cache`)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -371,6 +393,12 @@ Notes:
     - auth uses configured token env (`vault_token_env`) or `VAULT_TOKEN` fallback
     - optional Vault enterprise namespace is supported via `vault_namespace`
     - secret path must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
+  - `backend=kubernetes_secrets`:
+    - cache payload is stored as a single JSON envelope in configured Kubernetes Secret data key
+      (`auth.cache.k8s_secret_namespace` / `auth.cache.k8s_secret_name` / `auth.cache.k8s_secret_key`)
+    - Kubernetes auth chain is deterministic: in-cluster config first, then kubeconfig fallback
+    - Secret must be pre-provisioned; scanner patches existing Secret data and does not auto-create missing Secrets
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
@@ -454,7 +482,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8K)
+## Roadmap (Post Sprint 8L)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, and `kubernetes_secrets`

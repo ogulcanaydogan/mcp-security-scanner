@@ -57,6 +57,7 @@ _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE = "aws_ssm_parameter_store"
 _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER = "gcp_secret_manager"
 _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT = "azure_key_vault"
 _OAUTH_CACHE_BACKEND_HASHICORP_VAULT = "hashicorp_vault"
+_OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS = "kubernetes_secrets"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -64,6 +65,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER,
     _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT,
     _OAUTH_CACHE_BACKEND_HASHICORP_VAULT,
+    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -100,6 +102,9 @@ class OAuthCacheSettings:
     vault_secret_path: str | None = None
     vault_token_env: str | None = None
     vault_namespace: str | None = None
+    k8s_secret_namespace: str | None = None
+    k8s_secret_name: str | None = None
+    k8s_secret_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2223,6 +2228,9 @@ def _coerce_oauth_cache_settings(
             "vault_secret_path",
             "vault_token_env",
             "vault_namespace",
+            "k8s_secret_namespace",
+            "k8s_secret_name",
+            "k8s_secret_key",
         }
     ]
     if unknown_fields:
@@ -2231,7 +2239,8 @@ def _coerce_oauth_cache_settings(
             "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_ssm_parameter_name, "
             "aws_region, aws_endpoint_url, "
             "gcp_secret_name, gcp_endpoint_url, azure_vault_url, azure_secret_name, azure_secret_version, "
-            "vault_url, vault_secret_path, vault_token_env, vault_namespace.",
+            "vault_url, vault_secret_path, vault_token_env, vault_namespace, "
+            "k8s_secret_namespace, k8s_secret_name, k8s_secret_key.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2366,6 +2375,39 @@ def _coerce_oauth_cache_settings(
         return None, "auth.cache.vault_namespace must be a non-empty string when provided."
     vault_namespace = vault_namespace_value.strip() if isinstance(vault_namespace_value, str) else None
 
+    k8s_secret_namespace_value = cache_value.get("k8s_secret_namespace")
+    if k8s_secret_namespace_value is not None and (
+        not isinstance(k8s_secret_namespace_value, str) or not k8s_secret_namespace_value.strip()
+    ):
+        return None, "auth.cache.k8s_secret_namespace must be a non-empty string when provided."
+    k8s_secret_namespace = k8s_secret_namespace_value.strip() if isinstance(k8s_secret_namespace_value, str) else None
+    if k8s_secret_namespace is not None and not _is_valid_k8s_resource_name(k8s_secret_namespace):
+        return (
+            None,
+            "auth.cache.k8s_secret_namespace must match Kubernetes DNS subdomain naming rules.",
+        )
+
+    k8s_secret_name_value = cache_value.get("k8s_secret_name")
+    if k8s_secret_name_value is not None and (
+        not isinstance(k8s_secret_name_value, str) or not k8s_secret_name_value.strip()
+    ):
+        return None, "auth.cache.k8s_secret_name must be a non-empty string when provided."
+    k8s_secret_name = k8s_secret_name_value.strip() if isinstance(k8s_secret_name_value, str) else None
+    if k8s_secret_name is not None and not _is_valid_k8s_resource_name(k8s_secret_name):
+        return (
+            None,
+            "auth.cache.k8s_secret_name must match Kubernetes DNS subdomain naming rules.",
+        )
+
+    k8s_secret_key_value = cache_value.get("k8s_secret_key")
+    if k8s_secret_key_value is not None and (
+        not isinstance(k8s_secret_key_value, str) or not k8s_secret_key_value.strip()
+    ):
+        return None, "auth.cache.k8s_secret_key must be a non-empty string when provided."
+    k8s_secret_key = k8s_secret_key_value.strip() if isinstance(k8s_secret_key_value, str) else None
+    if k8s_secret_key is not None and not _is_valid_k8s_secret_key(k8s_secret_key):
+        return None, "auth.cache.k8s_secret_key must match Kubernetes Secret data key naming rules."
+
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         if aws_secret_id is None:
             return (
@@ -2399,6 +2441,12 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
                 "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
             )
     elif backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
         if aws_ssm_parameter_name is None:
@@ -2434,6 +2482,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
                 "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
             )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
     elif backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         if gcp_secret_name is None:
             return (
@@ -2468,6 +2522,12 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
                 "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
             )
     elif backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
         if azure_vault_url is None:
@@ -2509,6 +2569,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
                 "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
             )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
     elif backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
         if vault_url is None:
             return (
@@ -2543,6 +2609,58 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
                 "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+    elif backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
+        if k8s_secret_namespace is None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace is required when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if k8s_secret_name is None:
+            return (
+                None,
+                "auth.cache.k8s_secret_name is required when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
             )
     else:
         if (
@@ -2580,6 +2698,12 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
                 "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
             )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
 
     return (
         OAuthCacheSettings(
@@ -2599,6 +2723,13 @@ def _coerce_oauth_cache_settings(
             vault_secret_path=vault_secret_path,
             vault_token_env=vault_token_env,
             vault_namespace=vault_namespace,
+            k8s_secret_namespace=k8s_secret_namespace,
+            k8s_secret_name=k8s_secret_name,
+            k8s_secret_key=(
+                k8s_secret_key
+                if k8s_secret_key is not None
+                else ("oauth_cache" if backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS else None)
+            ),
         ),
         None,
     )
@@ -2626,6 +2757,16 @@ def _is_valid_azure_secret_name(value: str) -> bool:
 def _is_valid_vault_secret_path(value: str) -> bool:
     """Validate HashiCorp Vault KV path shape."""
     return re.fullmatch(r"[A-Za-z0-9_.\-\/]{1,256}", value) is not None
+
+
+def _is_valid_k8s_resource_name(value: str) -> bool:
+    """Validate Kubernetes DNS subdomain naming shape (namespace/secret name)."""
+    return len(value) <= 253 and re.fullmatch(r"[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?", value) is not None
+
+
+def _is_valid_k8s_secret_key(value: str) -> bool:
+    """Validate Kubernetes Secret data key naming shape."""
+    return re.fullmatch(r"[A-Za-z0-9._-]{1,253}", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -4333,6 +4474,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_azure(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
         return _load_oauth_persistent_cache_entries_from_vault(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
+        return _load_oauth_persistent_cache_entries_from_kubernetes(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -4371,6 +4514,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
         _persist_oauth_cache_entry_vault(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
+        _persist_oauth_cache_entry_kubernetes(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -4503,6 +4649,29 @@ def _persist_oauth_cache_entry_vault(cache_key: str, cache_settings: OAuthCacheS
         persistent_entries.pop(cache_key, None)
 
     _write_oauth_cache_payload_to_vault(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _load_oauth_persistent_cache_entries_from_kubernetes(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Kubernetes Secret; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_kubernetes(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_kubernetes(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Kubernetes Secret; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_kubernetes(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_kubernetes(cache_settings=cache_settings, entries=persistent_entries)
 
 
 def _build_aws_secrets_manager_client(cache_settings: OAuthCacheSettings) -> Any | None:
@@ -4943,6 +5112,123 @@ def _write_oauth_cache_payload_to_vault(cache_settings: OAuthCacheSettings, entr
         client.secrets.kv.v2.create_or_update_secret(
             path=cache_settings.vault_secret_path,
             secret={"oauth_cache_envelope": serialized_payload},
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _build_kubernetes_secret_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create Kubernetes CoreV1Api client for OAuth cache backend."""
+    del cache_settings
+    try:
+        kubernetes_client_module = importlib.import_module("kubernetes.client")
+        kubernetes_config_module = importlib.import_module("kubernetes.config")
+    except Exception:
+        return None
+
+    load_incluster_config = getattr(kubernetes_config_module, "load_incluster_config", None)
+    load_kube_config = getattr(kubernetes_config_module, "load_kube_config", None)
+    if not callable(load_incluster_config) or not callable(load_kube_config):
+        return None
+
+    try:
+        load_incluster_config()
+    except Exception:
+        try:
+            load_kube_config()
+        except Exception:
+            return None
+
+    try:
+        return cast(Any, kubernetes_client_module).CoreV1Api()
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_kubernetes(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned Kubernetes Secret data key."""
+    if cache_settings.k8s_secret_namespace is None or cache_settings.k8s_secret_name is None:
+        return None
+    secret_key = cache_settings.k8s_secret_key or "oauth_cache"
+
+    client = _build_kubernetes_secret_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        secret = client.read_namespaced_secret(
+            name=cache_settings.k8s_secret_name,
+            namespace=cache_settings.k8s_secret_namespace,
+        )
+    except Exception:
+        return None
+
+    data = getattr(secret, "data", None)
+    if not isinstance(data, dict):
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    encoded_payload = data.get(secret_key)
+    if not isinstance(encoded_payload, str) or not encoded_payload.strip():
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    try:
+        raw_payload = base64.b64decode(encoded_payload, validate=True).decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_kubernetes(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Kubernetes Secret data key."""
+    if cache_settings.k8s_secret_namespace is None or cache_settings.k8s_secret_name is None:
+        return False
+    secret_key = cache_settings.k8s_secret_key or "oauth_cache"
+
+    client = _build_kubernetes_secret_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    # Pre-provisioned mode: require the Secret to already exist.
+    try:
+        secret = client.read_namespaced_secret(
+            name=cache_settings.k8s_secret_name,
+            namespace=cache_settings.k8s_secret_namespace,
+        )
+    except Exception:
+        return False
+
+    existing_data = getattr(secret, "data", None)
+    merged_data = dict(existing_data) if isinstance(existing_data, dict) else {}
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    merged_data[secret_key] = base64.b64encode(serialized_payload).decode("ascii")
+
+    try:
+        client.patch_namespaced_secret(
+            name=cache_settings.k8s_secret_name,
+            namespace=cache_settings.k8s_secret_namespace,
+            body={"data": merged_data},
         )
     except Exception:
         return False

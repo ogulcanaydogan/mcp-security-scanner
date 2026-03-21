@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ogulcanaydogan-mcp-security-scanner"
-version = "0.1.7"
+version = "0.1.8"
 description = "Security scanner for Model Context Protocol (MCP) servers. Detects prompt injection, tool poisoning, capability escalation, and rug-pull attacks."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -42,6 +42,7 @@ dependencies = [
     "azure-identity>=1.17.0",
     "azure-keyvault-secrets>=4.8.0",
     "hvac>=2.3.0",
+    "kubernetes>=29.0.0",
     "cryptography>=43.0.0",
     "keyring>=25.0.0",
     "aiofiles>=23.0.0",

@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8K Implementation State
+# Setup Complete — Sprint 1-8L Implementation State
 
-This file records the actual implementation status after Sprint 8K.
+This file records the actual implementation status after Sprint 8L.
 
 ## Completed Work
 
@@ -506,6 +506,29 @@ This file records the actual implementation status after Sprint 8K.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8L (Advanced Secret-Store Backend v6: Kubernetes Secrets)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+- Kubernetes backend contract:
+  - required: `k8s_secret_namespace`, `k8s_secret_name`
+  - optional: `k8s_secret_key` (default `oauth_cache`)
+  - pre-provisioned Secret model (scanner does not auto-create missing Secrets)
+- Kubernetes backend behavior:
+  - auth chain: `load_incluster_config()` first, then `load_kube_config()` fallback
+  - reads/writes JSON envelope in Secret data key (`schema_version`, `updated_at`, `entries`)
+  - writes patch existing Secret data key; missing/provider/read/write/parse errors are non-fatal
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -518,7 +541,7 @@ This file records the actual implementation status after Sprint 8K.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, and `kubernetes_secrets`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
