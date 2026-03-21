@@ -2511,6 +2511,31 @@ class TestCLIHelpers:
         assert settings.aws_region == "eu-west-1"
         assert settings.aws_endpoint_url == "https://secretsmanager.eu-west-1.amazonaws.com"
 
+    def test_coerce_oauth_cache_settings_accepts_aws_ssm_backend(self):
+        """OAuth cache settings should accept aws_ssm_parameter_store backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "aws_ssm_parameter_store",
+                    "aws_ssm_parameter_name": "/mcp-security/oauth-cache",
+                    "aws_region": "eu-west-1",
+                    "aws_endpoint_url": "https://ssm.eu-west-1.amazonaws.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "aws_ssm_parameter_store"
+        assert settings.aws_ssm_parameter_name == "/mcp-security/oauth-cache"
+        assert settings.aws_region == "eu-west-1"
+        assert settings.aws_endpoint_url == "https://ssm.eu-west-1.amazonaws.com"
+
     def test_coerce_oauth_cache_settings_accepts_gcp_backend(self):
         """OAuth cache settings should accept gcp_secret_manager backend with required fields."""
         settings, error = cli_module._coerce_oauth_cache_settings(
@@ -2598,7 +2623,15 @@ class TestCLIHelpers:
             ),
             (
                 {"backend": "local", "aws_secret_id": "mcp-security/oauth-cache"},
-                "only supported when auth.cache.backend='aws_secrets_manager'",
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name",
+            ),
+            (
+                {"backend": "aws_ssm_parameter_store"},
+                "auth.cache.aws_ssm_parameter_name is required",
+            ),
+            (
+                {"backend": "local", "aws_ssm_parameter_name": "/mcp-security/oauth-cache"},
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name",
             ),
             (
                 {
@@ -2879,6 +2912,158 @@ class TestCLIHelpers:
                 namespace="aws-prod",
                 backend="aws_secrets_manager",
                 aws_secret_id="mcp-security/oauth-cache",
+            )
+        )
+        assert entries == {}
+
+    def test_aws_ssm_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """AWS SSM backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-aws-ssm")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-aws-ssm")
+
+        class FakeSSMClient:
+            parameter_payload: ClassVar[str] = json.dumps(
+                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                sort_keys=True,
+            )
+            client_kwargs: ClassVar[list[dict[str, str]]] = []
+
+            def __init__(self, **kwargs: str) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get_parameter(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs["Name"] == "/mcp-security/oauth-cache"
+                assert kwargs["WithDecryption"] is True
+                return {"Parameter": {"Value": self.__class__.parameter_payload}}
+
+            def put_parameter(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs["Name"] == "/mcp-security/oauth-cache"
+                assert kwargs["Type"] == "SecureString"
+                assert kwargs["Overwrite"] is True
+                value = kwargs["Value"]
+                assert isinstance(value, str)
+                self.__class__.parameter_payload = value
+                return {}
+
+        class FakeBoto3Module:
+            @staticmethod
+            def client(service_name: str, **kwargs: str) -> FakeSSMClient:
+                assert service_name == "ssm"
+                return FakeSSMClient(**kwargs)
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "boto3":
+                return FakeBoto3Module
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-aws-ssm-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "aws-ssm-prod",
+                    "backend": "aws_ssm_parameter_store",
+                    "aws_ssm_parameter_name": "/mcp-security/oauth-cache",
+                    "aws_region": "eu-west-1",
+                    "aws_endpoint_url": "https://ssm.eu-west-1.amazonaws.com",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_aws_ssm_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-aws-ssm-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_aws_ssm_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-aws-ssm-token"
+        assert call_count["value"] == 1
+
+        persisted_payload = json.loads(FakeSSMClient.parameter_payload)
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert any("region_name" in item and item["region_name"] == "eu-west-1" for item in FakeSSMClient.client_kwargs)
+        assert any(
+            "endpoint_url" in item and item["endpoint_url"] == "https://ssm.eu-west-1.amazonaws.com"
+            for item in FakeSSMClient.client_kwargs
+        )
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_aws_ssm_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """AWS SSM backend cache load should bypass provider errors without raising."""
+
+        class AccessDeniedError(Exception):
+            def __init__(self) -> None:
+                self.response = {"Error": {"Code": "AccessDeniedException"}}
+                super().__init__("denied")
+
+        class FakeSSMClient:
+            def get_parameter(self, **kwargs: object) -> dict[str, object]:
+                del kwargs
+                raise AccessDeniedError()
+
+        class FakeBoto3Module:
+            @staticmethod
+            def client(service_name: str, **kwargs: str) -> FakeSSMClient:
+                del kwargs
+                assert service_name == "ssm"
+                return FakeSSMClient()
+
+        original_import_module = cli_module.importlib.import_module
+
+        def fake_import_module(module_name: str):
+            if module_name == "boto3":
+                return FakeBoto3Module
+            return original_import_module(module_name)
+
+        monkeypatch.setattr(cli_module.importlib, "import_module", fake_import_module)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="aws-ssm-prod",
+                backend="aws_ssm_parameter_store",
+                aws_ssm_parameter_name="/mcp-security/oauth-cache",
             )
         )
         assert entries == {}

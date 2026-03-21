@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8J)
+## Capability Snapshot (Sprint 1-8K)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release upload/create |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -54,6 +54,7 @@ flowchart LR
 - OAuth provider integrations v2 in `config` auth: `token_endpoint_auth_method=private_key_jwt` supports env/file/AWS KMS signing sources
 - Release stabilization (Sprint 8D): PyPI distribution name switched to `ogulcanaydogan-mcp-security-scanner` to avoid name collision
 - Release hardening (Sprint 8J): publish workflow uses idempotent `gh release` create/upload path and tag-scoped publish concurrency guard
+- OAuth cache provider expansion (Sprint 8K): added `aws_ssm_parameter_store` backend (pre-provisioned SecureString parameter model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -318,9 +319,10 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, or `hashicorp_vault`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, or `hashicorp_vault`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
-  - optional `aws_region`, `aws_endpoint_url` for AWS client routing
+  - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
+  - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
   - `gcp_secret_name` (required when `backend=gcp_secret_manager`, format `projects/<project>/secrets/<secret>`)
   - optional `gcp_endpoint_url` for GCP client endpoint routing (ADC auth)
   - `azure_vault_url` (required when `backend=azure_key_vault`, format `https://<name>.vault.azure.net`)
@@ -349,6 +351,10 @@ Notes:
     - corrupt or undecryptable cache payloads are quarantined as `oauth-cache-v1.json.enc.corrupt.<timestamp>`
   - `backend=aws_secrets_manager`:
     - cache payload is stored as a single JSON envelope in the configured AWS secret (`auth.cache.aws_secret_id`)
+    - optional `aws_region` and `aws_endpoint_url` tune client resolution
+  - `backend=aws_ssm_parameter_store`:
+    - cache payload is stored as a single JSON envelope in configured SSM SecureString parameter (`auth.cache.aws_ssm_parameter_name`)
+    - parameter must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
     - optional `aws_region` and `aws_endpoint_url` tune client resolution
   - `backend=gcp_secret_manager`:
     - cache payload is stored as a single JSON envelope in the configured GCP secret (`auth.cache.gcp_secret_name`)
@@ -448,7 +454,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8J)
+## Roadmap (Post Sprint 8K)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`

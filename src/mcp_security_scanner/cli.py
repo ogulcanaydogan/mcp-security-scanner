@@ -53,12 +53,14 @@ _OAUTH_CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-
 _OAUTH_AUTH_TYPES = {"oauth_client_credentials", "oauth_device_code", "oauth_auth_code_pkce"}
 _OAUTH_CACHE_BACKEND_LOCAL = "local"
 _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER = "aws_secrets_manager"
+_OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE = "aws_ssm_parameter_store"
 _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER = "gcp_secret_manager"
 _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT = "azure_key_vault"
 _OAUTH_CACHE_BACKEND_HASHICORP_VAULT = "hashicorp_vault"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
+    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE,
     _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER,
     _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT,
     _OAUTH_CACHE_BACKEND_HASHICORP_VAULT,
@@ -86,6 +88,7 @@ class OAuthCacheSettings:
     namespace: str = "default"
     backend: str = _OAUTH_CACHE_BACKEND_LOCAL
     aws_secret_id: str | None = None
+    aws_ssm_parameter_name: str | None = None
     aws_region: str | None = None
     aws_endpoint_url: str | None = None
     gcp_secret_name: str | None = None
@@ -2208,6 +2211,7 @@ def _coerce_oauth_cache_settings(
             "namespace",
             "backend",
             "aws_secret_id",
+            "aws_ssm_parameter_name",
             "aws_region",
             "aws_endpoint_url",
             "gcp_secret_name",
@@ -2224,7 +2228,8 @@ def _coerce_oauth_cache_settings(
     if unknown_fields:
         return (
             None,
-            "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_region, aws_endpoint_url, "
+            "auth.cache supports only: persistent, namespace, backend, aws_secret_id, aws_ssm_parameter_name, "
+            "aws_region, aws_endpoint_url, "
             "gcp_secret_name, gcp_endpoint_url, azure_vault_url, azure_secret_name, azure_secret_version, "
             "vault_url, vault_secret_path, vault_token_env, vault_namespace.",
         )
@@ -2253,6 +2258,15 @@ def _coerce_oauth_cache_settings(
     ):
         return None, "auth.cache.aws_secret_id must be a non-empty string when provided."
     aws_secret_id = aws_secret_id_value.strip() if isinstance(aws_secret_id_value, str) else None
+
+    aws_ssm_parameter_name_value = cache_value.get("aws_ssm_parameter_name")
+    if aws_ssm_parameter_name_value is not None and (
+        not isinstance(aws_ssm_parameter_name_value, str) or not aws_ssm_parameter_name_value.strip()
+    ):
+        return None, "auth.cache.aws_ssm_parameter_name must be a non-empty string when provided."
+    aws_ssm_parameter_name = (
+        aws_ssm_parameter_name_value.strip() if isinstance(aws_ssm_parameter_name_value, str) else None
+    )
 
     aws_region_value = cache_value.get("aws_region")
     if aws_region_value is not None and (not isinstance(aws_region_value, str) or not aws_region_value.strip()):
@@ -2358,6 +2372,45 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.aws_secret_id is required when auth.cache.backend='aws_secrets_manager'.",
             )
+        if aws_ssm_parameter_name is not None:
+            return (
+                None,
+                "auth.cache.aws_ssm_parameter_name is only supported when auth.cache.backend='aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+    elif backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
+        if aws_ssm_parameter_name is None:
+            return (
+                None,
+                "auth.cache.aws_ssm_parameter_name is required when auth.cache.backend='aws_ssm_parameter_store'.",
+            )
+        if aws_secret_id is not None:
+            return (
+                None,
+                "auth.cache.aws_secret_id is only supported when auth.cache.backend='aws_secrets_manager'.",
+            )
         if gcp_secret_name is not None or gcp_endpoint_url is not None:
             return (
                 None,
@@ -2387,11 +2440,17 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.gcp_secret_name is required when auth.cache.backend='gcp_secret_manager'.",
             )
-        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
             return (
                 None,
-                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
-                "when auth.cache.backend='aws_secrets_manager'.",
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
             )
         if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
             return (
@@ -2421,11 +2480,17 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.azure_secret_name is required when auth.cache.backend='azure_key_vault'.",
             )
-        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
             return (
                 None,
-                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
-                "when auth.cache.backend='aws_secrets_manager'.",
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
             )
         if gcp_secret_name is not None or gcp_endpoint_url is not None:
             return (
@@ -2455,11 +2520,17 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.vault_secret_path is required when auth.cache.backend='hashicorp_vault'.",
             )
-        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
             return (
                 None,
-                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
-                "when auth.cache.backend='aws_secrets_manager'.",
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
             )
         if gcp_secret_name is not None or gcp_endpoint_url is not None:
             return (
@@ -2474,11 +2545,17 @@ def _coerce_oauth_cache_settings(
                 "only supported when auth.cache.backend='azure_key_vault'.",
             )
     else:
-        if aws_secret_id is not None or aws_region is not None or aws_endpoint_url is not None:
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
             return (
                 None,
-                "auth.cache.aws_secret_id, auth.cache.aws_region, and auth.cache.aws_endpoint_url are only supported "
-                "when auth.cache.backend='aws_secrets_manager'.",
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
             )
         if gcp_secret_name is not None or gcp_endpoint_url is not None:
             return (
@@ -2510,6 +2587,7 @@ def _coerce_oauth_cache_settings(
             namespace=namespace_value.strip(),
             backend=backend,
             aws_secret_id=aws_secret_id,
+            aws_ssm_parameter_name=aws_ssm_parameter_name,
             aws_region=aws_region,
             aws_endpoint_url=aws_endpoint_url,
             gcp_secret_name=gcp_secret_name,
@@ -4247,6 +4325,8 @@ def _load_oauth_persistent_cache_entries(
     resolved_settings = cache_settings or OAuthCacheSettings()
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         return _load_oauth_persistent_cache_entries_from_aws(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
+        return _load_oauth_persistent_cache_entries_from_aws_ssm(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         return _load_oauth_persistent_cache_entries_from_gcp(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
@@ -4279,6 +4359,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
     resolved_settings = cache_settings or OAuthCacheSettings()
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         _persist_oauth_cache_entry_aws(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
+        _persist_oauth_cache_entry_aws_ssm(cache_key=cache_key, cache_settings=resolved_settings)
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
         _persist_oauth_cache_entry_gcp(cache_key=cache_key, cache_settings=resolved_settings)
@@ -4336,6 +4419,27 @@ def _persist_oauth_cache_entry_aws(cache_key: str, cache_settings: OAuthCacheSet
         persistent_entries.pop(cache_key, None)
 
     _write_oauth_cache_payload_to_aws(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _load_oauth_persistent_cache_entries_from_aws_ssm(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from AWS SSM Parameter Store; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_aws_ssm(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_aws_ssm(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to AWS SSM Parameter Store; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_aws_ssm(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_aws_ssm(cache_settings=cache_settings, entries=persistent_entries)
 
 
 def _load_oauth_persistent_cache_entries_from_gcp(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
@@ -4499,6 +4603,96 @@ def _write_oauth_cache_payload_to_aws(cache_settings: OAuthCacheSettings, entrie
 
     try:
         client.create_secret(Name=cache_settings.aws_secret_id, SecretString=serialized_payload)
+    except Exception:
+        return False
+    return True
+
+
+def _build_aws_ssm_parameter_store_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create AWS SSM Parameter Store client for OAuth cache backend."""
+    try:
+        boto3_module = importlib.import_module("boto3")
+    except Exception:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if cache_settings.aws_region is not None:
+        client_kwargs["region_name"] = cache_settings.aws_region
+    if cache_settings.aws_endpoint_url is not None:
+        client_kwargs["endpoint_url"] = cache_settings.aws_endpoint_url
+
+    try:
+        return boto3_module.client("ssm", **client_kwargs)
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_aws_ssm(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from AWS SSM Parameter Store SecureString parameter."""
+    if cache_settings.aws_ssm_parameter_name is None:
+        return None
+
+    client = _build_aws_ssm_parameter_store_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        response = client.get_parameter(Name=cache_settings.aws_ssm_parameter_name, WithDecryption=True)
+    except Exception as exc:
+        if _extract_aws_error_code(exc) == "ParameterNotFound":
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        return None
+
+    parameter = response.get("Parameter")
+    if not isinstance(parameter, dict):
+        return None
+    parameter_value = parameter.get("Value")
+    if not isinstance(parameter_value, str) or not parameter_value.strip():
+        return None
+
+    try:
+        payload = json.loads(parameter_value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_aws_ssm(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to AWS SSM Parameter Store SecureString parameter."""
+    if cache_settings.aws_ssm_parameter_name is None:
+        return False
+
+    client = _build_aws_ssm_parameter_store_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    # Pre-provisioned mode: require parameter to already exist.
+    try:
+        client.get_parameter(Name=cache_settings.aws_ssm_parameter_name, WithDecryption=True)
+    except Exception:
+        return False
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    try:
+        client.put_parameter(
+            Name=cache_settings.aws_ssm_parameter_name,
+            Value=serialized_payload,
+            Type="SecureString",
+            Overwrite=True,
+        )
     except Exception:
         return False
     return True

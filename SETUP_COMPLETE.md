@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8J Implementation State
+# Setup Complete — Sprint 1-8K Implementation State
 
-This file records the actual implementation status after Sprint 8J.
+This file records the actual implementation status after Sprint 8K.
 
 ## Completed Work
 
@@ -484,6 +484,28 @@ This file records the actual implementation status after Sprint 8J.
   - release scope expanded from Sprint 1-8I to Sprint 1-8J state tracking
 - scanner runtime and CLI behavior are unchanged.
 
+### Sprint 8K (Advanced Secret-Store Backend v5: AWS SSM Parameter Store)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+- AWS SSM backend contract:
+  - required: `aws_ssm_parameter_name` (SSM parameter path/name)
+  - optional: `aws_region`, `aws_endpoint_url`
+  - pre-provisioned SecureString model (scanner does not create missing parameters)
+- AWS SSM backend behavior:
+  - read from configured SSM parameter (`get_parameter`, decrypt enabled)
+  - persist via `put_parameter` with single JSON envelope payload (`schema_version`, `updated_at`, `entries`)
+  - provider/read/write/parse errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -496,7 +518,7 @@ This file records the actual implementation status after Sprint 8J.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, and `hashicorp_vault`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
