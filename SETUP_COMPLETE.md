@@ -620,6 +620,33 @@ This file records the actual implementation status after Sprint 8P.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8Q (Advanced Secret-Store Backend v10: Bitwarden Secrets Manager API)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+    - `doppler_secrets`
+    - `onepassword_connect`
+    - `bitwarden_secrets`
+- Bitwarden backend contract:
+  - required: `bw_secret_id`
+  - optional: `bw_access_token_env` (default `BWS_ACCESS_TOKEN`), `bw_api_url` (`https`)
+  - pre-provisioned secret model (scanner does not auto-create missing secrets)
+- Bitwarden backend behavior:
+  - auth uses env token only (`bw_access_token_env` / `BWS_ACCESS_TOKEN`)
+  - reads/writes JSON envelope in configured Bitwarden secret value
+  - provider/read/write/parse/auth errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -632,7 +659,7 @@ This file records the actual implementation status after Sprint 8P.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, and `onepassword_connect`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, and `bitwarden_secrets`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

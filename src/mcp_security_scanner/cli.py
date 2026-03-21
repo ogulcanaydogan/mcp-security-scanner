@@ -61,6 +61,7 @@ _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS = "kubernetes_secrets"
 _OAUTH_CACHE_BACKEND_OCI_VAULT = "oci_vault"
 _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS = "doppler_secrets"
 _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT = "onepassword_connect"
+_OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS = "bitwarden_secrets"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -72,6 +73,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_OCI_VAULT,
     _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS,
     _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT,
+    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -87,6 +89,7 @@ _OAUTH_FORM_REQUEST_MAX_RETRIES = 2
 _OAUTH_FORM_REQUEST_BASE_BACKOFF_SECONDS = 0.2
 _OAUTH_RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 _DOPPLER_DEFAULT_API_URL = "https://api.doppler.com"
+_BITWARDEN_DEFAULT_API_URL = "https://api.bitwarden.com"
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,9 @@ class OAuthCacheSettings:
     op_item_id: str | None = None
     op_field_label: str | None = None
     op_connect_token_env: str | None = None
+    bw_secret_id: str | None = None
+    bw_access_token_env: str | None = None
+    bw_api_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2264,6 +2270,9 @@ def _coerce_oauth_cache_settings(
             "op_item_id",
             "op_field_label",
             "op_connect_token_env",
+            "bw_secret_id",
+            "bw_access_token_env",
+            "bw_api_url",
         }
     ]
     if unknown_fields:
@@ -2276,7 +2285,8 @@ def _coerce_oauth_cache_settings(
             "k8s_secret_namespace, k8s_secret_name, k8s_secret_key, "
             "oci_secret_ocid, oci_region, oci_endpoint_url, "
             "doppler_project, doppler_config, doppler_secret_name, doppler_token_env, doppler_api_url, "
-            "op_connect_host, op_vault_id, op_item_id, op_field_label, op_connect_token_env.",
+            "op_connect_host, op_vault_id, op_item_id, op_field_label, op_connect_token_env, "
+            "bw_secret_id, bw_access_token_env, bw_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2553,6 +2563,31 @@ def _coerce_oauth_cache_settings(
     if op_connect_token_env is not None and not _is_valid_env_var_name(op_connect_token_env):
         return None, "auth.cache.op_connect_token_env must be a valid environment variable name."
 
+    bw_secret_id_value = cache_value.get("bw_secret_id")
+    if bw_secret_id_value is not None and (not isinstance(bw_secret_id_value, str) or not bw_secret_id_value.strip()):
+        return None, "auth.cache.bw_secret_id must be a non-empty string when provided."
+    bw_secret_id = bw_secret_id_value.strip() if isinstance(bw_secret_id_value, str) else None
+    if bw_secret_id is not None and not _is_valid_bitwarden_secret_id(bw_secret_id):
+        return None, "auth.cache.bw_secret_id must be a valid Bitwarden secret identifier."
+
+    bw_access_token_env_value = cache_value.get("bw_access_token_env")
+    if bw_access_token_env_value is not None and (
+        not isinstance(bw_access_token_env_value, str) or not bw_access_token_env_value.strip()
+    ):
+        return None, "auth.cache.bw_access_token_env must be a non-empty string when provided."
+    bw_access_token_env = bw_access_token_env_value.strip() if isinstance(bw_access_token_env_value, str) else None
+    if bw_access_token_env is not None and not _is_valid_env_var_name(bw_access_token_env):
+        return None, "auth.cache.bw_access_token_env must be a valid environment variable name."
+
+    bw_api_url_value = cache_value.get("bw_api_url")
+    if bw_api_url_value is not None and (not isinstance(bw_api_url_value, str) or not bw_api_url_value.strip()):
+        return None, "auth.cache.bw_api_url must be a non-empty string when provided."
+    bw_api_url = bw_api_url_value.strip() if isinstance(bw_api_url_value, str) else None
+    if bw_api_url is not None:
+        parsed_bw_api_url = urlparse(bw_api_url)
+        if parsed_bw_api_url.scheme != "https" or not parsed_bw_api_url.netloc:
+            return None, "auth.cache.bw_api_url must be a valid https URL."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -2579,6 +2614,15 @@ def _coerce_oauth_cache_settings(
             "auth.cache.op_connect_host, auth.cache.op_vault_id, auth.cache.op_item_id, "
             "auth.cache.op_field_label, and auth.cache.op_connect_token_env are only supported when "
             "auth.cache.backend='onepassword_connect'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS and (
+        bw_secret_id is not None or bw_access_token_env is not None or bw_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.bw_secret_id, auth.cache.bw_access_token_env, and auth.cache.bw_api_url are only "
+            "supported when auth.cache.backend='bitwarden_secrets'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -3050,6 +3094,71 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.doppler_project, auth.cache.doppler_config, and auth.cache.doppler_secret_name are "
                 "only supported when auth.cache.backend='doppler_secrets'.",
             )
+    elif backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
+        if bw_secret_id is None:
+            return (
+                None,
+                "auth.cache.bw_secret_id is required when auth.cache.backend='bitwarden_secrets'.",
+            )
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
+        if doppler_project is not None or doppler_config is not None or doppler_secret_name is not None:
+            return (
+                None,
+                "auth.cache.doppler_project, auth.cache.doppler_config, and auth.cache.doppler_secret_name are "
+                "only supported when auth.cache.backend='doppler_secrets'.",
+            )
+        if op_connect_host is not None or op_vault_id is not None or op_item_id is not None:
+            return (
+                None,
+                "auth.cache.op_connect_host, auth.cache.op_vault_id, and auth.cache.op_item_id are only "
+                "supported when auth.cache.backend='onepassword_connect'.",
+            )
     else:
         if (
             aws_secret_id is not None
@@ -3149,6 +3258,13 @@ def _coerce_oauth_cache_settings(
                 if op_connect_token_env is not None
                 else ("OP_CONNECT_TOKEN" if backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT else None)
             ),
+            bw_secret_id=bw_secret_id,
+            bw_access_token_env=(
+                bw_access_token_env
+                if bw_access_token_env is not None
+                else ("BWS_ACCESS_TOKEN" if backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS else None)
+            ),
+            bw_api_url=bw_api_url,
         ),
         None,
     )
@@ -3196,6 +3312,11 @@ def _is_valid_oci_secret_ocid(value: str) -> bool:
 def _is_valid_env_var_name(value: str) -> bool:
     """Validate POSIX-style environment variable name shape."""
     return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is not None
+
+
+def _is_valid_bitwarden_secret_id(value: str) -> bool:
+    """Validate Bitwarden secret identifier shape (UUID-style)."""
+    return re.fullmatch(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}", value) is not None
 
 
 def _is_valid_doppler_identifier(value: str) -> bool:
@@ -4916,6 +5037,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_doppler(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
         return _load_oauth_persistent_cache_entries_from_onepassword_connect(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
+        return _load_oauth_persistent_cache_entries_from_bitwarden(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -4966,6 +5089,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
         _persist_oauth_cache_entry_onepassword_connect(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
+        _persist_oauth_cache_entry_bitwarden(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -6241,6 +6367,155 @@ def _write_oauth_cache_payload_to_onepassword_connect(
         path = f"/v1/vaults/{cache_settings.op_vault_id}/items/{cache_settings.op_item_id}"
         try:
             response = client.put(path, json=updated_item_payload)
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_bitwarden(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Bitwarden secret value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_bitwarden(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_bitwarden(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Bitwarden secret value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_bitwarden(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_bitwarden(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_bitwarden_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Bitwarden API client for OAuth cache backend."""
+    token_env_name = cache_settings.bw_access_token_env or "BWS_ACCESS_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.bw_api_url or _BITWARDEN_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"Bearer {token_value}",
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_bitwarden(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from Bitwarden pre-provisioned secret value."""
+    if cache_settings.bw_secret_id is None:
+        return None
+
+    client = _build_bitwarden_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    path = f"/public/secrets/{cache_settings.bw_secret_id}"
+    try:
+        try:
+            response = client.get(path)
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        raw_payload = payload.get("value")
+        if not isinstance(raw_payload, str):
+            data_payload = payload.get("data")
+            if isinstance(data_payload, dict):
+                raw_payload = data_payload.get("value")
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_bitwarden(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Bitwarden secret value."""
+    if cache_settings.bw_secret_id is None:
+        return False
+
+    client = _build_bitwarden_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    path = f"/public/secrets/{cache_settings.bw_secret_id}"
+    try:
+        # Pre-provisioned mode: require secret to already exist.
+        try:
+            preflight_response = client.get(path)
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.put(path, json={"value": serialized_payload})
         except Exception:
             return False
         if response.status_code == 404:

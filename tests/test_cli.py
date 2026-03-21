@@ -2101,6 +2101,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_oci_vault_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_doppler_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_onepassword_connect_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_bitwarden_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2767,6 +2768,50 @@ class TestCLIHelpers:
         assert settings.op_field_label == "oauth_cache"
         assert settings.op_connect_token_env == "OP_CONNECT_TOKEN"
 
+    def test_coerce_oauth_cache_settings_accepts_bitwarden_backend(self):
+        """OAuth cache settings should accept bitwarden_secrets backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "bitwarden_secrets",
+                    "bw_secret_id": "11111111-2222-3333-4444-555555555555",
+                    "bw_access_token_env": "BWS_ACCESS_TOKEN_PROD",
+                    "bw_api_url": "https://api.bitwarden.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "bitwarden_secrets"
+        assert settings.bw_secret_id == "11111111-2222-3333-4444-555555555555"
+        assert settings.bw_access_token_env == "BWS_ACCESS_TOKEN_PROD"
+        assert settings.bw_api_url == "https://api.bitwarden.com"
+
+    def test_coerce_oauth_cache_settings_sets_bitwarden_defaults(self):
+        """OAuth cache settings should apply default bitwarden_secrets optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "bitwarden_secrets",
+                    "bw_secret_id": "11111111-2222-3333-4444-555555555555",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.bw_access_token_env == "BWS_ACCESS_TOKEN"
+        assert settings.bw_api_url is None
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3013,6 +3058,34 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "op_connect_host": "https://op-connect.example.com"},
                 "only supported when auth.cache.backend='onepassword_connect'",
+            ),
+            (
+                {"backend": "bitwarden_secrets"},
+                "auth.cache.bw_secret_id is required",
+            ),
+            (
+                {"backend": "bitwarden_secrets", "bw_secret_id": "invalid"},
+                "auth.cache.bw_secret_id must be a valid Bitwarden secret identifier.",
+            ),
+            (
+                {
+                    "backend": "bitwarden_secrets",
+                    "bw_secret_id": "11111111-2222-3333-4444-555555555555",
+                    "bw_access_token_env": "9INVALID",
+                },
+                "auth.cache.bw_access_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "bitwarden_secrets",
+                    "bw_secret_id": "11111111-2222-3333-4444-555555555555",
+                    "bw_api_url": "http://api.bitwarden.com",
+                },
+                "auth.cache.bw_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "bw_secret_id": "11111111-2222-3333-4444-555555555555"},
+                "only supported when auth.cache.backend='bitwarden_secrets'",
             ),
         ],
     )
@@ -4866,6 +4939,446 @@ class TestCLIHelpers:
             cli_module._write_oauth_cache_payload_to_onepassword_connect(cache_settings=settings, entries={}) is False
         )
 
+    def test_bitwarden_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """Bitwarden backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-bw")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-bw")
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        class FakeHTTPError(Exception):
+            pass
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise FakeHTTPError(f"status={self.status_code}")
+
+        class FakeBitwardenClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+            put_payloads: ClassVar[list[dict[str, object]]] = []
+            secret_value: ClassVar[str] = json.dumps(
+                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                sort_keys=True,
+            )
+
+            def __init__(self, **kwargs: object) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "id": "11111111-2222-3333-4444-555555555555",
+                        "value": self.__class__.secret_value,
+                    },
+                )
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                raw_payload = kwargs.get("json")
+                assert isinstance(raw_payload, dict)
+                self.__class__.put_payloads.append(dict(raw_payload))
+                value = raw_payload.get("value")
+                assert isinstance(value, str)
+                self.__class__.secret_value = value
+                return FakeResponse(status_code=200, json_data={"success": True})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeBitwardenClient)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-bw-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/oauth/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "bw-prod",
+                    "backend": "bitwarden_secrets",
+                    "bw_secret_id": "11111111-2222-3333-4444-555555555555",
+                    "bw_access_token_env": "BWS_ACCESS_TOKEN",
+                    "bw_api_url": "https://api.bitwarden.com",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_bw_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-bw-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_bw_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-bw-token"
+        assert call_count["value"] == 1
+
+        persisted_payload = json.loads(FakeBitwardenClient.secret_value)
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert FakeBitwardenClient.put_payloads
+        assert any(item.get("base_url") == "https://api.bitwarden.com" for item in FakeBitwardenClient.client_kwargs)
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_bitwarden_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """Bitwarden backend cache load should bypass provider errors without raising."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        class FakeBitwardenClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str) -> dict[str, object]:
+                del path
+                raise RuntimeError("denied")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeBitwardenClient)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="bw-prod",
+                backend="bitwarden_secrets",
+                bw_secret_id="11111111-2222-3333-4444-555555555555",
+                bw_access_token_env="BWS_ACCESS_TOKEN",
+            )
+        )
+        assert entries == {}
+
+    def test_bitwarden_write_bypasses_missing_secret(self, monkeypatch):
+        """Bitwarden backend write should fail closed when target secret does not exist."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeBitwardenClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                return FakeResponse(status_code=404, json_data={})
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                raise AssertionError("put should not be called when secret does not exist")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeBitwardenClient)
+
+        success = cli_module._write_oauth_cache_payload_to_bitwarden(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="bw-prod",
+                backend="bitwarden_secrets",
+                bw_secret_id="11111111-2222-3333-4444-555555555555",
+                bw_access_token_env="BWS_ACCESS_TOKEN",
+            ),
+            entries={},
+        )
+        assert success is False
+
+    def test_bitwarden_write_bypasses_http_errors(self, monkeypatch):
+        """Bitwarden backend write should fail closed on update HTTP failures."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeBitwardenClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                self._put_calls = 0
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                return FakeResponse(status_code=200, json_data={"value": "{}"})
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                del kwargs
+                self._put_calls += 1
+                if self._put_calls == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                return FakeResponse(status_code=500, json_data={})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeBitwardenClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="bw-prod",
+            backend="bitwarden_secrets",
+            bw_secret_id="11111111-2222-3333-4444-555555555555",
+            bw_access_token_env="BWS_ACCESS_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_bitwarden(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_bitwarden(cache_settings=settings, entries={}) is False
+
+    def test_read_bitwarden_payload_supports_data_value_fallback(self, monkeypatch):
+        """Bitwarden reader should accept envelope from nested data.value payloads."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeBitwardenClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "data": {
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        }
+                    },
+                )
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeBitwardenClient)
+
+        payload = cli_module._read_oauth_cache_payload_from_bitwarden(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="bw-prod",
+                backend="bitwarden_secrets",
+                bw_secret_id="11111111-2222-3333-4444-555555555555",
+                bw_access_token_env="BWS_ACCESS_TOKEN",
+            )
+        )
+        assert isinstance(payload, dict)
+        assert payload.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+    def test_read_bitwarden_payload_returns_empty_entries_on_missing_secret(self, monkeypatch):
+        """Bitwarden reader should return an empty envelope when secret is not found."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeBitwardenClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str) -> FakeResponse:
+                assert path == "/public/secrets/11111111-2222-3333-4444-555555555555"
+                return FakeResponse(status_code=404, json_data={})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeBitwardenClient)
+
+        payload = cli_module._read_oauth_cache_payload_from_bitwarden(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="bw-prod",
+                backend="bitwarden_secrets",
+                bw_secret_id="11111111-2222-3333-4444-555555555555",
+                bw_access_token_env="BWS_ACCESS_TOKEN",
+            )
+        )
+        assert isinstance(payload, dict)
+        assert payload.get("entries") == {}
+
+    def test_read_bitwarden_payload_requires_secret_id(self):
+        """Bitwarden reader should bypass when secret id is missing."""
+        payload = cli_module._read_oauth_cache_payload_from_bitwarden(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="bw-prod",
+                backend="bitwarden_secrets",
+                bw_secret_id=None,
+                bw_access_token_env="BWS_ACCESS_TOKEN",
+            )
+        )
+        assert payload is None
+
+    def test_build_bitwarden_http_client_handles_invalid_url_and_client_errors(self, monkeypatch):
+        """Bitwarden client builder should fail closed on invalid URL and constructor errors."""
+        monkeypatch.setenv("BWS_ACCESS_TOKEN", "bw-token-test")
+
+        assert (
+            cli_module._build_bitwarden_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="bw-prod",
+                    backend="bitwarden_secrets",
+                    bw_secret_id="11111111-2222-3333-4444-555555555555",
+                    bw_access_token_env="BWS_ACCESS_TOKEN",
+                    bw_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        monkeypatch.setattr(cli_module.httpx, "Client", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert (
+            cli_module._build_bitwarden_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="bw-prod",
+                    backend="bitwarden_secrets",
+                    bw_secret_id="11111111-2222-3333-4444-555555555555",
+                    bw_access_token_env="BWS_ACCESS_TOKEN",
+                    bw_api_url="https://api.bitwarden.com",
+                )
+            )
+            is None
+        )
+
+    def test_bitwarden_write_requires_secret_id_and_token(self, monkeypatch):
+        """Bitwarden writer should fail closed when required ID/token inputs are missing."""
+        monkeypatch.delenv("BWS_ACCESS_TOKEN", raising=False)
+
+        settings_without_id = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="bw-prod",
+            backend="bitwarden_secrets",
+            bw_secret_id=None,
+            bw_access_token_env="BWS_ACCESS_TOKEN",
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_bitwarden(cache_settings=settings_without_id, entries={}) is False
+        )
+
+        settings_without_token = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="bw-prod",
+            backend="bitwarden_secrets",
+            bw_secret_id="11111111-2222-3333-4444-555555555555",
+            bw_access_token_env="BWS_ACCESS_TOKEN",
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_bitwarden(cache_settings=settings_without_token, entries={})
+            is False
+        )
+
+    def test_persist_bitwarden_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Bitwarden persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_bitwarden",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_bitwarden", fake_write)
+
+        cli_module._persist_oauth_cache_entry_bitwarden(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="bw-prod",
+                backend="bitwarden_secrets",
+                bw_secret_id="11111111-2222-3333-4444-555555555555",
+                bw_access_token_env="BWS_ACCESS_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -6655,6 +7168,7 @@ class TestCLIHelpers:
             ("oci_vault", "_load_oauth_persistent_cache_entries_from_oci"),
             ("doppler_secrets", "_load_oauth_persistent_cache_entries_from_doppler"),
             ("onepassword_connect", "_load_oauth_persistent_cache_entries_from_onepassword_connect"),
+            ("bitwarden_secrets", "_load_oauth_persistent_cache_entries_from_bitwarden"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -6672,6 +7186,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_oci",
             "_load_oauth_persistent_cache_entries_from_doppler",
             "_load_oauth_persistent_cache_entries_from_onepassword_connect",
+            "_load_oauth_persistent_cache_entries_from_bitwarden",
         }
 
         for name in backend_loaders:
@@ -6710,6 +7225,7 @@ class TestCLIHelpers:
             ("oci_vault", "_persist_oauth_cache_entry_oci"),
             ("doppler_secrets", "_persist_oauth_cache_entry_doppler"),
             ("onepassword_connect", "_persist_oauth_cache_entry_onepassword_connect"),
+            ("bitwarden_secrets", "_persist_oauth_cache_entry_bitwarden"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -6727,6 +7243,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_oci",
             "_persist_oauth_cache_entry_doppler",
             "_persist_oauth_cache_entry_onepassword_connect",
+            "_persist_oauth_cache_entry_bitwarden",
         }
 
         for name in backend_persisters:
@@ -6897,6 +7414,20 @@ class TestCLIHelpers:
                     op_item_id="item-456",
                     op_field_label="oauth_cache",
                     op_connect_token_env="OP_CONNECT_TOKEN",
+                ),
+            ),
+            (
+                "_build_bitwarden_http_client",
+                None,
+                "_read_oauth_cache_payload_from_bitwarden",
+                "_write_oauth_cache_payload_to_bitwarden",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="bitwarden_secrets",
+                    bw_secret_id="11111111-2222-3333-4444-555555555555",
+                    bw_access_token_env="BWS_ACCESS_TOKEN",
+                    bw_api_url="https://api.bitwarden.com",
                 ),
             ),
         ],
