@@ -2079,6 +2079,33 @@ class TestCLICommands:
         assert result.exit_code == 2
         assert "Cache rotation failed" in result.output
 
+    def test_cache_rotate_command_remains_local_only(self, monkeypatch, tmp_path: Path):
+        """Cache rotate should not touch remote provider client builders."""
+        monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_FILE", tmp_path / "oauth-cache-v1.json.enc")
+        monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_CACHE_LOCK_FILE", tmp_path / "oauth-cache-v1.lock")
+        monkeypatch.setattr(cli_module, "_OAUTH_PERSISTENT_KEY_FILE", tmp_path / "cache.key")
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_key_set_from_keyring", lambda: None)
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_key_set_to_keyring", lambda key_set: False)
+
+        def fail_remote_builder(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise AssertionError("remote provider builder must not be called by cache rotate")
+
+        monkeypatch.setattr(cli_module, "_build_aws_secrets_manager_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_aws_ssm_parameter_store_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_gcp_secret_manager_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_azure_key_vault_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_hashicorp_vault_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_kubernetes_secret_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_oci_secrets_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_oci_vault_client", fail_remote_builder)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["cache", "rotate"])
+
+        assert result.exit_code == 0
+        assert "source=file" in result.output
+
 
 class TestCLIHelpers:
     """Unit tests for CLI helper functions and normalization paths."""
@@ -6021,6 +6048,245 @@ class TestCLIHelpers:
         payload = {"value": _Unserializable()}
         dumped = _safe_json_dump(payload)
         assert dumped == repr(payload)
+
+    @pytest.mark.parametrize(
+        ("backend", "loader_name"),
+        [
+            ("local", "_load_oauth_persistent_cache_entries_local"),
+            ("aws_secrets_manager", "_load_oauth_persistent_cache_entries_from_aws"),
+            ("aws_ssm_parameter_store", "_load_oauth_persistent_cache_entries_from_aws_ssm"),
+            ("gcp_secret_manager", "_load_oauth_persistent_cache_entries_from_gcp"),
+            ("azure_key_vault", "_load_oauth_persistent_cache_entries_from_azure"),
+            ("hashicorp_vault", "_load_oauth_persistent_cache_entries_from_vault"),
+            ("kubernetes_secrets", "_load_oauth_persistent_cache_entries_from_kubernetes"),
+            ("oci_vault", "_load_oauth_persistent_cache_entries_from_oci"),
+        ],
+    )
+    def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
+        """Persistent cache load should dispatch to exactly one backend loader."""
+        called: list[tuple[str, str]] = []
+        sentinel = {"contract": {"access_token": "cached-token"}}
+
+        backend_loaders = {
+            "_load_oauth_persistent_cache_entries_from_aws",
+            "_load_oauth_persistent_cache_entries_from_aws_ssm",
+            "_load_oauth_persistent_cache_entries_from_gcp",
+            "_load_oauth_persistent_cache_entries_from_azure",
+            "_load_oauth_persistent_cache_entries_from_vault",
+            "_load_oauth_persistent_cache_entries_from_kubernetes",
+            "_load_oauth_persistent_cache_entries_from_oci",
+        }
+
+        for name in backend_loaders:
+            monkeypatch.setattr(
+                cli_module,
+                name,
+                lambda *, cache_settings, _name=name: called.append((_name, cache_settings.backend)) or sentinel,
+            )
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_local",
+            lambda: called.append(("_load_oauth_persistent_cache_entries_local", "local")) or sentinel,
+        )
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="contract",
+                backend=backend,
+            )
+        )
+        assert entries == sentinel
+        assert called == [(loader_name, backend)]
+
+    @pytest.mark.parametrize(
+        ("backend", "persist_name"),
+        [
+            ("local", "_persist_oauth_cache_entry_local"),
+            ("aws_secrets_manager", "_persist_oauth_cache_entry_aws"),
+            ("aws_ssm_parameter_store", "_persist_oauth_cache_entry_aws_ssm"),
+            ("gcp_secret_manager", "_persist_oauth_cache_entry_gcp"),
+            ("azure_key_vault", "_persist_oauth_cache_entry_azure"),
+            ("hashicorp_vault", "_persist_oauth_cache_entry_vault"),
+            ("kubernetes_secrets", "_persist_oauth_cache_entry_kubernetes"),
+            ("oci_vault", "_persist_oauth_cache_entry_oci"),
+        ],
+    )
+    def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
+        """Persistent cache write should dispatch to exactly one backend persister."""
+        called: list[tuple[str, str, str]] = []
+        cache_key = "contract-key"
+
+        backend_persisters = {
+            "_persist_oauth_cache_entry_aws",
+            "_persist_oauth_cache_entry_aws_ssm",
+            "_persist_oauth_cache_entry_gcp",
+            "_persist_oauth_cache_entry_azure",
+            "_persist_oauth_cache_entry_vault",
+            "_persist_oauth_cache_entry_kubernetes",
+            "_persist_oauth_cache_entry_oci",
+        }
+
+        for name in backend_persisters:
+            monkeypatch.setattr(
+                cli_module,
+                name,
+                lambda *, cache_key, cache_settings, _name=name: called.append(
+                    (_name, cache_key, cache_settings.backend)
+                ),
+            )
+
+        monkeypatch.setattr(
+            cli_module,
+            "_persist_oauth_cache_entry_local",
+            lambda cache_key: called.append(("_persist_oauth_cache_entry_local", cache_key, "local")),
+        )
+
+        cli_module._persist_oauth_cache_entry(
+            cache_key,
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="contract",
+                backend=backend,
+            ),
+        )
+        assert called == [(persist_name, cache_key, backend)]
+
+    def test_oauth_cache_hydrate_skips_persistent_layer_when_disabled(self, monkeypatch):
+        """Hydration should not call persistent backend loader when cache persistence is disabled."""
+        cache_key = "contract-key"
+        load_calls: list[str] = []
+        cli_module._clear_oauth_token_cache()
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries",
+            lambda cache_settings=None: load_calls.append("load") or {"contract-key": {"access_token": "cached"}},
+        )
+
+        cli_module._hydrate_oauth_cache_from_persistent(
+            cache_key=cache_key,
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=False,
+                namespace="contract",
+                backend="oci_vault",
+            ),
+        )
+
+        assert load_calls == []
+        assert cache_key not in cli_module._OAUTH_TOKEN_CACHE
+
+    @pytest.mark.parametrize(
+        ("primary_builder_name", "secondary_builder_name", "read_fn_name", "write_fn_name", "settings"),
+        [
+            (
+                "_build_aws_secrets_manager_client",
+                None,
+                "_read_oauth_cache_payload_from_aws",
+                "_write_oauth_cache_payload_to_aws",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="aws_secrets_manager",
+                    aws_secret_id="mcp-security/oauth-cache",
+                ),
+            ),
+            (
+                "_build_aws_ssm_parameter_store_client",
+                None,
+                "_read_oauth_cache_payload_from_aws_ssm",
+                "_write_oauth_cache_payload_to_aws_ssm",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="aws_ssm_parameter_store",
+                    aws_ssm_parameter_name="/mcp-security/oauth-cache",
+                ),
+            ),
+            (
+                "_build_gcp_secret_manager_client",
+                None,
+                "_read_oauth_cache_payload_from_gcp",
+                "_write_oauth_cache_payload_to_gcp",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="gcp_secret_manager",
+                    gcp_secret_name="projects/demo/secrets/cache",
+                ),
+            ),
+            (
+                "_build_azure_key_vault_client",
+                None,
+                "_read_oauth_cache_payload_from_azure",
+                "_write_oauth_cache_payload_to_azure",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="azure_key_vault",
+                    azure_vault_url="https://mcp-security.vault.azure.net",
+                    azure_secret_name="mcp-security-oauth-cache",
+                ),
+            ),
+            (
+                "_build_hashicorp_vault_client",
+                None,
+                "_read_oauth_cache_payload_from_vault",
+                "_write_oauth_cache_payload_to_vault",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="hashicorp_vault",
+                    vault_url="https://vault.example.com",
+                    vault_secret_path="kv/mcp-security/oauth-cache",
+                ),
+            ),
+            (
+                "_build_kubernetes_secret_client",
+                None,
+                "_read_oauth_cache_payload_from_kubernetes",
+                "_write_oauth_cache_payload_to_kubernetes",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="kubernetes_secrets",
+                    k8s_secret_namespace="mcp-security",
+                    k8s_secret_name="oauth-cache",
+                ),
+            ),
+            (
+                "_build_oci_secrets_client",
+                "_build_oci_vault_client",
+                "_read_oauth_cache_payload_from_oci",
+                "_write_oauth_cache_payload_to_oci",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="oci_vault",
+                    oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+                ),
+            ),
+        ],
+    )
+    def test_oauth_cache_remote_backends_bypass_when_client_unavailable(
+        self,
+        monkeypatch,
+        primary_builder_name: str,
+        secondary_builder_name: str | None,
+        read_fn_name: str,
+        write_fn_name: str,
+        settings: cli_module.OAuthCacheSettings,
+    ):
+        """Remote backend read/write helpers should fail closed when client builder is unavailable."""
+        monkeypatch.setattr(cli_module, primary_builder_name, lambda cache_settings: None)
+        if secondary_builder_name is not None:
+            monkeypatch.setattr(cli_module, secondary_builder_name, lambda cache_settings: None)
+
+        read_fn = getattr(cli_module, read_fn_name)
+        write_fn = getattr(cli_module, write_fn_name)
+        assert read_fn(cache_settings=settings) is None
+        assert write_fn(cache_settings=settings, entries={}) is False
 
     def test_load_oauth_persistent_cache_entries_bypass_on_lock_failure(self, monkeypatch):
         """Persistent cache load should bypass cleanly when lock cannot be acquired."""

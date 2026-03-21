@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8M Implementation State
+# Setup Complete — Sprint 1-8N Implementation State
 
-This file records the actual implementation status after Sprint 8M.
+This file records the actual implementation status after Sprint 8N.
 
 ## Completed Work
 
@@ -553,6 +553,21 @@ This file records the actual implementation status after Sprint 8M.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 8N (Release + Contract Hardening)
+
+- Release pipeline hardening:
+  - pre-publish version guard validates `refs/tags/vX.Y.Z` against `pyproject` package version
+  - publish job now verifies PyPI index visibility for just-published version with retry/backoff
+  - existing OIDC publish + Sigstore + idempotent GitHub release flow remains intact
+- OAuth cache contract hardening:
+  - shared backend dispatch contract tests for load/persist paths across all supported backends
+  - invariant test for `persistent=false` path confirms persistent layer is bypassed
+  - remote backend read/write helpers validated for fail-closed behavior when client builders are unavailable
+  - explicit regression coverage for `cache rotate` local-only behavior
+- no runtime/CLI contract changes:
+  - no new commands/flags
+  - no report schema or exit-code contract changes
 
 ## Exit Code Contract (Current)
 

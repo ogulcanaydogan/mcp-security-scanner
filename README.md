@@ -42,7 +42,7 @@ flowchart LR
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
 | Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault` |
-| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release upload/create |
+| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
 
@@ -57,6 +57,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8K): added `aws_ssm_parameter_store` backend (pre-provisioned SecureString parameter model)
 - OAuth cache provider expansion (Sprint 8L): added `kubernetes_secrets` backend (in-cluster auth + kubeconfig fallback, pre-provisioned Secret model)
 - OAuth cache provider expansion (Sprint 8M): added `oci_vault` backend (resource principal first, OCI config fallback, pre-provisioned secret model)
+- Release + contract hardening (Sprint 8N): pre-publish tag/version guard, post-publish PyPI visibility retry check, and shared OAuth cache backend invariant tests
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -509,7 +510,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8M)
+## Roadmap (Post Sprint 8N)
 
 Deferred items:
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, and `oci_vault`

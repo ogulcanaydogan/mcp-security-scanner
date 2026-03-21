@@ -35,6 +35,7 @@ Current index for the implemented Sprint 1-8M scope.
 - Sprint 8K: done (advanced OAuth cache backend v5 with AWS SSM Parameter Store, pre-provisioned SecureString parameter model)
 - Sprint 8L: done (advanced OAuth cache backend v6 with Kubernetes Secrets, in-cluster auth + kubeconfig fallback, pre-provisioned Secret model)
 - Sprint 8M: done (advanced OAuth cache backend v7 with OCI Vault, resource-principal-first auth chain + OCI config fallback, pre-provisioned secret model)
+- Sprint 8N: done (release + contract hardening: tag/version guard, post-publish PyPI visibility retry check, shared OAuth cache backend invariants)
 
 ## Top-Level Docs
 
@@ -49,6 +50,7 @@ Current index for the implemented Sprint 1-8M scope.
 - Python package/module path unchanged: `mcp_security_scanner`
 - CLI entrypoint unchanged: `mcp-scan`
 - GitHub release publishing path: idempotent `gh release` create/upload in CI publish job
+- Publish safety checks: tag/version guard before publish + post-publish PyPI visibility verification (retry/backoff)
 
 ## Source Map
 

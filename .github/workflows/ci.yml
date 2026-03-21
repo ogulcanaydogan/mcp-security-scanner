@@ -150,6 +150,35 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Validate tag/version and build artifacts
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PROJECT_VERSION="$(python - <<'PY'
+          import pathlib
+          import tomllib
+
+          payload = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(payload["project"]["version"])
+          PY
+          )"
+          if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match pyproject version ($PROJECT_VERSION)."
+            exit 1
+          fi
+          if ! ls dist/*.tar.gz >/dev/null 2>&1; then
+            echo "::error::sdist artifact missing in dist/."
+            exit 1
+          fi
+          if ! ls dist/*.whl >/dev/null 2>&1; then
+            echo "::error::wheel artifact missing in dist/."
+            exit 1
+          fi
+          if ! ls dist/*"$PROJECT_VERSION"* >/dev/null 2>&1; then
+            echo "::error::Built artifacts do not include version $PROJECT_VERSION."
+            exit 1
+          fi
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
@@ -174,3 +203,26 @@ jobs:
               --generate-notes \
               --latest
           fi
+
+      - name: Verify PyPI version visibility
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="ogulcanaydogan-mcp-security-scanner"
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          ATTEMPTS=12
+          SLEEP_SECONDS=10
+
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            OUTPUT="$(python -m pip index versions "$PACKAGE_NAME" 2>/dev/null || true)"
+            VERSIONS_LINE="$(printf '%s\n' "$OUTPUT" | grep '^Available versions:' || true)"
+            if printf '%s' "$VERSIONS_LINE" | grep -Eq "(^|[, ])${TAG_VERSION}([, ]|$)"; then
+              echo "Version ${TAG_VERSION} is visible on PyPI (attempt ${attempt}/${ATTEMPTS})."
+              exit 0
+            fi
+            echo "Version ${TAG_VERSION} not visible yet (attempt ${attempt}/${ATTEMPTS}); waiting ${SLEEP_SECONDS}s."
+            sleep "$SLEEP_SECONDS"
+          done
+
+          echo "::error::Version ${TAG_VERSION} not visible on PyPI after ${ATTEMPTS} attempts."
+          python -m pip index versions "$PACKAGE_NAME" || true
+          exit 1
