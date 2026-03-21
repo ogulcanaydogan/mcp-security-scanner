@@ -59,6 +59,7 @@ _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT = "azure_key_vault"
 _OAUTH_CACHE_BACKEND_HASHICORP_VAULT = "hashicorp_vault"
 _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS = "kubernetes_secrets"
 _OAUTH_CACHE_BACKEND_OCI_VAULT = "oci_vault"
+_OAUTH_CACHE_BACKEND_DOPPLER_SECRETS = "doppler_secrets"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -68,6 +69,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_HASHICORP_VAULT,
     _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS,
     _OAUTH_CACHE_BACKEND_OCI_VAULT,
+    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -82,6 +84,7 @@ _OAUTH_HISTORICAL_KEY_LIMIT = 3
 _OAUTH_FORM_REQUEST_MAX_RETRIES = 2
 _OAUTH_FORM_REQUEST_BASE_BACKOFF_SECONDS = 0.2
 _OAUTH_RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
+_DOPPLER_DEFAULT_API_URL = "https://api.doppler.com"
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,11 @@ class OAuthCacheSettings:
     oci_secret_ocid: str | None = None
     oci_region: str | None = None
     oci_endpoint_url: str | None = None
+    doppler_project: str | None = None
+    doppler_config: str | None = None
+    doppler_secret_name: str | None = None
+    doppler_token_env: str | None = None
+    doppler_api_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2239,6 +2247,11 @@ def _coerce_oauth_cache_settings(
             "oci_secret_ocid",
             "oci_region",
             "oci_endpoint_url",
+            "doppler_project",
+            "doppler_config",
+            "doppler_secret_name",
+            "doppler_token_env",
+            "doppler_api_url",
         }
     ]
     if unknown_fields:
@@ -2249,7 +2262,8 @@ def _coerce_oauth_cache_settings(
             "gcp_secret_name, gcp_endpoint_url, azure_vault_url, azure_secret_name, azure_secret_version, "
             "vault_url, vault_secret_path, vault_token_env, vault_namespace, "
             "k8s_secret_namespace, k8s_secret_name, k8s_secret_key, "
-            "oci_secret_ocid, oci_region, oci_endpoint_url.",
+            "oci_secret_ocid, oci_region, oci_endpoint_url, "
+            "doppler_project, doppler_config, doppler_secret_name, doppler_token_env, doppler_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2441,6 +2455,67 @@ def _coerce_oauth_cache_settings(
         parsed_oci_endpoint_url = urlparse(oci_endpoint_url)
         if parsed_oci_endpoint_url.scheme not in {"http", "https"} or not parsed_oci_endpoint_url.netloc:
             return None, "auth.cache.oci_endpoint_url must be a valid http/https URL."
+
+    doppler_project_value = cache_value.get("doppler_project")
+    if doppler_project_value is not None and (
+        not isinstance(doppler_project_value, str) or not doppler_project_value.strip()
+    ):
+        return None, "auth.cache.doppler_project must be a non-empty string when provided."
+    doppler_project = doppler_project_value.strip() if isinstance(doppler_project_value, str) else None
+    if doppler_project is not None and not _is_valid_doppler_identifier(doppler_project):
+        return None, "auth.cache.doppler_project must match Doppler identifier rules ([0-9A-Za-z_.-])."
+
+    doppler_config_value = cache_value.get("doppler_config")
+    if doppler_config_value is not None and (
+        not isinstance(doppler_config_value, str) or not doppler_config_value.strip()
+    ):
+        return None, "auth.cache.doppler_config must be a non-empty string when provided."
+    doppler_config = doppler_config_value.strip() if isinstance(doppler_config_value, str) else None
+    if doppler_config is not None and not _is_valid_doppler_identifier(doppler_config):
+        return None, "auth.cache.doppler_config must match Doppler identifier rules ([0-9A-Za-z_.-])."
+
+    doppler_secret_name_value = cache_value.get("doppler_secret_name")
+    if doppler_secret_name_value is not None and (
+        not isinstance(doppler_secret_name_value, str) or not doppler_secret_name_value.strip()
+    ):
+        return None, "auth.cache.doppler_secret_name must be a non-empty string when provided."
+    doppler_secret_name = doppler_secret_name_value.strip() if isinstance(doppler_secret_name_value, str) else None
+    if doppler_secret_name is not None and not _is_valid_doppler_identifier(doppler_secret_name):
+        return None, "auth.cache.doppler_secret_name must match Doppler identifier rules ([0-9A-Za-z_.-])."
+
+    doppler_token_env_value = cache_value.get("doppler_token_env")
+    if doppler_token_env_value is not None and (
+        not isinstance(doppler_token_env_value, str) or not doppler_token_env_value.strip()
+    ):
+        return None, "auth.cache.doppler_token_env must be a non-empty string when provided."
+    doppler_token_env = doppler_token_env_value.strip() if isinstance(doppler_token_env_value, str) else None
+    if doppler_token_env is not None and not _is_valid_env_var_name(doppler_token_env):
+        return None, "auth.cache.doppler_token_env must be a valid environment variable name."
+
+    doppler_api_url_value = cache_value.get("doppler_api_url")
+    if doppler_api_url_value is not None and (
+        not isinstance(doppler_api_url_value, str) or not doppler_api_url_value.strip()
+    ):
+        return None, "auth.cache.doppler_api_url must be a non-empty string when provided."
+    doppler_api_url = doppler_api_url_value.strip() if isinstance(doppler_api_url_value, str) else None
+    if doppler_api_url is not None:
+        parsed_doppler_api_url = urlparse(doppler_api_url)
+        if parsed_doppler_api_url.scheme != "https" or not parsed_doppler_api_url.netloc:
+            return None, "auth.cache.doppler_api_url must be a valid https URL."
+
+    if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
+        doppler_project is not None
+        or doppler_config is not None
+        or doppler_secret_name is not None
+        or doppler_token_env is not None
+        or doppler_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.doppler_project, auth.cache.doppler_config, auth.cache.doppler_secret_name, "
+            "auth.cache.doppler_token_env, and auth.cache.doppler_api_url are only supported when "
+            "auth.cache.backend='doppler_secrets'.",
+        )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
         if aws_secret_id is None:
@@ -2779,6 +2854,69 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
                 "only supported when auth.cache.backend='kubernetes_secrets'.",
             )
+    elif backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
+        if doppler_project is None:
+            return (
+                None,
+                "auth.cache.doppler_project is required when auth.cache.backend='doppler_secrets'.",
+            )
+        if doppler_config is None:
+            return (
+                None,
+                "auth.cache.doppler_config is required when auth.cache.backend='doppler_secrets'.",
+            )
+        if doppler_secret_name is None:
+            return (
+                None,
+                "auth.cache.doppler_secret_name is required when auth.cache.backend='doppler_secrets'.",
+            )
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
     else:
         if (
             aws_secret_id is not None
@@ -2856,6 +2994,15 @@ def _coerce_oauth_cache_settings(
             oci_secret_ocid=oci_secret_ocid,
             oci_region=oci_region,
             oci_endpoint_url=oci_endpoint_url,
+            doppler_project=doppler_project,
+            doppler_config=doppler_config,
+            doppler_secret_name=doppler_secret_name,
+            doppler_token_env=(
+                doppler_token_env
+                if doppler_token_env is not None
+                else ("DOPPLER_TOKEN" if backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS else None)
+            ),
+            doppler_api_url=doppler_api_url,
         ),
         None,
     )
@@ -2898,6 +3045,16 @@ def _is_valid_k8s_secret_key(value: str) -> bool:
 def _is_valid_oci_secret_ocid(value: str) -> bool:
     """Validate generic OCI OCID shape for Vault secret identifiers."""
     return re.fullmatch(r"ocid1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+", value) is not None
+
+
+def _is_valid_env_var_name(value: str) -> bool:
+    """Validate POSIX-style environment variable name shape."""
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is not None
+
+
+def _is_valid_doppler_identifier(value: str) -> bool:
+    """Validate Doppler identifier-like values used for project/config/secret fields."""
+    return re.fullmatch(r"[0-9A-Za-z_.-]{1,128}", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -4609,6 +4766,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_kubernetes(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
         return _load_oauth_persistent_cache_entries_from_oci(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
+        return _load_oauth_persistent_cache_entries_from_doppler(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -4653,6 +4812,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
         _persist_oauth_cache_entry_oci(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
+        _persist_oauth_cache_entry_doppler(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -5573,6 +5735,174 @@ def _write_oauth_cache_payload_to_oci(cache_settings: OAuthCacheSettings, entrie
     except Exception:
         return False
     return True
+
+
+def _load_oauth_persistent_cache_entries_from_doppler(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Doppler secret value; bypass on any provider error."""
+    payload = _read_oauth_cache_payload_from_doppler(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_doppler(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Doppler secret value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_doppler(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_doppler(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_doppler_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Doppler API client for OAuth cache backend."""
+    token_env_name = cache_settings.doppler_token_env or "DOPPLER_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.doppler_api_url or _DOPPLER_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"Bearer {token_value}",
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _read_doppler_secrets_map(client: httpx.Client, cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read Doppler config secrets as key-value map."""
+    if cache_settings.doppler_project is None or cache_settings.doppler_config is None:
+        return None
+
+    try:
+        response = client.get(
+            "/v3/configs/config/secrets/download",
+            params={
+                "project": cache_settings.doppler_project,
+                "config": cache_settings.doppler_config,
+                "format": "json",
+            },
+        )
+    except Exception:
+        return None
+
+    if response.status_code == 404:
+        return {}
+    try:
+        response.raise_for_status()
+    except Exception:
+        return None
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _read_oauth_cache_payload_from_doppler(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from Doppler pre-provisioned secret value."""
+    if (
+        cache_settings.doppler_project is None
+        or cache_settings.doppler_config is None
+        or cache_settings.doppler_secret_name is None
+    ):
+        return None
+
+    client = _build_doppler_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        secrets_map = _read_doppler_secrets_map(client=client, cache_settings=cache_settings)
+    finally:
+        client.close()
+
+    if secrets_map is None:
+        return None
+
+    raw_payload = secrets_map.get(cache_settings.doppler_secret_name)
+    if not isinstance(raw_payload, str) or not raw_payload.strip():
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _write_oauth_cache_payload_to_doppler(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Doppler secret value."""
+    if (
+        cache_settings.doppler_project is None
+        or cache_settings.doppler_config is None
+        or cache_settings.doppler_secret_name is None
+    ):
+        return False
+
+    client = _build_doppler_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        secrets_map = _read_doppler_secrets_map(client=client, cache_settings=cache_settings)
+        if secrets_map is None:
+            return False
+
+        # Pre-provisioned mode: require secret key to already exist.
+        if cache_settings.doppler_secret_name not in secrets_map:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.post(
+                "/v3/configs/config/secrets",
+                json={
+                    "project": cache_settings.doppler_project,
+                    "config": cache_settings.doppler_config,
+                    "secrets": {cache_settings.doppler_secret_name: serialized_payload},
+                },
+            )
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:

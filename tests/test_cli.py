@@ -2099,6 +2099,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_kubernetes_secret_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_oci_secrets_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_oci_vault_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_doppler_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2686,6 +2687,35 @@ class TestCLIHelpers:
         assert settings.oci_region == "eu-frankfurt-1"
         assert settings.oci_endpoint_url == "https://vaults.eu-frankfurt-1.oci.oraclecloud.com"
 
+    def test_coerce_oauth_cache_settings_accepts_doppler_backend(self):
+        """OAuth cache settings should accept doppler_secrets backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "doppler_secrets",
+                    "doppler_project": "security-platform",
+                    "doppler_config": "prd",
+                    "doppler_secret_name": "MCP_OAUTH_CACHE",
+                    "doppler_token_env": "DOPPLER_TOKEN_PROD",
+                    "doppler_api_url": "https://api.doppler.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "doppler_secrets"
+        assert settings.doppler_project == "security-platform"
+        assert settings.doppler_config == "prd"
+        assert settings.doppler_secret_name == "MCP_OAUTH_CACHE"
+        assert settings.doppler_token_env == "DOPPLER_TOKEN_PROD"
+        assert settings.doppler_api_url == "https://api.doppler.com"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -2855,6 +2885,46 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "oci_secret_ocid": "ocid1.secret.oc1.iad.exampleuniqueid1234567890"},
                 "only supported when auth.cache.backend='oci_vault'",
+            ),
+            (
+                {"backend": "doppler_secrets"},
+                "auth.cache.doppler_project is required",
+            ),
+            (
+                {"backend": "doppler_secrets", "doppler_project": "security-platform"},
+                "auth.cache.doppler_config is required",
+            ),
+            (
+                {
+                    "backend": "doppler_secrets",
+                    "doppler_project": "security-platform",
+                    "doppler_config": "prd",
+                },
+                "auth.cache.doppler_secret_name is required",
+            ),
+            (
+                {
+                    "backend": "doppler_secrets",
+                    "doppler_project": "security-platform",
+                    "doppler_config": "prd",
+                    "doppler_secret_name": "MCP_OAUTH_CACHE",
+                    "doppler_token_env": "9INVALID",
+                },
+                "auth.cache.doppler_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "doppler_secrets",
+                    "doppler_project": "security-platform",
+                    "doppler_config": "prd",
+                    "doppler_secret_name": "MCP_OAUTH_CACHE",
+                    "doppler_api_url": "http://api.doppler.com",
+                },
+                "auth.cache.doppler_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "doppler_project": "security-platform"},
+                "only supported when auth.cache.backend='doppler_secrets'",
             ),
         ],
     )
@@ -4272,6 +4342,159 @@ class TestCLIHelpers:
             )
             is False
         )
+
+    def test_doppler_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """Doppler backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-doppler")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-doppler")
+        monkeypatch.setenv("DOPPLER_TOKEN", "dp.st.test-token")
+
+        class FakeHTTPError(Exception):
+            pass
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise FakeHTTPError(f"status={self.status_code}")
+
+        class FakeDopplerClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+            post_payloads: ClassVar[list[dict[str, object]]] = []
+            secrets_map: ClassVar[dict[str, str]] = {
+                "MCP_OAUTH_CACHE": json.dumps(
+                    {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                    sort_keys=True,
+                )
+            }
+
+            def __init__(self, **kwargs: object) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/configs/config/secrets/download"
+                assert params["project"] == "security-platform"
+                assert params["config"] == "prd"
+                assert params["format"] == "json"
+                return FakeResponse(status_code=200, json_data=dict(self.__class__.secrets_map))
+
+            def post(self, path: str, json: dict[str, object]) -> FakeResponse:
+                assert path == "/v3/configs/config/secrets"
+                self.__class__.post_payloads.append(dict(json))
+                secrets = json.get("secrets")
+                assert isinstance(secrets, dict)
+                for key, value in secrets.items():
+                    if isinstance(key, str) and isinstance(value, str):
+                        self.__class__.secrets_map[key] = value
+                return FakeResponse(status_code=200, json_data={"ok": True})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeDopplerClient)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-doppler-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "doppler-prod",
+                    "backend": "doppler_secrets",
+                    "doppler_project": "security-platform",
+                    "doppler_config": "prd",
+                    "doppler_secret_name": "MCP_OAUTH_CACHE",
+                    "doppler_token_env": "DOPPLER_TOKEN",
+                    "doppler_api_url": "https://api.doppler.com",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_doppler_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-doppler-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_doppler_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-doppler-token"
+        assert call_count["value"] == 1
+
+        persisted_payload = json.loads(FakeDopplerClient.secrets_map["MCP_OAUTH_CACHE"])
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert FakeDopplerClient.post_payloads
+        assert any(item.get("base_url") == "https://api.doppler.com" for item in FakeDopplerClient.client_kwargs)
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_doppler_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """Doppler backend cache load should bypass provider errors without raising."""
+        monkeypatch.setenv("DOPPLER_TOKEN", "dp.st.test-token")
+
+        class FakeDopplerClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> dict[str, object]:
+                del path, params
+                raise RuntimeError("denied")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeDopplerClient)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="doppler-prod",
+                backend="doppler_secrets",
+                doppler_project="security-platform",
+                doppler_config="prd",
+                doppler_secret_name="MCP_OAUTH_CACHE",
+            )
+        )
+        assert entries == {}
 
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
@@ -6060,6 +6283,7 @@ class TestCLIHelpers:
             ("hashicorp_vault", "_load_oauth_persistent_cache_entries_from_vault"),
             ("kubernetes_secrets", "_load_oauth_persistent_cache_entries_from_kubernetes"),
             ("oci_vault", "_load_oauth_persistent_cache_entries_from_oci"),
+            ("doppler_secrets", "_load_oauth_persistent_cache_entries_from_doppler"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -6075,6 +6299,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_vault",
             "_load_oauth_persistent_cache_entries_from_kubernetes",
             "_load_oauth_persistent_cache_entries_from_oci",
+            "_load_oauth_persistent_cache_entries_from_doppler",
         }
 
         for name in backend_loaders:
@@ -6111,6 +6336,7 @@ class TestCLIHelpers:
             ("hashicorp_vault", "_persist_oauth_cache_entry_vault"),
             ("kubernetes_secrets", "_persist_oauth_cache_entry_kubernetes"),
             ("oci_vault", "_persist_oauth_cache_entry_oci"),
+            ("doppler_secrets", "_persist_oauth_cache_entry_doppler"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -6126,6 +6352,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_vault",
             "_persist_oauth_cache_entry_kubernetes",
             "_persist_oauth_cache_entry_oci",
+            "_persist_oauth_cache_entry_doppler",
         }
 
         for name in backend_persisters:
@@ -6265,6 +6492,21 @@ class TestCLIHelpers:
                     namespace="contract",
                     backend="oci_vault",
                     oci_secret_ocid="ocid1.secret.oc1.iad.exampleuniqueid1234567890",
+                ),
+            ),
+            (
+                "_build_doppler_http_client",
+                None,
+                "_read_oauth_cache_payload_from_doppler",
+                "_write_oauth_cache_payload_to_doppler",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="doppler_secrets",
+                    doppler_project="security-platform",
+                    doppler_config="prd",
+                    doppler_secret_name="MCP_OAUTH_CACHE",
+                    doppler_token_env="DOPPLER_TOKEN",
                 ),
             ),
         ],
