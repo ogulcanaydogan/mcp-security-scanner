@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8T scope.
+Current index for the implemented Sprint 1-8U scope.
 
 ## Status Snapshot
 
@@ -42,6 +42,7 @@ Current index for the implemented Sprint 1-8T scope.
 - Sprint 8R: done (advanced OAuth cache backend v11 with Infisical Secrets API, env-token auth only, pre-provisioned secret model)
 - Sprint 8S: done (advanced OAuth cache backend v12 with Akeyless Secrets API, env-token auth only, pre-provisioned secret model)
 - Sprint 8T: done (advanced OAuth cache backend v13 with GitLab project variables API, env-token auth only, pre-provisioned variable model)
+- Sprint 8U: done (advanced OAuth cache backend v14 with GitHub Actions variables API, env-token auth only, pre-provisioned repository variable model)
 
 ## Top-Level Docs
 
@@ -92,6 +93,7 @@ Current index for the implemented Sprint 1-8T scope.
     - `backend=infisical_secrets` (single secret-value JSON envelope for OAuth cache entries via Infisical Secrets API)
     - `backend=akeyless_secrets` (single secret-value JSON envelope for OAuth cache entries via Akeyless API)
     - `backend=gitlab_variables` (single project-variable JSON envelope for OAuth cache entries via GitLab API)
+    - `backend=github_actions_variables` (single repository-variable JSON envelope for OAuth cache entries via GitHub Actions Variables API)
     - backend read/write failures are non-fatal and fall back to live token flow
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
   - `private_key_jwt` signer inputs with exclusivity (`client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`), optional `client_assertion_kid`
@@ -155,4 +157,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, and `gitlab_variables`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, and `github_actions_variables`
