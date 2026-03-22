@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8V)
+## Capability Snapshot (Sprint 1-8W)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -66,6 +66,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8T): added `gitlab_variables` backend (env-token auth, pre-provisioned project variable model)
 - OAuth cache provider expansion (Sprint 8U): added `github_actions_variables` backend (env-token auth, pre-provisioned repository variable model)
 - OAuth cache provider expansion (Sprint 8V): added `github_environment_variables` backend (env-token auth, pre-provisioned repository environment variable model)
+- OAuth cache provider expansion (Sprint 8W): added `github_organization_variables` backend (env-token auth, pre-provisioned organization variable model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -453,6 +454,25 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-github-organization-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "github_organization_variables",
+          "github_organization": "ogulcanaydogan",
+          "github_variable_name": "MCP_OAUTH_CACHE",
+          "github_token_env": "GITHUB_TOKEN",
+          "github_api_url": "https://api.github.com"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -520,7 +540,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, or `github_environment_variables`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, or `github_organization_variables`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -565,8 +585,9 @@ Notes:
   - optional `gitlab_token_env` (default `GITLAB_TOKEN`)
   - optional `gitlab_api_url` (`https` URL; defaults to `https://gitlab.com/api/v4`)
   - `github_repository` (required when `backend=github_actions_variables` or `backend=github_environment_variables`, format `<owner>/<repo>`)
+  - `github_organization` (required when `backend=github_organization_variables`, organization slug)
   - `github_environment_name` (required when `backend=github_environment_variables`, non-empty string)
-  - `github_variable_name` (required when `backend=github_actions_variables` or `backend=github_environment_variables`, env-style key)
+  - `github_variable_name` (required when `backend=github_actions_variables`, `backend=github_environment_variables`, or `backend=github_organization_variables`, env-style key)
   - optional `github_token_env` (default `GITHUB_TOKEN`)
   - optional `github_api_url` (`https` URL; defaults to `https://api.github.com`)
 - cache lookup order for OAuth:
@@ -668,6 +689,13 @@ Notes:
     - environment + variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
     - environment/variable path segments are URL-encoded before API calls
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=github_organization_variables`:
+    - cache payload is stored as a single JSON envelope in configured GitHub organization variable value
+      (`auth.cache.github_organization` / `auth.cache.github_variable_name`)
+    - auth uses env token only (`auth.cache.github_token_env`, default `GITHUB_TOKEN`)
+    - organization variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
+    - organization/variable path segments are URL-encoded before API calls
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
@@ -751,7 +779,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8V)
+## Roadmap (Post Sprint 8W)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, and `github_environment_variables`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, and `github_organization_variables`

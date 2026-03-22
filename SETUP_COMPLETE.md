@@ -798,6 +798,40 @@ This file records the actual implementation status after Sprint 8U.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8W (Advanced Secret-Store Backend v16: GitHub Organization Variables API)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+    - `doppler_secrets`
+    - `onepassword_connect`
+    - `bitwarden_secrets`
+    - `infisical_secrets`
+    - `akeyless_secrets`
+    - `gitlab_variables`
+    - `github_actions_variables`
+    - `github_environment_variables`
+    - `github_organization_variables`
+- GitHub organization backend contract:
+  - required: `github_organization`, `github_variable_name`
+  - optional: `github_token_env` (default `GITHUB_TOKEN`), `github_api_url` (`https`)
+  - pre-provisioned model (scanner does not auto-create missing organization variables)
+- GitHub organization backend behavior:
+  - auth uses env token only (`github_token_env` / `GITHUB_TOKEN`)
+  - reads/writes JSON envelope in configured GitHub organization variable value
+  - organization/variable path segments are URL-encoded in API calls
+  - provider/read/write/parse/auth errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -810,7 +844,7 @@ This file records the actual implementation status after Sprint 8U.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, and `github_environment_variables`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, and `github_organization_variables`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
