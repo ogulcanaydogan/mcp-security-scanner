@@ -2102,6 +2102,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_doppler_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_onepassword_connect_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_bitwarden_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_infisical_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2812,6 +2813,56 @@ class TestCLIHelpers:
         assert settings.bw_access_token_env == "BWS_ACCESS_TOKEN"
         assert settings.bw_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_infisical_backend(self):
+        """OAuth cache settings should accept infisical_secrets backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace-123",
+                    "infisical_environment": "prod",
+                    "infisical_secret_name": "MCP_OAUTH_CACHE",
+                    "infisical_token_env": "INFISICAL_TOKEN_PROD",
+                    "infisical_api_url": "https://app.infisical.com/api",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "infisical_secrets"
+        assert settings.infisical_project_id == "workspace-123"
+        assert settings.infisical_environment == "prod"
+        assert settings.infisical_secret_name == "MCP_OAUTH_CACHE"
+        assert settings.infisical_token_env == "INFISICAL_TOKEN_PROD"
+        assert settings.infisical_api_url == "https://app.infisical.com/api"
+
+    def test_coerce_oauth_cache_settings_sets_infisical_defaults(self):
+        """OAuth cache settings should apply default infisical_secrets optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace-123",
+                    "infisical_environment": "prod",
+                    "infisical_secret_name": "MCP_OAUTH_CACHE",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.infisical_token_env == "INFISICAL_TOKEN"
+        assert settings.infisical_api_url is None
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3086,6 +3137,55 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "bw_secret_id": "11111111-2222-3333-4444-555555555555"},
                 "only supported when auth.cache.backend='bitwarden_secrets'",
+            ),
+            (
+                {"backend": "infisical_secrets"},
+                "auth.cache.infisical_project_id is required",
+            ),
+            (
+                {"backend": "infisical_secrets", "infisical_project_id": "workspace-123"},
+                "auth.cache.infisical_environment is required",
+            ),
+            (
+                {
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace/123",
+                    "infisical_environment": "prod",
+                    "infisical_secret_name": "MCP_OAUTH_CACHE",
+                },
+                "auth.cache.infisical_project_id must match Infisical identifier rules",
+            ),
+            (
+                {
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace-123",
+                    "infisical_environment": "prod",
+                },
+                "auth.cache.infisical_secret_name is required",
+            ),
+            (
+                {
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace-123",
+                    "infisical_environment": "prod",
+                    "infisical_secret_name": "MCP_OAUTH_CACHE",
+                    "infisical_token_env": "9INVALID",
+                },
+                "auth.cache.infisical_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace-123",
+                    "infisical_environment": "prod",
+                    "infisical_secret_name": "MCP_OAUTH_CACHE",
+                    "infisical_api_url": "http://app.infisical.com/api",
+                },
+                "auth.cache.infisical_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "infisical_project_id": "workspace-123"},
+                "only supported when auth.cache.backend='infisical_secrets'",
             ),
         ],
     )
@@ -5379,6 +5479,662 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_infisical_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
+        """Infisical backend should persist and reload cache entries across runs."""
+        cli_module._clear_oauth_token_cache()
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-infisical")
+        monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-infisical")
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeHTTPError(Exception):
+            pass
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise FakeHTTPError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            client_kwargs: ClassVar[list[dict[str, object]]] = []
+            post_payloads: ClassVar[list[dict[str, object]]] = []
+            secret_value: ClassVar[str] = json.dumps(
+                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}},
+                sort_keys=True,
+            )
+
+            def __init__(self, **kwargs: object) -> None:
+                self.__class__.client_kwargs.append(dict(kwargs))
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                return FakeResponse(status_code=200, json_data={"secretValue": self.__class__.secret_value})
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v3/secrets/MCP_OAUTH_CACHE"
+                raw_payload = kwargs.get("json")
+                assert isinstance(raw_payload, dict)
+                self.__class__.post_payloads.append(dict(raw_payload))
+                value = raw_payload.get("secretValue")
+                assert isinstance(value, str)
+                self.__class__.secret_value = value
+                return FakeResponse(status_code=200, json_data={"success": True})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        call_count = {"value": 0}
+
+        def fake_request(
+            *,
+            token_url: str,
+            client_id: str,
+            client_secret: str,
+            scope: str | None,
+            audience: str | None,
+            token_endpoint_auth_method: str,
+            timeout_seconds: int,
+        ) -> tuple[str | None, float | None, str | None, int | None]:
+            del token_url, client_id, client_secret, scope, audience, token_endpoint_auth_method, timeout_seconds
+            call_count["value"] += 1
+            return "oauth-infisical-token", 3600.0, None, 200
+
+        monkeypatch.setattr(cli_module, "_request_oauth_client_credentials_token", fake_request)
+
+        raw_server_config = {
+            "transport": "sse",
+            "url": "https://example.com/sse",
+            "auth": {
+                "type": "oauth_client_credentials",
+                "token_url": "https://auth.example.com/oauth/token",
+                "client_id_env": "MCP_OAUTH_CLIENT_ID",
+                "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+                "cache": {
+                    "persistent": True,
+                    "namespace": "infisical-prod",
+                    "backend": "infisical_secrets",
+                    "infisical_project_id": "workspace-123",
+                    "infisical_environment": "prod",
+                    "infisical_secret_name": "MCP_OAUTH_CACHE",
+                    "infisical_token_env": "INFISICAL_TOKEN",
+                    "infisical_api_url": "https://app.infisical.com/api",
+                },
+            },
+        }
+
+        first_config, first_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_infisical_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert first_finding is None
+        assert first_config is not None
+        assert first_config["headers"]["Authorization"] == "Bearer oauth-infisical-token"
+        assert call_count["value"] == 1
+
+        cli_module._clear_oauth_token_cache()
+        second_config, second_finding = _build_connector_config_from_config_entry(
+            server_name="oauth_infisical_server",
+            raw_server_config=raw_server_config,
+            timeout=10,
+        )
+        assert second_finding is None
+        assert second_config is not None
+        assert second_config["headers"]["Authorization"] == "Bearer oauth-infisical-token"
+        assert call_count["value"] == 1
+
+        persisted_payload = json.loads(FakeInfisicalClient.secret_value)
+        assert persisted_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert FakeInfisicalClient.post_payloads
+        assert any(
+            item.get("base_url") == "https://app.infisical.com/api" for item in FakeInfisicalClient.client_kwargs
+        )
+
+        cli_module._clear_oauth_token_cache()
+
+    def test_infisical_persistent_cache_bypasses_provider_errors(self, monkeypatch):
+        """Infisical backend cache load should bypass provider errors without raising."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeInfisicalClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> dict[str, object]:
+                del path, params
+                raise RuntimeError("denied")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="infisical-prod",
+                backend="infisical_secrets",
+                infisical_project_id="workspace-123",
+                infisical_environment="prod",
+                infisical_secret_name="MCP_OAUTH_CACHE",
+                infisical_token_env="INFISICAL_TOKEN",
+            )
+        )
+        assert entries == {}
+
+    def test_infisical_write_bypasses_missing_secret(self, monkeypatch):
+        """Infisical backend write should fail closed when target secret does not exist."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                return FakeResponse(status_code=404, json_data={})
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                raise AssertionError("post should not be called when secret does not exist")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        success = cli_module._write_oauth_cache_payload_to_infisical(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="infisical-prod",
+                backend="infisical_secrets",
+                infisical_project_id="workspace-123",
+                infisical_environment="prod",
+                infisical_secret_name="MCP_OAUTH_CACHE",
+                infisical_token_env="INFISICAL_TOKEN",
+            ),
+            entries={},
+        )
+        assert success is False
+
+    def test_infisical_write_bypasses_http_errors(self, monkeypatch):
+        """Infisical backend write should fail closed on update HTTP failures."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                self._post_calls = 0
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                return FakeResponse(status_code=200, json_data={"secretValue": "{}"})
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v3/secrets/MCP_OAUTH_CACHE"
+                del kwargs
+                self._post_calls += 1
+                if self._post_calls == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                return FakeResponse(status_code=500, json_data={})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="infisical-prod",
+            backend="infisical_secrets",
+            infisical_project_id="workspace-123",
+            infisical_environment="prod",
+            infisical_secret_name="MCP_OAUTH_CACHE",
+            infisical_token_env="INFISICAL_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings, entries={}) is False
+
+    def test_read_infisical_payload_supports_nested_secret_value_fallback(self, monkeypatch):
+        """Infisical reader should accept envelope from nested secret.secretValue payloads."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "secret": {
+                            "secretValue": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        }
+                    },
+                )
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        payload = cli_module._read_oauth_cache_payload_from_infisical(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="infisical-prod",
+                backend="infisical_secrets",
+                infisical_project_id="workspace-123",
+                infisical_environment="prod",
+                infisical_secret_name="MCP_OAUTH_CACHE",
+                infisical_token_env="INFISICAL_TOKEN",
+            )
+        )
+        assert isinstance(payload, dict)
+        assert payload.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+    def test_read_infisical_payload_returns_empty_entries_on_missing_secret(self, monkeypatch):
+        """Infisical reader should return an empty envelope when secret is not found."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                return FakeResponse(status_code=404, json_data={})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        payload = cli_module._read_oauth_cache_payload_from_infisical(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="infisical-prod",
+                backend="infisical_secrets",
+                infisical_project_id="workspace-123",
+                infisical_environment="prod",
+                infisical_secret_name="MCP_OAUTH_CACHE",
+                infisical_token_env="INFISICAL_TOKEN",
+            )
+        )
+        assert isinstance(payload, dict)
+        assert payload.get("entries") == {}
+
+    def test_read_infisical_payload_requires_required_fields(self):
+        """Infisical reader should bypass when required fields are missing."""
+        payload = cli_module._read_oauth_cache_payload_from_infisical(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="infisical-prod",
+                backend="infisical_secrets",
+                infisical_project_id=None,
+                infisical_environment="prod",
+                infisical_secret_name="MCP_OAUTH_CACHE",
+                infisical_token_env="INFISICAL_TOKEN",
+            )
+        )
+        assert payload is None
+
+    def test_build_infisical_http_client_handles_invalid_url_and_client_errors(self, monkeypatch):
+        """Infisical client builder should fail closed on invalid URL and constructor errors."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        assert (
+            cli_module._build_infisical_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="infisical-prod",
+                    backend="infisical_secrets",
+                    infisical_project_id="workspace-123",
+                    infisical_environment="prod",
+                    infisical_secret_name="MCP_OAUTH_CACHE",
+                    infisical_token_env="INFISICAL_TOKEN",
+                    infisical_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        monkeypatch.setattr(cli_module.httpx, "Client", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert (
+            cli_module._build_infisical_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="infisical-prod",
+                    backend="infisical_secrets",
+                    infisical_project_id="workspace-123",
+                    infisical_environment="prod",
+                    infisical_secret_name="MCP_OAUTH_CACHE",
+                    infisical_token_env="INFISICAL_TOKEN",
+                    infisical_api_url="https://app.infisical.com/api",
+                )
+            )
+            is None
+        )
+
+    def test_infisical_write_requires_secret_identity_and_token(self, monkeypatch):
+        """Infisical writer should fail closed when required identity/token inputs are missing."""
+        monkeypatch.delenv("INFISICAL_TOKEN", raising=False)
+
+        settings_without_project = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="infisical-prod",
+            backend="infisical_secrets",
+            infisical_project_id=None,
+            infisical_environment="prod",
+            infisical_secret_name="MCP_OAUTH_CACHE",
+            infisical_token_env="INFISICAL_TOKEN",
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings_without_project, entries={})
+            is False
+        )
+
+        settings_without_token = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="infisical-prod",
+            backend="infisical_secrets",
+            infisical_project_id="workspace-123",
+            infisical_environment="prod",
+            infisical_secret_name="MCP_OAUTH_CACHE",
+            infisical_token_env="INFISICAL_TOKEN",
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings_without_token, entries={})
+            is False
+        )
+
+    def test_read_infisical_payload_bypasses_status_and_json_shape_errors(self, monkeypatch):
+        """Infisical reader should fail closed on status, JSON parse, and JSON shape errors."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(
+                self,
+                *,
+                status_code: int,
+                json_data: object,
+                json_error: bool = False,
+            ) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+                self._json_error = json_error
+
+            def json(self) -> object:
+                if self._json_error:
+                    raise ValueError("bad-json")
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                FakeInfisicalClient.call_count += 1
+                if FakeInfisicalClient.call_count == 1:
+                    return FakeResponse(status_code=500, json_data={})
+                if FakeInfisicalClient.call_count == 2:
+                    return FakeResponse(status_code=200, json_data={}, json_error=True)
+                return FakeResponse(status_code=200, json_data=[])
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="infisical-prod",
+            backend="infisical_secrets",
+            infisical_project_id="workspace-123",
+            infisical_environment="prod",
+            infisical_secret_name="MCP_OAUTH_CACHE",
+            infisical_token_env="INFISICAL_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_infisical(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_infisical(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_infisical(cache_settings=settings) is None
+
+    def test_read_infisical_payload_supports_data_value_and_envelope_guards(self, monkeypatch):
+        """Infisical reader should use data.value fallback and guard malformed envelopes."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                FakeInfisicalClient.call_count += 1
+                if FakeInfisicalClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        json_data={
+                            "data": {
+                                "value": json.dumps(
+                                    {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                                )
+                            }
+                        },
+                    )
+                if FakeInfisicalClient.call_count == 2:
+                    return FakeResponse(status_code=200, json_data={"data": {"value": "{invalid-json"}})
+                return FakeResponse(status_code=200, json_data={"data": {"value": "[]"}})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="infisical-prod",
+            backend="infisical_secrets",
+            infisical_project_id="workspace-123",
+            infisical_environment="prod",
+            infisical_secret_name="MCP_OAUTH_CACHE",
+            infisical_token_env="INFISICAL_TOKEN",
+        )
+
+        payload = cli_module._read_oauth_cache_payload_from_infisical(cache_settings=settings)
+        assert isinstance(payload, dict)
+        assert payload.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert cli_module._read_oauth_cache_payload_from_infisical(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_infisical(cache_settings=settings) is None
+
+    def test_infisical_write_bypasses_preflight_and_post_exceptions(self, monkeypatch):
+        """Infisical writer should fail closed on preflight and update exception paths."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "infisical-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeInfisicalClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeInfisicalClient.init_count += 1
+                self._scenario = FakeInfisicalClient.init_count
+
+            def get(self, path: str, params: dict[str, str]) -> FakeResponse:
+                assert path == "/v3/secrets/raw/MCP_OAUTH_CACHE"
+                assert params["workspaceId"] == "workspace-123"
+                assert params["environment"] == "prod"
+                if self._scenario == 1:
+                    raise RuntimeError("preflight-get-failed")
+                if self._scenario == 2:
+                    return FakeResponse(status_code=500, json_data={})
+                return FakeResponse(status_code=200, json_data={"secretValue": "{}"})
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v3/secrets/MCP_OAUTH_CACHE"
+                del kwargs
+                if self._scenario == 3:
+                    raise RuntimeError("post-failed")
+                if self._scenario == 4:
+                    return FakeResponse(status_code=500, json_data={})
+                raise AssertionError("unexpected scenario")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeInfisicalClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="infisical-prod",
+            backend="infisical_secrets",
+            infisical_project_id="workspace-123",
+            infisical_environment="prod",
+            infisical_secret_name="MCP_OAUTH_CACHE",
+            infisical_token_env="INFISICAL_TOKEN",
+        )
+        assert cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_infisical(cache_settings=settings, entries={}) is False
+
+    def test_persist_infisical_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Infisical persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_infisical",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_infisical", fake_write)
+
+        cli_module._persist_oauth_cache_entry_infisical(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="infisical-prod",
+                backend="infisical_secrets",
+                infisical_project_id="workspace-123",
+                infisical_environment="prod",
+                infisical_secret_name="MCP_OAUTH_CACHE",
+                infisical_token_env="INFISICAL_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -7169,6 +7925,7 @@ class TestCLIHelpers:
             ("doppler_secrets", "_load_oauth_persistent_cache_entries_from_doppler"),
             ("onepassword_connect", "_load_oauth_persistent_cache_entries_from_onepassword_connect"),
             ("bitwarden_secrets", "_load_oauth_persistent_cache_entries_from_bitwarden"),
+            ("infisical_secrets", "_load_oauth_persistent_cache_entries_from_infisical"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -7187,6 +7944,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_doppler",
             "_load_oauth_persistent_cache_entries_from_onepassword_connect",
             "_load_oauth_persistent_cache_entries_from_bitwarden",
+            "_load_oauth_persistent_cache_entries_from_infisical",
         }
 
         for name in backend_loaders:
@@ -7226,6 +7984,7 @@ class TestCLIHelpers:
             ("doppler_secrets", "_persist_oauth_cache_entry_doppler"),
             ("onepassword_connect", "_persist_oauth_cache_entry_onepassword_connect"),
             ("bitwarden_secrets", "_persist_oauth_cache_entry_bitwarden"),
+            ("infisical_secrets", "_persist_oauth_cache_entry_infisical"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -7244,6 +8003,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_doppler",
             "_persist_oauth_cache_entry_onepassword_connect",
             "_persist_oauth_cache_entry_bitwarden",
+            "_persist_oauth_cache_entry_infisical",
         }
 
         for name in backend_persisters:
@@ -7428,6 +8188,22 @@ class TestCLIHelpers:
                     bw_secret_id="11111111-2222-3333-4444-555555555555",
                     bw_access_token_env="BWS_ACCESS_TOKEN",
                     bw_api_url="https://api.bitwarden.com",
+                ),
+            ),
+            (
+                "_build_infisical_http_client",
+                None,
+                "_read_oauth_cache_payload_from_infisical",
+                "_write_oauth_cache_payload_to_infisical",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="infisical_secrets",
+                    infisical_project_id="workspace-123",
+                    infisical_environment="prod",
+                    infisical_secret_name="MCP_OAUTH_CACHE",
+                    infisical_token_env="INFISICAL_TOKEN",
+                    infisical_api_url="https://app.infisical.com/api",
                 ),
             ),
         ],

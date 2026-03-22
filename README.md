@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8Q)
+## Capability Snapshot (Sprint 1-8R)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -61,6 +61,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8O): added `doppler_secrets` backend (env-token auth, pre-provisioned secret model)
 - OAuth cache provider expansion (Sprint 8P): added `onepassword_connect` backend (env-token auth, pre-provisioned item/field model)
 - OAuth cache provider expansion (Sprint 8Q): added `bitwarden_secrets` backend (env-token auth, pre-provisioned secret model)
+- OAuth cache provider expansion (Sprint 8R): added `infisical_secrets` backend (env-token auth, pre-provisioned secret model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -352,6 +353,26 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-infisical-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "infisical_secrets",
+          "infisical_project_id": "workspace-123",
+          "infisical_environment": "prod",
+          "infisical_secret_name": "MCP_OAUTH_CACHE",
+          "infisical_token_env": "INFISICAL_TOKEN",
+          "infisical_api_url": "https://app.infisical.com/api"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -419,7 +440,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, or `bitwarden_secrets`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, or `infisical_secrets`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -451,6 +472,11 @@ Notes:
   - `bw_secret_id` (required when `backend=bitwarden_secrets`, UUID-style secret ID)
   - optional `bw_access_token_env` (default `BWS_ACCESS_TOKEN`)
   - optional `bw_api_url` (`https` URL; defaults to Bitwarden API)
+  - `infisical_project_id` (required when `backend=infisical_secrets`)
+  - `infisical_environment` (required when `backend=infisical_secrets`)
+  - `infisical_secret_name` (required when `backend=infisical_secrets`)
+  - optional `infisical_token_env` (default `INFISICAL_TOKEN`)
+  - optional `infisical_api_url` (`https` URL; defaults to Infisical cloud API)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -517,6 +543,12 @@ Notes:
     - cache payload is stored as a single JSON envelope in configured Bitwarden secret value
       (`auth.cache.bw_secret_id`)
     - auth uses env token only (`auth.cache.bw_access_token_env`, default `BWS_ACCESS_TOKEN`)
+    - secret must be pre-provisioned; scanner updates existing secret value and does not auto-create missing secrets
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=infisical_secrets`:
+    - cache payload is stored as a single JSON envelope in configured Infisical secret value
+      (`auth.cache.infisical_project_id` / `auth.cache.infisical_environment` / `auth.cache.infisical_secret_name`)
+    - auth uses env token only (`auth.cache.infisical_token_env`, default `INFISICAL_TOKEN`)
     - secret must be pre-provisioned; scanner updates existing secret value and does not auto-create missing secrets
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
@@ -602,7 +634,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8Q)
+## Roadmap (Post Sprint 8R)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, and `bitwarden_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, and `infisical_secrets`

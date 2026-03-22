@@ -62,6 +62,7 @@ _OAUTH_CACHE_BACKEND_OCI_VAULT = "oci_vault"
 _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS = "doppler_secrets"
 _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT = "onepassword_connect"
 _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS = "bitwarden_secrets"
+_OAUTH_CACHE_BACKEND_INFISICAL_SECRETS = "infisical_secrets"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -74,6 +75,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS,
     _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT,
     _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS,
+    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -90,6 +92,7 @@ _OAUTH_FORM_REQUEST_BASE_BACKOFF_SECONDS = 0.2
 _OAUTH_RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 _DOPPLER_DEFAULT_API_URL = "https://api.doppler.com"
 _BITWARDEN_DEFAULT_API_URL = "https://api.bitwarden.com"
+_INFISICAL_DEFAULT_API_URL = "https://app.infisical.com/api"
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,11 @@ class OAuthCacheSettings:
     bw_secret_id: str | None = None
     bw_access_token_env: str | None = None
     bw_api_url: str | None = None
+    infisical_project_id: str | None = None
+    infisical_environment: str | None = None
+    infisical_secret_name: str | None = None
+    infisical_token_env: str | None = None
+    infisical_api_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2273,6 +2281,11 @@ def _coerce_oauth_cache_settings(
             "bw_secret_id",
             "bw_access_token_env",
             "bw_api_url",
+            "infisical_project_id",
+            "infisical_environment",
+            "infisical_secret_name",
+            "infisical_token_env",
+            "infisical_api_url",
         }
     ]
     if unknown_fields:
@@ -2286,7 +2299,9 @@ def _coerce_oauth_cache_settings(
             "oci_secret_ocid, oci_region, oci_endpoint_url, "
             "doppler_project, doppler_config, doppler_secret_name, doppler_token_env, doppler_api_url, "
             "op_connect_host, op_vault_id, op_item_id, op_field_label, op_connect_token_env, "
-            "bw_secret_id, bw_access_token_env, bw_api_url.",
+            "bw_secret_id, bw_access_token_env, bw_api_url, "
+            "infisical_project_id, infisical_environment, infisical_secret_name, infisical_token_env, "
+            "infisical_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2588,6 +2603,57 @@ def _coerce_oauth_cache_settings(
         if parsed_bw_api_url.scheme != "https" or not parsed_bw_api_url.netloc:
             return None, "auth.cache.bw_api_url must be a valid https URL."
 
+    infisical_project_id_value = cache_value.get("infisical_project_id")
+    if infisical_project_id_value is not None and (
+        not isinstance(infisical_project_id_value, str) or not infisical_project_id_value.strip()
+    ):
+        return None, "auth.cache.infisical_project_id must be a non-empty string when provided."
+    infisical_project_id = infisical_project_id_value.strip() if isinstance(infisical_project_id_value, str) else None
+    if infisical_project_id is not None and not _is_valid_infisical_identifier(infisical_project_id):
+        return None, "auth.cache.infisical_project_id must match Infisical identifier rules ([0-9A-Za-z_.:-])."
+
+    infisical_environment_value = cache_value.get("infisical_environment")
+    if infisical_environment_value is not None and (
+        not isinstance(infisical_environment_value, str) or not infisical_environment_value.strip()
+    ):
+        return None, "auth.cache.infisical_environment must be a non-empty string when provided."
+    infisical_environment = (
+        infisical_environment_value.strip() if isinstance(infisical_environment_value, str) else None
+    )
+    if infisical_environment is not None and not _is_valid_infisical_identifier(infisical_environment):
+        return None, "auth.cache.infisical_environment must match Infisical identifier rules ([0-9A-Za-z_.:-])."
+
+    infisical_secret_name_value = cache_value.get("infisical_secret_name")
+    if infisical_secret_name_value is not None and (
+        not isinstance(infisical_secret_name_value, str) or not infisical_secret_name_value.strip()
+    ):
+        return None, "auth.cache.infisical_secret_name must be a non-empty string when provided."
+    infisical_secret_name = (
+        infisical_secret_name_value.strip() if isinstance(infisical_secret_name_value, str) else None
+    )
+    if infisical_secret_name is not None and not _is_valid_infisical_identifier(infisical_secret_name):
+        return None, "auth.cache.infisical_secret_name must match Infisical identifier rules ([0-9A-Za-z_.:-])."
+
+    infisical_token_env_value = cache_value.get("infisical_token_env")
+    if infisical_token_env_value is not None and (
+        not isinstance(infisical_token_env_value, str) or not infisical_token_env_value.strip()
+    ):
+        return None, "auth.cache.infisical_token_env must be a non-empty string when provided."
+    infisical_token_env = infisical_token_env_value.strip() if isinstance(infisical_token_env_value, str) else None
+    if infisical_token_env is not None and not _is_valid_env_var_name(infisical_token_env):
+        return None, "auth.cache.infisical_token_env must be a valid environment variable name."
+
+    infisical_api_url_value = cache_value.get("infisical_api_url")
+    if infisical_api_url_value is not None and (
+        not isinstance(infisical_api_url_value, str) or not infisical_api_url_value.strip()
+    ):
+        return None, "auth.cache.infisical_api_url must be a non-empty string when provided."
+    infisical_api_url = infisical_api_url_value.strip() if isinstance(infisical_api_url_value, str) else None
+    if infisical_api_url is not None:
+        parsed_infisical_api_url = urlparse(infisical_api_url)
+        if parsed_infisical_api_url.scheme != "https" or not parsed_infisical_api_url.netloc:
+            return None, "auth.cache.infisical_api_url must be a valid https URL."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -2623,6 +2689,20 @@ def _coerce_oauth_cache_settings(
             None,
             "auth.cache.bw_secret_id, auth.cache.bw_access_token_env, and auth.cache.bw_api_url are only "
             "supported when auth.cache.backend='bitwarden_secrets'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS and (
+        infisical_project_id is not None
+        or infisical_environment is not None
+        or infisical_secret_name is not None
+        or infisical_token_env is not None
+        or infisical_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.infisical_project_id, auth.cache.infisical_environment, auth.cache.infisical_secret_name, "
+            "auth.cache.infisical_token_env, and auth.cache.infisical_api_url are only supported when "
+            "auth.cache.backend='infisical_secrets'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -3159,6 +3239,69 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.op_connect_host, auth.cache.op_vault_id, and auth.cache.op_item_id are only "
                 "supported when auth.cache.backend='onepassword_connect'.",
             )
+    elif backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
+        if infisical_project_id is None:
+            return (
+                None,
+                "auth.cache.infisical_project_id is required when auth.cache.backend='infisical_secrets'.",
+            )
+        if infisical_environment is None:
+            return (
+                None,
+                "auth.cache.infisical_environment is required when auth.cache.backend='infisical_secrets'.",
+            )
+        if infisical_secret_name is None:
+            return (
+                None,
+                "auth.cache.infisical_secret_name is required when auth.cache.backend='infisical_secrets'.",
+            )
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
     else:
         if (
             aws_secret_id is not None
@@ -3265,6 +3408,15 @@ def _coerce_oauth_cache_settings(
                 else ("BWS_ACCESS_TOKEN" if backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS else None)
             ),
             bw_api_url=bw_api_url,
+            infisical_project_id=infisical_project_id,
+            infisical_environment=infisical_environment,
+            infisical_secret_name=infisical_secret_name,
+            infisical_token_env=(
+                infisical_token_env
+                if infisical_token_env is not None
+                else ("INFISICAL_TOKEN" if backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS else None)
+            ),
+            infisical_api_url=infisical_api_url,
         ),
         None,
     )
@@ -3322,6 +3474,11 @@ def _is_valid_bitwarden_secret_id(value: str) -> bool:
 def _is_valid_doppler_identifier(value: str) -> bool:
     """Validate Doppler identifier-like values used for project/config/secret fields."""
     return re.fullmatch(r"[0-9A-Za-z_.-]{1,128}", value) is not None
+
+
+def _is_valid_infisical_identifier(value: str) -> bool:
+    """Validate Infisical identifier-like values used for project/environment/secret fields."""
+    return re.fullmatch(r"[0-9A-Za-z_.:-]{1,128}", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -5039,6 +5196,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_onepassword_connect(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
         return _load_oauth_persistent_cache_entries_from_bitwarden(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
+        return _load_oauth_persistent_cache_entries_from_infisical(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -5092,6 +5251,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
         _persist_oauth_cache_entry_bitwarden(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
+        _persist_oauth_cache_entry_infisical(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -6516,6 +6678,191 @@ def _write_oauth_cache_payload_to_bitwarden(
 
         try:
             response = client.put(path, json={"value": serialized_payload})
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_infisical(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Infisical secret value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_infisical(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_infisical(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Infisical secret value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_infisical(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_infisical(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_infisical_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Infisical API client for OAuth cache backend."""
+    token_env_name = cache_settings.infisical_token_env or "INFISICAL_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.infisical_api_url or _INFISICAL_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"Bearer {token_value}",
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_infisical(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from Infisical pre-provisioned secret value."""
+    if (
+        cache_settings.infisical_project_id is None
+        or cache_settings.infisical_environment is None
+        or cache_settings.infisical_secret_name is None
+    ):
+        return None
+
+    client = _build_infisical_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    path = f"/v3/secrets/raw/{cache_settings.infisical_secret_name}"
+    params = {
+        "workspaceId": cache_settings.infisical_project_id,
+        "environment": cache_settings.infisical_environment,
+    }
+
+    try:
+        try:
+            response = client.get(path, params=params)
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        raw_payload = payload.get("secretValue")
+        if not isinstance(raw_payload, str):
+            raw_payload = payload.get("value")
+        if not isinstance(raw_payload, str):
+            secret_payload = payload.get("secret")
+            if isinstance(secret_payload, dict):
+                raw_payload = secret_payload.get("secretValue")
+                if not isinstance(raw_payload, str):
+                    raw_payload = secret_payload.get("value")
+        if not isinstance(raw_payload, str):
+            data_payload = payload.get("data")
+            if isinstance(data_payload, dict):
+                raw_payload = data_payload.get("secretValue")
+                if not isinstance(raw_payload, str):
+                    raw_payload = data_payload.get("value")
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_infisical(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Infisical secret value."""
+    if (
+        cache_settings.infisical_project_id is None
+        or cache_settings.infisical_environment is None
+        or cache_settings.infisical_secret_name is None
+    ):
+        return False
+
+    client = _build_infisical_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    read_path = f"/v3/secrets/raw/{cache_settings.infisical_secret_name}"
+    params = {
+        "workspaceId": cache_settings.infisical_project_id,
+        "environment": cache_settings.infisical_environment,
+    }
+    write_path = f"/v3/secrets/{cache_settings.infisical_secret_name}"
+
+    try:
+        # Pre-provisioned mode: require secret to already exist.
+        try:
+            preflight_response = client.get(read_path, params=params)
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.post(
+                write_path,
+                json={
+                    "workspaceId": cache_settings.infisical_project_id,
+                    "environment": cache_settings.infisical_environment,
+                    "secretValue": serialized_payload,
+                },
+            )
         except Exception:
             return False
         if response.status_code == 404:

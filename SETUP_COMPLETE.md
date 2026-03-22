@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8P Implementation State
+# Setup Complete — Sprint 1-8R Implementation State
 
-This file records the actual implementation status after Sprint 8P.
+This file records the actual implementation status after Sprint 8R.
 
 ## Completed Work
 
@@ -647,6 +647,34 @@ This file records the actual implementation status after Sprint 8P.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8R (Advanced Secret-Store Backend v11: Infisical Secrets API)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+    - `doppler_secrets`
+    - `onepassword_connect`
+    - `bitwarden_secrets`
+    - `infisical_secrets`
+- Infisical backend contract:
+  - required: `infisical_project_id`, `infisical_environment`, `infisical_secret_name`
+  - optional: `infisical_token_env` (default `INFISICAL_TOKEN`), `infisical_api_url` (`https`)
+  - pre-provisioned secret model (scanner does not auto-create missing secrets)
+- Infisical backend behavior:
+  - auth uses env token only (`infisical_token_env` / `INFISICAL_TOKEN`)
+  - reads/writes JSON envelope in configured Infisical secret value
+  - provider/read/write/parse/auth errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -659,7 +687,7 @@ This file records the actual implementation status after Sprint 8P.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, and `bitwarden_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, and `infisical_secrets`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
