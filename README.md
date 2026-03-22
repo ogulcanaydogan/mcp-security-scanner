@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8S)
+## Capability Snapshot (Sprint 1-8T)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -63,6 +63,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8Q): added `bitwarden_secrets` backend (env-token auth, pre-provisioned secret model)
 - OAuth cache provider expansion (Sprint 8R): added `infisical_secrets` backend (env-token auth, pre-provisioned secret model)
 - OAuth cache provider expansion (Sprint 8S): added `akeyless_secrets` backend (env-token auth, pre-provisioned secret model)
+- OAuth cache provider expansion (Sprint 8T): added `gitlab_variables` backend (env-token auth, pre-provisioned project variable model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -392,6 +393,25 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-gitlab-cache": {
+      "transport": "sse",
+      "url": "https://example.com/sse",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "gitlab_variables",
+          "gitlab_project_id": "12345",
+          "gitlab_variable_key": "MCP_OAUTH_CACHE",
+          "gitlab_token_env": "GITLAB_TOKEN",
+          "gitlab_api_url": "https://gitlab.example.com/api/v4"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -459,7 +479,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, or `akeyless_secrets`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, or `gitlab_variables`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -499,6 +519,10 @@ Notes:
   - `akeyless_secret_name` (required when `backend=akeyless_secrets`)
   - optional `akeyless_token_env` (default `AKEYLESS_TOKEN`)
   - optional `akeyless_api_url` (`https` URL; defaults to Akeyless API)
+  - `gitlab_project_id` (required when `backend=gitlab_variables`, numeric project ID)
+  - `gitlab_variable_key` (required when `backend=gitlab_variables`, env-style key)
+  - optional `gitlab_token_env` (default `GITLAB_TOKEN`)
+  - optional `gitlab_api_url` (`https` URL; defaults to `https://gitlab.com/api/v4`)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -578,6 +602,12 @@ Notes:
       (`auth.cache.akeyless_secret_name`)
     - auth uses env token only (`auth.cache.akeyless_token_env`, default `AKEYLESS_TOKEN`)
     - secret must be pre-provisioned; scanner updates existing secret value and does not auto-create missing secrets
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=gitlab_variables`:
+    - cache payload is stored as a single JSON envelope in configured GitLab project variable value
+      (`auth.cache.gitlab_project_id` / `auth.cache.gitlab_variable_key`)
+    - auth uses env token only (`auth.cache.gitlab_token_env`, default `GITLAB_TOKEN`)
+    - variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
@@ -662,7 +692,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8S)
+## Roadmap (Post Sprint 8T)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, and `akeyless_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, and `gitlab_variables`

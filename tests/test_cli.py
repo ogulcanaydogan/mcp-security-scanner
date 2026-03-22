@@ -2104,6 +2104,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_bitwarden_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_infisical_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_akeyless_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_gitlab_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2908,6 +2909,51 @@ class TestCLIHelpers:
         assert settings.akeyless_token_env == "AKEYLESS_TOKEN"
         assert settings.akeyless_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_gitlab_backend(self):
+        """OAuth cache settings should accept gitlab_variables backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "gitlab_variables",
+                    "gitlab_project_id": "12345",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_token_env": "GITLAB_TOKEN_PROD",
+                    "gitlab_api_url": "https://gitlab.example.com/api/v4",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "gitlab_variables"
+        assert settings.gitlab_project_id == "12345"
+        assert settings.gitlab_variable_key == "MCP_OAUTH_CACHE"
+        assert settings.gitlab_token_env == "GITLAB_TOKEN_PROD"
+        assert settings.gitlab_api_url == "https://gitlab.example.com/api/v4"
+
+    def test_coerce_oauth_cache_settings_sets_gitlab_defaults(self):
+        """OAuth cache settings should apply default gitlab_variables optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "gitlab_variables",
+                    "gitlab_project_id": "12345",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.gitlab_token_env == "GITLAB_TOKEN"
+        assert settings.gitlab_api_url is None
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3262,6 +3308,48 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "akeyless_secret_name": "/prod/mcp/oauth_cache"},
                 "only supported when auth.cache.backend='akeyless_secrets'",
+            ),
+            (
+                {"backend": "gitlab_variables"},
+                "auth.cache.gitlab_project_id is required",
+            ),
+            (
+                {"backend": "gitlab_variables", "gitlab_project_id": "project/path"},
+                "auth.cache.gitlab_project_id must be a numeric GitLab project ID.",
+            ),
+            (
+                {"backend": "gitlab_variables", "gitlab_project_id": "12345"},
+                "auth.cache.gitlab_variable_key is required",
+            ),
+            (
+                {
+                    "backend": "gitlab_variables",
+                    "gitlab_project_id": "12345",
+                    "gitlab_variable_key": "INVALID KEY",
+                },
+                "auth.cache.gitlab_variable_key must match environment-style key naming rules.",
+            ),
+            (
+                {
+                    "backend": "gitlab_variables",
+                    "gitlab_project_id": "12345",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_token_env": "9INVALID",
+                },
+                "auth.cache.gitlab_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "gitlab_variables",
+                    "gitlab_project_id": "12345",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_api_url": "http://gitlab.example.com/api/v4",
+                },
+                "auth.cache.gitlab_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "gitlab_project_id": "12345"},
+                "only supported when auth.cache.backend='gitlab_variables'",
             ),
         ],
     )
@@ -6460,6 +6548,271 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_read_gitlab_payload_supports_value_and_variable_fallback(self, monkeypatch):
+        """GitLab reader should parse envelope from value and variable.value payloads."""
+        monkeypatch.setenv("GITLAB_TOKEN", "gitlab-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeGitLabClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                FakeGitLabClient.call_count += 1
+                if FakeGitLabClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        json_data={
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        },
+                    )
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "variable": {
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        }
+                    },
+                )
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitLabClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-prod",
+            backend="gitlab_variables",
+            gitlab_project_id="12345",
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_token_env="GITLAB_TOKEN",
+            gitlab_api_url="https://gitlab.example.com/api/v4",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert second.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+    def test_read_gitlab_payload_bypasses_errors_and_missing_variable(self, monkeypatch):
+        """GitLab reader should fail closed for errors and map 404 to empty envelope."""
+        monkeypatch.setenv("GITLAB_TOKEN", "gitlab-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object, json_error: bool = False) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+                self._json_error = json_error
+
+            def json(self) -> object:
+                if self._json_error:
+                    raise ValueError("bad-json")
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeGitLabClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                FakeGitLabClient.call_count += 1
+                if FakeGitLabClient.call_count == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                if FakeGitLabClient.call_count == 2:
+                    return FakeResponse(status_code=500, json_data={})
+                if FakeGitLabClient.call_count == 3:
+                    return FakeResponse(status_code=200, json_data={}, json_error=True)
+                return FakeResponse(status_code=200, json_data={"value": "{invalid-json"})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitLabClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-prod",
+            backend="gitlab_variables",
+            gitlab_project_id="12345",
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_token_env="GITLAB_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+        assert fourth is None
+
+    def test_gitlab_write_success_and_bypass_paths(self, monkeypatch):
+        """GitLab writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("GITLAB_TOKEN", "gitlab-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeGitLabClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeGitLabClient.init_count += 1
+                self._scenario = FakeGitLabClient.init_count
+                self._get_calls = 0
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                self._get_calls += 1
+                if self._scenario == 1:
+                    return FakeResponse(status_code=200, json_data={"value": "{}"})
+                if self._scenario == 2:
+                    return FakeResponse(status_code=404, json_data={})
+                if self._scenario == 3:
+                    return FakeResponse(status_code=500, json_data={})
+                return FakeResponse(status_code=200, json_data={"value": "{}"})
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                if self._scenario == 1:
+                    payload = kwargs.get("data")
+                    assert isinstance(payload, dict)
+                    assert isinstance(payload.get("value"), str)
+                    return FakeResponse(status_code=200, json_data={})
+                raise RuntimeError("post-write-failed")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitLabClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-prod",
+            backend="gitlab_variables",
+            gitlab_project_id="12345",
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_token_env="GITLAB_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=settings, entries={}) is False
+
+    def test_gitlab_build_client_and_required_guards(self, monkeypatch):
+        """GitLab client/reader/writer should fail closed when token/url/identity is missing."""
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-prod",
+            backend="gitlab_variables",
+            gitlab_project_id="12345",
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_token_env="GITLAB_TOKEN",
+        )
+        assert cli_module._build_gitlab_http_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("GITLAB_TOKEN", "token")
+        assert (
+            cli_module._build_gitlab_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="gitlab-prod",
+                    backend="gitlab_variables",
+                    gitlab_project_id="12345",
+                    gitlab_variable_key="MCP_OAUTH_CACHE",
+                    gitlab_token_env="GITLAB_TOKEN",
+                    gitlab_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-prod",
+            backend="gitlab_variables",
+            gitlab_project_id=None,
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_token_env="GITLAB_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=missing_settings) is None
+        assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=missing_settings, entries={}) is False
+
+    def test_persist_gitlab_removes_deleted_in_memory_entry(self, monkeypatch):
+        """GitLab persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_gitlab",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_gitlab", fake_write)
+
+        cli_module._persist_oauth_cache_entry_gitlab(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="gitlab-prod",
+                backend="gitlab_variables",
+                gitlab_project_id="12345",
+                gitlab_variable_key="MCP_OAUTH_CACHE",
+                gitlab_token_env="GITLAB_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -8252,6 +8605,7 @@ class TestCLIHelpers:
             ("bitwarden_secrets", "_load_oauth_persistent_cache_entries_from_bitwarden"),
             ("infisical_secrets", "_load_oauth_persistent_cache_entries_from_infisical"),
             ("akeyless_secrets", "_load_oauth_persistent_cache_entries_from_akeyless"),
+            ("gitlab_variables", "_load_oauth_persistent_cache_entries_from_gitlab"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -8272,6 +8626,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_bitwarden",
             "_load_oauth_persistent_cache_entries_from_infisical",
             "_load_oauth_persistent_cache_entries_from_akeyless",
+            "_load_oauth_persistent_cache_entries_from_gitlab",
         }
 
         for name in backend_loaders:
@@ -8313,6 +8668,7 @@ class TestCLIHelpers:
             ("bitwarden_secrets", "_persist_oauth_cache_entry_bitwarden"),
             ("infisical_secrets", "_persist_oauth_cache_entry_infisical"),
             ("akeyless_secrets", "_persist_oauth_cache_entry_akeyless"),
+            ("gitlab_variables", "_persist_oauth_cache_entry_gitlab"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -8333,6 +8689,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_bitwarden",
             "_persist_oauth_cache_entry_infisical",
             "_persist_oauth_cache_entry_akeyless",
+            "_persist_oauth_cache_entry_gitlab",
         }
 
         for name in backend_persisters:
@@ -8547,6 +8904,21 @@ class TestCLIHelpers:
                     akeyless_secret_name="/prod/mcp/oauth_cache",
                     akeyless_token_env="AKEYLESS_TOKEN",
                     akeyless_api_url="https://api.akeyless.io",
+                ),
+            ),
+            (
+                "_build_gitlab_http_client",
+                None,
+                "_read_oauth_cache_payload_from_gitlab",
+                "_write_oauth_cache_payload_to_gitlab",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="gitlab_variables",
+                    gitlab_project_id="12345",
+                    gitlab_variable_key="MCP_OAUTH_CACHE",
+                    gitlab_token_env="GITLAB_TOKEN",
+                    gitlab_api_url="https://gitlab.example.com/api/v4",
                 ),
             ),
         ],
