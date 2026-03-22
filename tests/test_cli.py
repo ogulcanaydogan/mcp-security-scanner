@@ -3000,6 +3000,54 @@ class TestCLIHelpers:
         assert settings.github_token_env == "GITHUB_TOKEN"
         assert settings.github_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_github_environment_backend(self):
+        """OAuth cache settings should accept github_environment_variables backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "github_environment_variables",
+                    "github_repository": "ogulcanaydogan/mcp-security-scanner",
+                    "github_environment_name": "production",
+                    "github_variable_name": "MCP_OAUTH_CACHE",
+                    "github_token_env": "GITHUB_TOKEN_PROD",
+                    "github_api_url": "https://api.github.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "github_environment_variables"
+        assert settings.github_repository == "ogulcanaydogan/mcp-security-scanner"
+        assert settings.github_environment_name == "production"
+        assert settings.github_variable_name == "MCP_OAUTH_CACHE"
+        assert settings.github_token_env == "GITHUB_TOKEN_PROD"
+        assert settings.github_api_url == "https://api.github.com"
+
+    def test_coerce_oauth_cache_settings_sets_github_environment_defaults(self):
+        """OAuth cache settings should apply default github_environment_variables optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "github_environment_variables",
+                    "github_repository": "ogulcanaydogan/mcp-security-scanner",
+                    "github_environment_name": "production",
+                    "github_variable_name": "MCP_OAUTH_CACHE",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.github_token_env == "GITHUB_TOKEN"
+        assert settings.github_api_url is None
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3440,7 +3488,49 @@ class TestCLIHelpers:
             ),
             (
                 {"backend": "local", "github_repository": "ogulcanaydogan/mcp-security-scanner"},
-                "only supported when auth.cache.backend='github_actions_variables'",
+                "only supported when auth.cache.backend is 'github_actions_variables' or "
+                "'github_environment_variables'",
+            ),
+            (
+                {"backend": "github_environment_variables"},
+                "auth.cache.github_repository is required",
+            ),
+            (
+                {
+                    "backend": "github_environment_variables",
+                    "github_repository": "ogulcanaydogan/mcp-security-scanner",
+                },
+                "auth.cache.github_variable_name is required",
+            ),
+            (
+                {
+                    "backend": "github_environment_variables",
+                    "github_repository": "ogulcanaydogan/mcp-security-scanner",
+                    "github_variable_name": "MCP_OAUTH_CACHE",
+                },
+                "auth.cache.github_environment_name is required",
+            ),
+            (
+                {
+                    "backend": "github_environment_variables",
+                    "github_repository": "ogulcanaydogan/mcp-security-scanner",
+                    "github_environment_name": "   ",
+                    "github_variable_name": "MCP_OAUTH_CACHE",
+                },
+                "auth.cache.github_environment_name must be a non-empty string when provided.",
+            ),
+            (
+                {
+                    "backend": "github_actions_variables",
+                    "github_repository": "ogulcanaydogan/mcp-security-scanner",
+                    "github_variable_name": "MCP_OAUTH_CACHE",
+                    "github_environment_name": "production",
+                },
+                "auth.cache.github_environment_name is only supported when auth.cache.backend='github_environment_variables'.",
+            ),
+            (
+                {"backend": "local", "github_environment_name": "production"},
+                "auth.cache.github_environment_name is only supported when auth.cache.backend='github_environment_variables'.",
             ),
         ],
     )
@@ -7168,6 +7258,307 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_build_github_environment_variable_path_encodes_environment_name(self):
+        """GitHub environment variable path should URL-encode environment name segment."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="github-prod",
+            backend="github_environment_variables",
+            github_repository="ogulcanaydogan/mcp-security-scanner",
+            github_environment_name="Prod Blue/Primary",
+            github_variable_name="MCP_OAUTH_CACHE",
+        )
+
+        path = cli_module._build_github_environment_variable_path(cache_settings=settings)
+
+        assert (
+            path
+            == "/repos/ogulcanaydogan/mcp-security-scanner/environments/Prod%20Blue%2FPrimary/variables/MCP_OAUTH_CACHE"
+        )
+
+    def test_read_github_environment_payload_supports_value_and_variable_fallback(self, monkeypatch):
+        """GitHub environment reader should parse envelope from value and variable.value payloads."""
+        monkeypatch.setenv("GITHUB_TOKEN", "github-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeGitHubClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert (
+                    path
+                    == "/repos/ogulcanaydogan/mcp-security-scanner/environments/production/variables/MCP_OAUTH_CACHE"
+                )
+                FakeGitHubClient.call_count += 1
+                if FakeGitHubClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        json_data={
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        },
+                    )
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "variable": {
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        }
+                    },
+                )
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitHubClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="github-prod",
+            backend="github_environment_variables",
+            github_repository="ogulcanaydogan/mcp-security-scanner",
+            github_environment_name="production",
+            github_variable_name="MCP_OAUTH_CACHE",
+            github_token_env="GITHUB_TOKEN",
+            github_api_url="https://api.github.com",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert second.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+    def test_read_github_environment_payload_bypasses_errors_and_missing_variable(self, monkeypatch):
+        """GitHub environment reader should fail closed for errors and map 404 to empty envelope."""
+        monkeypatch.setenv("GITHUB_TOKEN", "github-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object, json_error: bool = False) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+                self._json_error = json_error
+
+            def json(self) -> object:
+                if self._json_error:
+                    raise ValueError("bad-json")
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeGitHubClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                FakeGitHubClient.call_count += 1
+                if FakeGitHubClient.call_count == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                if FakeGitHubClient.call_count == 2:
+                    return FakeResponse(status_code=500, json_data={})
+                if FakeGitHubClient.call_count == 3:
+                    return FakeResponse(status_code=200, json_data={}, json_error=True)
+                return FakeResponse(status_code=200, json_data={"value": "{invalid-json"})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitHubClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="github-prod",
+            backend="github_environment_variables",
+            github_repository="ogulcanaydogan/mcp-security-scanner",
+            github_environment_name="production",
+            github_variable_name="MCP_OAUTH_CACHE",
+            github_token_env="GITHUB_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+        assert fourth is None
+
+    def test_github_environment_write_success_and_bypass_paths(self, monkeypatch):
+        """GitHub environment writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("GITHUB_TOKEN", "github-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeGitHubClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeGitHubClient.init_count += 1
+                self._scenario = FakeGitHubClient.init_count
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert (
+                    path
+                    == "/repos/ogulcanaydogan/mcp-security-scanner/environments/production/variables/MCP_OAUTH_CACHE"
+                )
+                if self._scenario == 1:
+                    return FakeResponse(status_code=200, json_data={"value": "{}"})
+                if self._scenario == 2:
+                    return FakeResponse(status_code=404, json_data={})
+                if self._scenario == 3:
+                    return FakeResponse(status_code=500, json_data={})
+                return FakeResponse(status_code=200, json_data={"value": "{}"})
+
+            def patch(self, path: str, **kwargs: object) -> FakeResponse:
+                assert (
+                    path
+                    == "/repos/ogulcanaydogan/mcp-security-scanner/environments/production/variables/MCP_OAUTH_CACHE"
+                )
+                if self._scenario == 1:
+                    payload = kwargs.get("json")
+                    assert isinstance(payload, dict)
+                    assert payload.get("name") == "MCP_OAUTH_CACHE"
+                    assert isinstance(payload.get("value"), str)
+                    return FakeResponse(status_code=204, json_data={})
+                raise RuntimeError("post-write-failed")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitHubClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="github-prod",
+            backend="github_environment_variables",
+            github_repository="ogulcanaydogan/mcp-security-scanner",
+            github_environment_name="production",
+            github_variable_name="MCP_OAUTH_CACHE",
+            github_token_env="GITHUB_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_github_environment(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_github_environment(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_github_environment(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_github_environment(cache_settings=settings, entries={}) is False
+
+    def test_github_environment_build_client_and_required_guards(self, monkeypatch):
+        """GitHub environment helpers should fail closed when token/url/identity is missing."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="github-prod",
+            backend="github_environment_variables",
+            github_repository="ogulcanaydogan/mcp-security-scanner",
+            github_environment_name="production",
+            github_variable_name="MCP_OAUTH_CACHE",
+            github_token_env="GITHUB_TOKEN",
+        )
+        assert cli_module._build_github_http_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_github_environment(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("GITHUB_TOKEN", "token")
+        assert (
+            cli_module._build_github_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="github-prod",
+                    backend="github_environment_variables",
+                    github_repository="ogulcanaydogan/mcp-security-scanner",
+                    github_environment_name="production",
+                    github_variable_name="MCP_OAUTH_CACHE",
+                    github_token_env="GITHUB_TOKEN",
+                    github_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="github-prod",
+            backend="github_environment_variables",
+            github_repository="ogulcanaydogan/mcp-security-scanner",
+            github_environment_name=None,
+            github_variable_name="MCP_OAUTH_CACHE",
+            github_token_env="GITHUB_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_github_environment(cache_settings=missing_settings) is None
+        assert (
+            cli_module._write_oauth_cache_payload_to_github_environment(cache_settings=missing_settings, entries={})
+            is False
+        )
+
+    def test_persist_github_environment_removes_deleted_in_memory_entry(self, monkeypatch):
+        """GitHub environment persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_github_environment",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_github_environment", fake_write)
+
+        cli_module._persist_oauth_cache_entry_github_environment(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="github-prod",
+                backend="github_environment_variables",
+                github_repository="ogulcanaydogan/mcp-security-scanner",
+                github_environment_name="production",
+                github_variable_name="MCP_OAUTH_CACHE",
+                github_token_env="GITHUB_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -8962,6 +9353,7 @@ class TestCLIHelpers:
             ("akeyless_secrets", "_load_oauth_persistent_cache_entries_from_akeyless"),
             ("gitlab_variables", "_load_oauth_persistent_cache_entries_from_gitlab"),
             ("github_actions_variables", "_load_oauth_persistent_cache_entries_from_github"),
+            ("github_environment_variables", "_load_oauth_persistent_cache_entries_from_github_environment"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -8984,6 +9376,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_akeyless",
             "_load_oauth_persistent_cache_entries_from_gitlab",
             "_load_oauth_persistent_cache_entries_from_github",
+            "_load_oauth_persistent_cache_entries_from_github_environment",
         }
 
         for name in backend_loaders:
@@ -9027,6 +9420,7 @@ class TestCLIHelpers:
             ("akeyless_secrets", "_persist_oauth_cache_entry_akeyless"),
             ("gitlab_variables", "_persist_oauth_cache_entry_gitlab"),
             ("github_actions_variables", "_persist_oauth_cache_entry_github"),
+            ("github_environment_variables", "_persist_oauth_cache_entry_github_environment"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -9049,6 +9443,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_akeyless",
             "_persist_oauth_cache_entry_gitlab",
             "_persist_oauth_cache_entry_github",
+            "_persist_oauth_cache_entry_github_environment",
         }
 
         for name in backend_persisters:
@@ -9290,6 +9685,22 @@ class TestCLIHelpers:
                     namespace="contract",
                     backend="github_actions_variables",
                     github_repository="ogulcanaydogan/mcp-security-scanner",
+                    github_variable_name="MCP_OAUTH_CACHE",
+                    github_token_env="GITHUB_TOKEN",
+                    github_api_url="https://api.github.com",
+                ),
+            ),
+            (
+                "_build_github_http_client",
+                None,
+                "_read_oauth_cache_payload_from_github_environment",
+                "_write_oauth_cache_payload_to_github_environment",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="github_environment_variables",
+                    github_repository="ogulcanaydogan/mcp-security-scanner",
+                    github_environment_name="production",
                     github_variable_name="MCP_OAUTH_CACHE",
                     github_token_env="GITHUB_TOKEN",
                     github_api_url="https://api.github.com",

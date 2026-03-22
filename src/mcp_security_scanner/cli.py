@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import click
 import httpx
@@ -66,6 +66,7 @@ _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS = "infisical_secrets"
 _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS = "akeyless_secrets"
 _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES = "gitlab_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES = "github_actions_variables"
+_OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variables"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -82,6 +83,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS,
     _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
+    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -156,6 +158,7 @@ class OAuthCacheSettings:
     gitlab_token_env: str | None = None
     gitlab_api_url: str | None = None
     github_repository: str | None = None
+    github_environment_name: str | None = None
     github_variable_name: str | None = None
     github_token_env: str | None = None
     github_api_url: str | None = None
@@ -2314,6 +2317,7 @@ def _coerce_oauth_cache_settings(
             "gitlab_token_env",
             "gitlab_api_url",
             "github_repository",
+            "github_environment_name",
             "github_variable_name",
             "github_token_env",
             "github_api_url",
@@ -2334,7 +2338,7 @@ def _coerce_oauth_cache_settings(
             "infisical_project_id, infisical_environment, infisical_secret_name, infisical_token_env, "
             "infisical_api_url, akeyless_secret_name, akeyless_token_env, akeyless_api_url, "
             "gitlab_project_id, gitlab_variable_key, gitlab_token_env, gitlab_api_url, "
-            "github_repository, github_variable_name, github_token_env, github_api_url.",
+            "github_repository, github_environment_name, github_variable_name, github_token_env, github_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2763,6 +2767,15 @@ def _coerce_oauth_cache_settings(
     if github_repository is not None and not _is_valid_github_repository(github_repository):
         return None, "auth.cache.github_repository must match '<owner>/<repo>' format."
 
+    github_environment_name_value = cache_value.get("github_environment_name")
+    if github_environment_name_value is not None and (
+        not isinstance(github_environment_name_value, str) or not github_environment_name_value.strip()
+    ):
+        return None, "auth.cache.github_environment_name must be a non-empty string when provided."
+    github_environment_name = (
+        github_environment_name_value.strip() if isinstance(github_environment_name_value, str) else None
+    )
+
     github_variable_name_value = cache_value.get("github_variable_name")
     if github_variable_name_value is not None and (
         not isinstance(github_variable_name_value, str) or not github_variable_name_value.strip()
@@ -2881,7 +2894,17 @@ def _coerce_oauth_cache_settings(
             "auth.cache.gitlab_variable_key is required when auth.cache.backend='gitlab_variables'.",
         )
 
-    if backend != _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES and (
+    if backend != _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES and github_environment_name is not None:
+        return (
+            None,
+            "auth.cache.github_environment_name is only supported when "
+            "auth.cache.backend='github_environment_variables'.",
+        )
+
+    if backend not in {
+        _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
+        _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
+    } and (
         github_repository is not None
         or github_variable_name is not None
         or github_token_env is not None
@@ -2890,18 +2913,40 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.github_repository, auth.cache.github_variable_name, auth.cache.github_token_env, and "
-            "auth.cache.github_api_url are only supported when auth.cache.backend='github_actions_variables'.",
+            "auth.cache.github_api_url are only supported when auth.cache.backend is "
+            "'github_actions_variables' or 'github_environment_variables'.",
         )
 
-    if backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES and github_repository is None:
+    if (
+        backend
+        in {
+            _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
+            _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
+        }
+        and github_repository is None
+    ):
         return (
             None,
-            "auth.cache.github_repository is required when auth.cache.backend='github_actions_variables'.",
+            "auth.cache.github_repository is required when auth.cache.backend is "
+            "'github_actions_variables' or 'github_environment_variables'.",
         )
-    if backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES and github_variable_name is None:
+    if (
+        backend
+        in {
+            _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
+            _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
+        }
+        and github_variable_name is None
+    ):
         return (
             None,
-            "auth.cache.github_variable_name is required when auth.cache.backend='github_actions_variables'.",
+            "auth.cache.github_variable_name is required when auth.cache.backend is "
+            "'github_actions_variables' or 'github_environment_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES and github_environment_name is None:
+        return (
+            None,
+            "auth.cache.github_environment_name is required when auth.cache.backend='github_environment_variables'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -3597,6 +3642,54 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
                 "supported when auth.cache.backend='oci_vault'.",
             )
+    elif backend == _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES:
+        if (
+            aws_secret_id is not None
+            or aws_ssm_parameter_name is not None
+            or aws_region is not None
+            or aws_endpoint_url is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
+                "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
+                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if gcp_secret_name is not None or gcp_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.gcp_secret_name and auth.cache.gcp_endpoint_url are only supported when "
+                "auth.cache.backend='gcp_secret_manager'.",
+            )
+        if azure_vault_url is not None or azure_secret_name is not None or azure_secret_version not in {None, "latest"}:
+            return (
+                None,
+                "auth.cache.azure_vault_url, auth.cache.azure_secret_name, and auth.cache.azure_secret_version are "
+                "only supported when auth.cache.backend='azure_key_vault'.",
+            )
+        if (
+            vault_url is not None
+            or vault_secret_path is not None
+            or vault_token_env is not None
+            or vault_namespace is not None
+        ):
+            return (
+                None,
+                "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
+                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+            )
+        if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
+            return (
+                None,
+                "auth.cache.k8s_secret_namespace, auth.cache.k8s_secret_name, and auth.cache.k8s_secret_key are "
+                "only supported when auth.cache.backend='kubernetes_secrets'.",
+            )
+        if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
+            return (
+                None,
+                "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
+                "supported when auth.cache.backend='oci_vault'.",
+            )
     else:
         if (
             aws_secret_id is not None
@@ -3728,11 +3821,20 @@ def _coerce_oauth_cache_settings(
             ),
             gitlab_api_url=gitlab_api_url,
             github_repository=github_repository,
+            github_environment_name=github_environment_name,
             github_variable_name=github_variable_name,
             github_token_env=(
                 github_token_env
                 if github_token_env is not None
-                else ("GITHUB_TOKEN" if backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES else None)
+                else (
+                    "GITHUB_TOKEN"
+                    if backend
+                    in {
+                        _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
+                        _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
+                    }
+                    else None
+                )
             ),
             github_api_url=github_api_url,
         ),
@@ -5547,6 +5649,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_gitlab(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES:
         return _load_oauth_persistent_cache_entries_from_github(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES:
+        return _load_oauth_persistent_cache_entries_from_github_environment(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -5612,6 +5716,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES:
         _persist_oauth_cache_entry_github(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES:
+        _persist_oauth_cache_entry_github_environment(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -7578,6 +7685,29 @@ def _persist_oauth_cache_entry_github(cache_key: str, cache_settings: OAuthCache
     _write_oauth_cache_payload_to_github(cache_settings=cache_settings, entries=persistent_entries)
 
 
+def _load_oauth_persistent_cache_entries_from_github_environment(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from GitHub environment variable value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_github_environment(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_github_environment(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to GitHub environment variable value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_github_environment(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_github_environment(cache_settings=cache_settings, entries=persistent_entries)
+
+
 def _build_github_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
     """Create GitHub API client for OAuth cache backend."""
     token_env_name = cache_settings.github_token_env or "GITHUB_TOKEN"
@@ -7607,7 +7737,21 @@ def _build_github_variable_path(cache_settings: OAuthCacheSettings) -> str | Non
     """Build GitHub Actions variable API path from validated cache settings."""
     if cache_settings.github_repository is None or cache_settings.github_variable_name is None:
         return None
-    return f"/repos/{cache_settings.github_repository}/actions/variables/{cache_settings.github_variable_name}"
+    variable_name = quote(cache_settings.github_variable_name, safe="")
+    return f"/repos/{cache_settings.github_repository}/actions/variables/{variable_name}"
+
+
+def _build_github_environment_variable_path(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build GitHub environment variable API path from validated cache settings."""
+    if (
+        cache_settings.github_repository is None
+        or cache_settings.github_environment_name is None
+        or cache_settings.github_variable_name is None
+    ):
+        return None
+    environment_name = quote(cache_settings.github_environment_name, safe="")
+    variable_name = quote(cache_settings.github_variable_name, safe="")
+    return f"/repos/{cache_settings.github_repository}/environments/{environment_name}/variables/{variable_name}"
 
 
 def _read_oauth_cache_payload_from_github(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
@@ -7670,6 +7814,114 @@ def _write_oauth_cache_payload_to_github(
 ) -> bool:
     """Write OAuth cache payload envelope to existing GitHub Actions variable value."""
     path = _build_github_variable_path(cache_settings=cache_settings)
+    if path is None:
+        return False
+
+    client = _build_github_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        # Pre-provisioned mode: require variable to already exist.
+        try:
+            preflight_response = client.get(path)
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.patch(
+                path,
+                json={
+                    "name": cache_settings.github_variable_name,
+                    "value": serialized_payload,
+                },
+            )
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _read_oauth_cache_payload_from_github_environment(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from GitHub pre-provisioned environment variable value."""
+    path = _build_github_environment_variable_path(cache_settings=cache_settings)
+    if path is None:
+        return None
+
+    client = _build_github_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        try:
+            response = client.get(path)
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        raw_payload = payload.get("value")
+        if not isinstance(raw_payload, str):
+            data_payload = payload.get("variable")
+            if isinstance(data_payload, dict):
+                raw_payload = data_payload.get("value")
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_github_environment(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing GitHub environment variable value."""
+    path = _build_github_environment_variable_path(cache_settings=cache_settings)
     if path is None:
         return False
 
