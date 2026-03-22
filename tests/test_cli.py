@@ -2103,6 +2103,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_onepassword_connect_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_bitwarden_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_infisical_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_akeyless_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -2863,6 +2864,50 @@ class TestCLIHelpers:
         assert settings.infisical_token_env == "INFISICAL_TOKEN"
         assert settings.infisical_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_akeyless_backend(self):
+        """OAuth cache settings should accept akeyless_secrets backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "akeyless_secrets",
+                    "akeyless_secret_name": "/prod/mcp/oauth_cache",
+                    "akeyless_token_env": "AKEYLESS_TOKEN_PROD",
+                    "akeyless_api_url": "https://api.akeyless.io",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "akeyless_secrets"
+        assert settings.akeyless_secret_name == "/prod/mcp/oauth_cache"
+        assert settings.akeyless_token_env == "AKEYLESS_TOKEN_PROD"
+        assert settings.akeyless_api_url == "https://api.akeyless.io"
+
+    def test_coerce_oauth_cache_settings_sets_akeyless_defaults(self):
+        """OAuth cache settings should apply default akeyless_secrets optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "akeyless_secrets",
+                    "akeyless_secret_name": "/prod/mcp/oauth_cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.akeyless_token_env == "AKEYLESS_TOKEN"
+        assert settings.akeyless_api_url is None
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3186,6 +3231,37 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "infisical_project_id": "workspace-123"},
                 "only supported when auth.cache.backend='infisical_secrets'",
+            ),
+            (
+                {"backend": "akeyless_secrets"},
+                "auth.cache.akeyless_secret_name is required",
+            ),
+            (
+                {
+                    "backend": "akeyless_secrets",
+                    "akeyless_secret_name": "/prod/mcp/oauth cache",
+                },
+                "auth.cache.akeyless_secret_name must match Akeyless secret naming rules",
+            ),
+            (
+                {
+                    "backend": "akeyless_secrets",
+                    "akeyless_secret_name": "/prod/mcp/oauth_cache",
+                    "akeyless_token_env": "9INVALID",
+                },
+                "auth.cache.akeyless_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "akeyless_secrets",
+                    "akeyless_secret_name": "/prod/mcp/oauth_cache",
+                    "akeyless_api_url": "http://api.akeyless.io",
+                },
+                "auth.cache.akeyless_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "akeyless_secret_name": "/prod/mcp/oauth_cache"},
+                "only supported when auth.cache.backend='akeyless_secrets'",
             ),
         ],
     )
@@ -6135,6 +6211,255 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_read_akeyless_payload_supports_value_and_data_fallback(self, monkeypatch):
+        """Akeyless reader should parse envelope from value and data.value payloads."""
+        monkeypatch.setenv("AKEYLESS_TOKEN", "akeyless-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeAkeylessClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/api/v2/get-secret-value"
+                assert kwargs["json"]["name"] == "/prod/mcp/oauth_cache"
+                FakeAkeylessClient.call_count += 1
+                if FakeAkeylessClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        json_data={
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        },
+                    )
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "data": {
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        }
+                    },
+                )
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeAkeylessClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="akeyless-prod",
+            backend="akeyless_secrets",
+            akeyless_secret_name="/prod/mcp/oauth_cache",
+            akeyless_token_env="AKEYLESS_TOKEN",
+            akeyless_api_url="https://api.akeyless.io",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert second.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+    def test_read_akeyless_payload_bypasses_errors_and_missing_secret(self, monkeypatch):
+        """Akeyless reader should fail closed for errors and map 404 to empty envelope."""
+        monkeypatch.setenv("AKEYLESS_TOKEN", "akeyless-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object, json_error: bool = False) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+                self._json_error = json_error
+
+            def json(self) -> object:
+                if self._json_error:
+                    raise ValueError("bad-json")
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeAkeylessClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/api/v2/get-secret-value"
+                del kwargs
+                FakeAkeylessClient.call_count += 1
+                if FakeAkeylessClient.call_count == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                if FakeAkeylessClient.call_count == 2:
+                    return FakeResponse(status_code=500, json_data={})
+                if FakeAkeylessClient.call_count == 3:
+                    return FakeResponse(status_code=200, json_data={}, json_error=True)
+                return FakeResponse(status_code=200, json_data={"value": "{invalid-json"})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeAkeylessClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="akeyless-prod",
+            backend="akeyless_secrets",
+            akeyless_secret_name="/prod/mcp/oauth_cache",
+            akeyless_token_env="AKEYLESS_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+        assert fourth is None
+
+    def test_akeyless_write_success_and_bypass_paths(self, monkeypatch):
+        """Akeyless writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("AKEYLESS_TOKEN", "akeyless-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeAkeylessClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeAkeylessClient.init_count += 1
+                self._scenario = FakeAkeylessClient.init_count
+                self._post_calls = 0
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                self._post_calls += 1
+                if self._scenario == 1:
+                    if self._post_calls == 1:
+                        assert path == "/api/v2/get-secret-value"
+                        return FakeResponse(status_code=200, json_data={"value": "{}"})
+                    assert path == "/api/v2/set-secret-value"
+                    return FakeResponse(status_code=200, json_data={})
+                if self._scenario == 2:
+                    assert path == "/api/v2/get-secret-value"
+                    return FakeResponse(status_code=404, json_data={})
+                if self._scenario == 3:
+                    assert path == "/api/v2/get-secret-value"
+                    return FakeResponse(status_code=500, json_data={})
+                if self._scenario == 4:
+                    if self._post_calls == 1:
+                        assert path == "/api/v2/get-secret-value"
+                        return FakeResponse(status_code=200, json_data={"value": "{}"})
+                    raise RuntimeError("post-write-failed")
+                raise AssertionError("unexpected scenario")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeAkeylessClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="akeyless-prod",
+            backend="akeyless_secrets",
+            akeyless_secret_name="/prod/mcp/oauth_cache",
+            akeyless_token_env="AKEYLESS_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_akeyless(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_akeyless(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_akeyless(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_akeyless(cache_settings=settings, entries={}) is False
+
+    def test_akeyless_build_client_and_required_guards(self, monkeypatch):
+        """Akeyless client/writer should fail closed when token/url/secret identity are missing."""
+        monkeypatch.delenv("AKEYLESS_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="akeyless-prod",
+            backend="akeyless_secrets",
+            akeyless_secret_name="/prod/mcp/oauth_cache",
+            akeyless_token_env="AKEYLESS_TOKEN",
+        )
+        assert cli_module._build_akeyless_http_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_akeyless(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_akeyless(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("AKEYLESS_TOKEN", "token")
+        assert (
+            cli_module._build_akeyless_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="akeyless-prod",
+                    backend="akeyless_secrets",
+                    akeyless_secret_name="/prod/mcp/oauth_cache",
+                    akeyless_token_env="AKEYLESS_TOKEN",
+                    akeyless_api_url="   ",
+                )
+            )
+            is None
+        )
+
+    def test_persist_akeyless_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Akeyless persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_akeyless",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_akeyless", fake_write)
+
+        cli_module._persist_oauth_cache_entry_akeyless(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="akeyless-prod",
+                backend="akeyless_secrets",
+                akeyless_secret_name="/prod/mcp/oauth_cache",
+                akeyless_token_env="AKEYLESS_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -7926,6 +8251,7 @@ class TestCLIHelpers:
             ("onepassword_connect", "_load_oauth_persistent_cache_entries_from_onepassword_connect"),
             ("bitwarden_secrets", "_load_oauth_persistent_cache_entries_from_bitwarden"),
             ("infisical_secrets", "_load_oauth_persistent_cache_entries_from_infisical"),
+            ("akeyless_secrets", "_load_oauth_persistent_cache_entries_from_akeyless"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -7945,6 +8271,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_onepassword_connect",
             "_load_oauth_persistent_cache_entries_from_bitwarden",
             "_load_oauth_persistent_cache_entries_from_infisical",
+            "_load_oauth_persistent_cache_entries_from_akeyless",
         }
 
         for name in backend_loaders:
@@ -7985,6 +8312,7 @@ class TestCLIHelpers:
             ("onepassword_connect", "_persist_oauth_cache_entry_onepassword_connect"),
             ("bitwarden_secrets", "_persist_oauth_cache_entry_bitwarden"),
             ("infisical_secrets", "_persist_oauth_cache_entry_infisical"),
+            ("akeyless_secrets", "_persist_oauth_cache_entry_akeyless"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -8004,6 +8332,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_onepassword_connect",
             "_persist_oauth_cache_entry_bitwarden",
             "_persist_oauth_cache_entry_infisical",
+            "_persist_oauth_cache_entry_akeyless",
         }
 
         for name in backend_persisters:
@@ -8204,6 +8533,20 @@ class TestCLIHelpers:
                     infisical_secret_name="MCP_OAUTH_CACHE",
                     infisical_token_env="INFISICAL_TOKEN",
                     infisical_api_url="https://app.infisical.com/api",
+                ),
+            ),
+            (
+                "_build_akeyless_http_client",
+                None,
+                "_read_oauth_cache_payload_from_akeyless",
+                "_write_oauth_cache_payload_to_akeyless",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="akeyless_secrets",
+                    akeyless_secret_name="/prod/mcp/oauth_cache",
+                    akeyless_token_env="AKEYLESS_TOKEN",
+                    akeyless_api_url="https://api.akeyless.io",
                 ),
             ),
         ],

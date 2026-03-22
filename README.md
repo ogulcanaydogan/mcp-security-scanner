@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8R)
+## Capability Snapshot (Sprint 1-8S)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -62,6 +62,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8P): added `onepassword_connect` backend (env-token auth, pre-provisioned item/field model)
 - OAuth cache provider expansion (Sprint 8Q): added `bitwarden_secrets` backend (env-token auth, pre-provisioned secret model)
 - OAuth cache provider expansion (Sprint 8R): added `infisical_secrets` backend (env-token auth, pre-provisioned secret model)
+- OAuth cache provider expansion (Sprint 8S): added `akeyless_secrets` backend (env-token auth, pre-provisioned secret model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -373,6 +374,24 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-akeyless-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "akeyless_secrets",
+          "akeyless_secret_name": "/prod/mcp/oauth_cache",
+          "akeyless_token_env": "AKEYLESS_TOKEN",
+          "akeyless_api_url": "https://api.akeyless.io"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -440,7 +459,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, or `infisical_secrets`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, or `akeyless_secrets`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -477,6 +496,9 @@ Notes:
   - `infisical_secret_name` (required when `backend=infisical_secrets`)
   - optional `infisical_token_env` (default `INFISICAL_TOKEN`)
   - optional `infisical_api_url` (`https` URL; defaults to Infisical cloud API)
+  - `akeyless_secret_name` (required when `backend=akeyless_secrets`)
+  - optional `akeyless_token_env` (default `AKEYLESS_TOKEN`)
+  - optional `akeyless_api_url` (`https` URL; defaults to Akeyless API)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -549,6 +571,12 @@ Notes:
     - cache payload is stored as a single JSON envelope in configured Infisical secret value
       (`auth.cache.infisical_project_id` / `auth.cache.infisical_environment` / `auth.cache.infisical_secret_name`)
     - auth uses env token only (`auth.cache.infisical_token_env`, default `INFISICAL_TOKEN`)
+    - secret must be pre-provisioned; scanner updates existing secret value and does not auto-create missing secrets
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=akeyless_secrets`:
+    - cache payload is stored as a single JSON envelope in configured Akeyless secret value
+      (`auth.cache.akeyless_secret_name`)
+    - auth uses env token only (`auth.cache.akeyless_token_env`, default `AKEYLESS_TOKEN`)
     - secret must be pre-provisioned; scanner updates existing secret value and does not auto-create missing secrets
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
@@ -634,7 +662,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8R)
+## Roadmap (Post Sprint 8S)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, and `infisical_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, and `akeyless_secrets`

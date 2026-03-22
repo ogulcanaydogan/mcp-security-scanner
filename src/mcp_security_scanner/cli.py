@@ -63,6 +63,7 @@ _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS = "doppler_secrets"
 _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT = "onepassword_connect"
 _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS = "bitwarden_secrets"
 _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS = "infisical_secrets"
+_OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS = "akeyless_secrets"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -76,6 +77,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT,
     _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS,
     _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS,
+    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -93,6 +95,7 @@ _OAUTH_RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 _DOPPLER_DEFAULT_API_URL = "https://api.doppler.com"
 _BITWARDEN_DEFAULT_API_URL = "https://api.bitwarden.com"
 _INFISICAL_DEFAULT_API_URL = "https://app.infisical.com/api"
+_AKEYLESS_DEFAULT_API_URL = "https://api.akeyless.io"
 
 
 @dataclass(frozen=True)
@@ -139,6 +142,9 @@ class OAuthCacheSettings:
     infisical_secret_name: str | None = None
     infisical_token_env: str | None = None
     infisical_api_url: str | None = None
+    akeyless_secret_name: str | None = None
+    akeyless_token_env: str | None = None
+    akeyless_api_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2286,6 +2292,9 @@ def _coerce_oauth_cache_settings(
             "infisical_secret_name",
             "infisical_token_env",
             "infisical_api_url",
+            "akeyless_secret_name",
+            "akeyless_token_env",
+            "akeyless_api_url",
         }
     ]
     if unknown_fields:
@@ -2301,7 +2310,7 @@ def _coerce_oauth_cache_settings(
             "op_connect_host, op_vault_id, op_item_id, op_field_label, op_connect_token_env, "
             "bw_secret_id, bw_access_token_env, bw_api_url, "
             "infisical_project_id, infisical_environment, infisical_secret_name, infisical_token_env, "
-            "infisical_api_url.",
+            "infisical_api_url, akeyless_secret_name, akeyless_token_env, akeyless_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2654,6 +2663,35 @@ def _coerce_oauth_cache_settings(
         if parsed_infisical_api_url.scheme != "https" or not parsed_infisical_api_url.netloc:
             return None, "auth.cache.infisical_api_url must be a valid https URL."
 
+    akeyless_secret_name_value = cache_value.get("akeyless_secret_name")
+    if akeyless_secret_name_value is not None and (
+        not isinstance(akeyless_secret_name_value, str) or not akeyless_secret_name_value.strip()
+    ):
+        return None, "auth.cache.akeyless_secret_name must be a non-empty string when provided."
+    akeyless_secret_name = akeyless_secret_name_value.strip() if isinstance(akeyless_secret_name_value, str) else None
+    if akeyless_secret_name is not None and not _is_valid_akeyless_secret_name(akeyless_secret_name):
+        return None, "auth.cache.akeyless_secret_name must match Akeyless secret naming rules ([0-9A-Za-z_./:-])."
+
+    akeyless_token_env_value = cache_value.get("akeyless_token_env")
+    if akeyless_token_env_value is not None and (
+        not isinstance(akeyless_token_env_value, str) or not akeyless_token_env_value.strip()
+    ):
+        return None, "auth.cache.akeyless_token_env must be a non-empty string when provided."
+    akeyless_token_env = akeyless_token_env_value.strip() if isinstance(akeyless_token_env_value, str) else None
+    if akeyless_token_env is not None and not _is_valid_env_var_name(akeyless_token_env):
+        return None, "auth.cache.akeyless_token_env must be a valid environment variable name."
+
+    akeyless_api_url_value = cache_value.get("akeyless_api_url")
+    if akeyless_api_url_value is not None and (
+        not isinstance(akeyless_api_url_value, str) or not akeyless_api_url_value.strip()
+    ):
+        return None, "auth.cache.akeyless_api_url must be a non-empty string when provided."
+    akeyless_api_url = akeyless_api_url_value.strip() if isinstance(akeyless_api_url_value, str) else None
+    if akeyless_api_url is not None:
+        parsed_akeyless_api_url = urlparse(akeyless_api_url)
+        if parsed_akeyless_api_url.scheme != "https" or not parsed_akeyless_api_url.netloc:
+            return None, "auth.cache.akeyless_api_url must be a valid https URL."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -2703,6 +2741,21 @@ def _coerce_oauth_cache_settings(
             "auth.cache.infisical_project_id, auth.cache.infisical_environment, auth.cache.infisical_secret_name, "
             "auth.cache.infisical_token_env, and auth.cache.infisical_api_url are only supported when "
             "auth.cache.backend='infisical_secrets'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS and (
+        akeyless_secret_name is not None or akeyless_token_env is not None or akeyless_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.akeyless_secret_name, auth.cache.akeyless_token_env, and auth.cache.akeyless_api_url are "
+            "only supported when auth.cache.backend='akeyless_secrets'.",
+        )
+
+    if backend == _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS and akeyless_secret_name is None:
+        return (
+            None,
+            "auth.cache.akeyless_secret_name is required when auth.cache.backend='akeyless_secrets'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -3417,6 +3470,13 @@ def _coerce_oauth_cache_settings(
                 else ("INFISICAL_TOKEN" if backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS else None)
             ),
             infisical_api_url=infisical_api_url,
+            akeyless_secret_name=akeyless_secret_name,
+            akeyless_token_env=(
+                akeyless_token_env
+                if akeyless_token_env is not None
+                else ("AKEYLESS_TOKEN" if backend == _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS else None)
+            ),
+            akeyless_api_url=akeyless_api_url,
         ),
         None,
     )
@@ -3479,6 +3539,11 @@ def _is_valid_doppler_identifier(value: str) -> bool:
 def _is_valid_infisical_identifier(value: str) -> bool:
     """Validate Infisical identifier-like values used for project/environment/secret fields."""
     return re.fullmatch(r"[0-9A-Za-z_.:-]{1,128}", value) is not None
+
+
+def _is_valid_akeyless_secret_name(value: str) -> bool:
+    """Validate Akeyless secret name/path shape used for pre-provisioned secret lookup."""
+    return re.fullmatch(r"[0-9A-Za-z_./:-]{1,256}", value) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -5198,6 +5263,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_bitwarden(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
         return _load_oauth_persistent_cache_entries_from_infisical(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS:
+        return _load_oauth_persistent_cache_entries_from_akeyless(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -5254,6 +5321,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
         _persist_oauth_cache_entry_infisical(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS:
+        _persist_oauth_cache_entry_akeyless(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -6861,6 +6931,171 @@ def _write_oauth_cache_payload_to_infisical(
                     "workspaceId": cache_settings.infisical_project_id,
                     "environment": cache_settings.infisical_environment,
                     "secretValue": serialized_payload,
+                },
+            )
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_akeyless(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Akeyless secret value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_akeyless(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_akeyless(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Akeyless secret value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_akeyless(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_akeyless(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_akeyless_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Akeyless API client for OAuth cache backend."""
+    token_env_name = cache_settings.akeyless_token_env or "AKEYLESS_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.akeyless_api_url or _AKEYLESS_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"Bearer {token_value}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _read_oauth_cache_payload_from_akeyless(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from Akeyless pre-provisioned secret value."""
+    if cache_settings.akeyless_secret_name is None:
+        return None
+
+    client = _build_akeyless_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    path = "/api/v2/get-secret-value"
+    try:
+        try:
+            response = client.post(path, json={"name": cache_settings.akeyless_secret_name})
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        raw_payload: Any = None
+        if isinstance(payload, str):
+            raw_payload = payload
+        elif isinstance(payload, dict):
+            raw_payload = payload.get("value")
+            if not isinstance(raw_payload, str):
+                raw_payload = payload.get("secretValue")
+            if not isinstance(raw_payload, str):
+                raw_payload = payload.get("secret_value")
+            if not isinstance(raw_payload, str):
+                data_payload = payload.get("data")
+                if isinstance(data_payload, dict):
+                    raw_payload = data_payload.get("value")
+        else:
+            return None
+
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_akeyless(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Akeyless secret value."""
+    if cache_settings.akeyless_secret_name is None:
+        return False
+
+    client = _build_akeyless_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    read_path = "/api/v2/get-secret-value"
+    write_path = "/api/v2/set-secret-value"
+    try:
+        # Pre-provisioned mode: require secret to already exist.
+        try:
+            preflight_response = client.post(read_path, json={"name": cache_settings.akeyless_secret_name})
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.post(
+                write_path,
+                json={
+                    "name": cache_settings.akeyless_secret_name,
+                    "value": serialized_payload,
                 },
             )
         except Exception:

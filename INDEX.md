@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8R scope.
+Current index for the implemented Sprint 1-8S scope.
 
 ## Status Snapshot
 
@@ -40,6 +40,7 @@ Current index for the implemented Sprint 1-8R scope.
 - Sprint 8P: done (advanced OAuth cache backend v9 with 1Password Connect, env-token auth only, pre-provisioned item/field model)
 - Sprint 8Q: done (advanced OAuth cache backend v10 with Bitwarden Secrets Manager API, env-token auth only, pre-provisioned secret model)
 - Sprint 8R: done (advanced OAuth cache backend v11 with Infisical Secrets API, env-token auth only, pre-provisioned secret model)
+- Sprint 8S: done (advanced OAuth cache backend v12 with Akeyless Secrets API, env-token auth only, pre-provisioned secret model)
 
 ## Top-Level Docs
 
@@ -68,7 +69,7 @@ Current index for the implemented Sprint 1-8R scope.
   - Config auth normalization (`bearer` / `api_key` / `session_cookie` / `oauth_client_credentials` / `oauth_device_code` / `oauth_auth_code_pkce`)
   - Auth finding flow: `auth_config_error` (schema/env) and `auth_token_error` (token endpoint)
   - OAuth client-credentials + device-code + auth-code PKCE/refresh with in-memory cache
-  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_ssm_parameter_name`, `aws_region`, `aws_endpoint_url`, `gcp_secret_name`, `gcp_endpoint_url`, `azure_vault_url`, `azure_secret_name`, `azure_secret_version`, `vault_url`, `vault_secret_path`, `vault_token_env`, `vault_namespace`, `k8s_secret_namespace`, `k8s_secret_name`, `k8s_secret_key`, `oci_secret_ocid`, `oci_region`, `oci_endpoint_url`, `doppler_project`, `doppler_config`, `doppler_secret_name`, `doppler_token_env`, `doppler_api_url`, `op_connect_host`, `op_vault_id`, `op_item_id`, `op_field_label`, `op_connect_token_env`, `bw_secret_id`, `bw_access_token_env`, `bw_api_url`, `infisical_project_id`, `infisical_environment`, `infisical_secret_name`, `infisical_token_env`, `infisical_api_url`)
+  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_ssm_parameter_name`, `aws_region`, `aws_endpoint_url`, `gcp_secret_name`, `gcp_endpoint_url`, `azure_vault_url`, `azure_secret_name`, `azure_secret_version`, `vault_url`, `vault_secret_path`, `vault_token_env`, `vault_namespace`, `k8s_secret_namespace`, `k8s_secret_name`, `k8s_secret_key`, `oci_secret_ocid`, `oci_region`, `oci_endpoint_url`, `doppler_project`, `doppler_config`, `doppler_secret_name`, `doppler_token_env`, `doppler_api_url`, `op_connect_host`, `op_vault_id`, `op_item_id`, `op_field_label`, `op_connect_token_env`, `bw_secret_id`, `bw_access_token_env`, `bw_api_url`, `infisical_project_id`, `infisical_environment`, `infisical_secret_name`, `infisical_token_env`, `infisical_api_url`, `akeyless_secret_name`, `akeyless_token_env`, `akeyless_api_url`)
   - Persistent cache hardening:
     - strict lock file with retry/timeout and non-fatal bypass
     - corrupt cache quarantine (`*.corrupt.<timestamp>`)
@@ -88,6 +89,7 @@ Current index for the implemented Sprint 1-8R scope.
     - `backend=onepassword_connect` (single item-field JSON envelope for OAuth cache entries via 1Password Connect API)
     - `backend=bitwarden_secrets` (single secret-value JSON envelope for OAuth cache entries via Bitwarden Secrets Manager API)
     - `backend=infisical_secrets` (single secret-value JSON envelope for OAuth cache entries via Infisical Secrets API)
+    - `backend=akeyless_secrets` (single secret-value JSON envelope for OAuth cache entries via Akeyless API)
     - backend read/write failures are non-fatal and fall back to live token flow
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
   - `private_key_jwt` signer inputs with exclusivity (`client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`), optional `client_assertion_kid`
@@ -151,4 +153,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, and `infisical_secrets`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, and `akeyless_secrets`
