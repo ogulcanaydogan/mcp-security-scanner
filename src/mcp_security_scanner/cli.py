@@ -71,6 +71,7 @@ _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variable
 _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variables"
 _OAUTH_CACHE_BACKEND_CONSUL_KV = "consul_kv"
 _OAUTH_CACHE_BACKEND_REDIS_KV = "redis_kv"
+_OAUTH_CACHE_BACKEND_CLOUDFLARE_KV = "cloudflare_kv"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -91,6 +92,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES,
     _OAUTH_CACHE_BACKEND_CONSUL_KV,
     _OAUTH_CACHE_BACKEND_REDIS_KV,
+    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV,
 }
 _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_load_oauth_persistent_cache_entries_from_aws",
@@ -111,6 +113,7 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_organization",
     _OAUTH_CACHE_BACKEND_CONSUL_KV: "_load_oauth_persistent_cache_entries_from_consul",
     _OAUTH_CACHE_BACKEND_REDIS_KV: "_load_oauth_persistent_cache_entries_from_redis",
+    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: "_load_oauth_persistent_cache_entries_from_cloudflare",
 }
 _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_persist_oauth_cache_entry_aws",
@@ -131,6 +134,7 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_persist_oauth_cache_entry_github_organization",
     _OAUTH_CACHE_BACKEND_CONSUL_KV: "_persist_oauth_cache_entry_consul",
     _OAUTH_CACHE_BACKEND_REDIS_KV: "_persist_oauth_cache_entry_redis",
+    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: "_persist_oauth_cache_entry_cloudflare",
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -153,6 +157,7 @@ _GITLAB_DEFAULT_API_URL = "https://gitlab.com/api/v4"
 _GITHUB_DEFAULT_API_URL = "https://api.github.com"
 _CONSUL_DEFAULT_API_URL = "http://127.0.0.1:8500"
 _REDIS_DEFAULT_URL = "redis://127.0.0.1:6379/0"
+_CLOUDFLARE_DEFAULT_API_URL = "https://api.cloudflare.com/client/v4"
 
 
 @dataclass(frozen=True)
@@ -218,6 +223,11 @@ class OAuthCacheSettings:
     redis_key: str | None = None
     redis_url: str | None = None
     redis_password_env: str | None = None
+    cf_account_id: str | None = None
+    cf_namespace_id: str | None = None
+    cf_kv_key: str | None = None
+    cf_api_token_env: str | None = None
+    cf_api_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2384,6 +2394,11 @@ def _coerce_oauth_cache_settings(
             "redis_key",
             "redis_url",
             "redis_password_env",
+            "cf_account_id",
+            "cf_namespace_id",
+            "cf_kv_key",
+            "cf_api_token_env",
+            "cf_api_url",
         }
     ]
     if unknown_fields:
@@ -2403,7 +2418,8 @@ def _coerce_oauth_cache_settings(
             "gitlab_project_id, gitlab_variable_key, gitlab_token_env, gitlab_api_url, "
             "github_repository, github_organization, github_environment_name, github_variable_name, "
             "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url, "
-            "redis_key, redis_url, redis_password_env.",
+            "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
+            "cf_api_token_env, cf_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2938,6 +2954,49 @@ def _coerce_oauth_cache_settings(
     if redis_password_env is not None and not _is_valid_env_var_name(redis_password_env):
         return None, "auth.cache.redis_password_env must be a valid environment variable name."
 
+    cf_account_id_value = cache_value.get("cf_account_id")
+    if cf_account_id_value is not None and (
+        not isinstance(cf_account_id_value, str) or not cf_account_id_value.strip()
+    ):
+        return None, "auth.cache.cf_account_id must be a non-empty string when provided."
+    cf_account_id = cf_account_id_value.strip() if isinstance(cf_account_id_value, str) else None
+    if cf_account_id is not None and not _is_valid_cloudflare_identifier(cf_account_id):
+        return None, "auth.cache.cf_account_id must match Cloudflare identifier naming rules."
+
+    cf_namespace_id_value = cache_value.get("cf_namespace_id")
+    if cf_namespace_id_value is not None and (
+        not isinstance(cf_namespace_id_value, str) or not cf_namespace_id_value.strip()
+    ):
+        return None, "auth.cache.cf_namespace_id must be a non-empty string when provided."
+    cf_namespace_id = cf_namespace_id_value.strip() if isinstance(cf_namespace_id_value, str) else None
+    if cf_namespace_id is not None and not _is_valid_cloudflare_identifier(cf_namespace_id):
+        return None, "auth.cache.cf_namespace_id must match Cloudflare identifier naming rules."
+
+    cf_kv_key_value = cache_value.get("cf_kv_key")
+    if cf_kv_key_value is not None and (not isinstance(cf_kv_key_value, str) or not cf_kv_key_value.strip()):
+        return None, "auth.cache.cf_kv_key must be a non-empty string when provided."
+    cf_kv_key = cf_kv_key_value.strip() if isinstance(cf_kv_key_value, str) else None
+    if cf_kv_key is not None and not _is_valid_cloudflare_kv_key(cf_kv_key):
+        return None, "auth.cache.cf_kv_key must be a valid Cloudflare KV key."
+
+    cf_api_token_env_value = cache_value.get("cf_api_token_env")
+    if cf_api_token_env_value is not None and (
+        not isinstance(cf_api_token_env_value, str) or not cf_api_token_env_value.strip()
+    ):
+        return None, "auth.cache.cf_api_token_env must be a non-empty string when provided."
+    cf_api_token_env = cf_api_token_env_value.strip() if isinstance(cf_api_token_env_value, str) else None
+    if cf_api_token_env is not None and not _is_valid_env_var_name(cf_api_token_env):
+        return None, "auth.cache.cf_api_token_env must be a valid environment variable name."
+
+    cf_api_url_value = cache_value.get("cf_api_url")
+    if cf_api_url_value is not None and (not isinstance(cf_api_url_value, str) or not cf_api_url_value.strip()):
+        return None, "auth.cache.cf_api_url must be a non-empty string when provided."
+    cf_api_url = cf_api_url_value.strip() if isinstance(cf_api_url_value, str) else None
+    if cf_api_url is not None:
+        parsed_cf_api_url = urlparse(cf_api_url)
+        if parsed_cf_api_url.scheme != "https" or not parsed_cf_api_url.netloc:
+            return None, "auth.cache.cf_api_url must be a valid https URL."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3137,6 +3196,35 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.redis_key is required when auth.cache.backend='redis_kv'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV and (
+        cf_account_id is not None
+        or cf_namespace_id is not None
+        or cf_kv_key is not None
+        or cf_api_token_env is not None
+        or cf_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.cf_account_id, auth.cache.cf_namespace_id, auth.cache.cf_kv_key, "
+            "auth.cache.cf_api_token_env, and auth.cache.cf_api_url are only supported when "
+            "auth.cache.backend='cloudflare_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV and cf_account_id is None:
+        return (
+            None,
+            "auth.cache.cf_account_id is required when auth.cache.backend='cloudflare_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV and cf_namespace_id is None:
+        return (
+            None,
+            "auth.cache.cf_namespace_id is required when auth.cache.backend='cloudflare_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV and cf_kv_key is None:
+        return (
+            None,
+            "auth.cache.cf_kv_key is required when auth.cache.backend='cloudflare_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -4091,6 +4179,19 @@ def _coerce_oauth_cache_settings(
                 if redis_password_env is not None
                 else ("REDIS_PASSWORD" if backend == _OAUTH_CACHE_BACKEND_REDIS_KV else None)
             ),
+            cf_account_id=cf_account_id,
+            cf_namespace_id=cf_namespace_id,
+            cf_kv_key=cf_kv_key,
+            cf_api_token_env=(
+                cf_api_token_env
+                if cf_api_token_env is not None
+                else ("CLOUDFLARE_API_TOKEN" if backend == _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV else None)
+            ),
+            cf_api_url=(
+                cf_api_url
+                if cf_api_url is not None
+                else (_CLOUDFLARE_DEFAULT_API_URL if backend == _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV else None)
+            ),
         ),
         None,
     )
@@ -4196,6 +4297,19 @@ def _is_valid_consul_key_path(value: str) -> bool:
 def _is_valid_redis_key(value: str) -> bool:
     """Validate Redis key path shape."""
     normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_cloudflare_identifier(value: str) -> bool:
+    """Validate Cloudflare account/namespace identifier shape."""
+    return re.fullmatch(r"[0-9A-Za-z_-]{1,128}", value) is not None
+
+
+def _is_valid_cloudflare_kv_key(value: str) -> bool:
+    """Validate Cloudflare KV key shape."""
+    normalized = value.strip()
     if not normalized:
         return False
     return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
@@ -8642,6 +8756,165 @@ def _write_oauth_cache_payload_to_redis(cache_settings: OAuthCacheSettings, entr
         return True
     finally:
         _close_redis_client(client)
+
+
+def _load_oauth_persistent_cache_entries_from_cloudflare(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Cloudflare KV value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_cloudflare(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_cloudflare(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Cloudflare KV value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_cloudflare(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_cloudflare(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_cloudflare_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Cloudflare API client for OAuth cache backend."""
+    token_env_name = cache_settings.cf_api_token_env or "CLOUDFLARE_API_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.cf_api_url or _CLOUDFLARE_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"Bearer {token_value}",
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _build_cloudflare_kv_path(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build Cloudflare KV value endpoint path from validated cache settings."""
+    if (
+        cache_settings.cf_account_id is None
+        or cache_settings.cf_namespace_id is None
+        or cache_settings.cf_kv_key is None
+    ):
+        return None
+    account_id = cache_settings.cf_account_id.strip()
+    namespace_id = cache_settings.cf_namespace_id.strip()
+    kv_key = cache_settings.cf_kv_key.strip()
+    if not account_id or not namespace_id or not kv_key:
+        return None
+
+    encoded_account = quote(account_id, safe="")
+    encoded_namespace = quote(namespace_id, safe="")
+    encoded_key = quote(kv_key, safe="")
+    return f"/accounts/{encoded_account}/storage/kv/namespaces/{encoded_namespace}/values/{encoded_key}"
+
+
+def _read_oauth_cache_payload_from_cloudflare(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned Cloudflare KV key value."""
+    path = _build_cloudflare_kv_path(cache_settings=cache_settings)
+    if path is None:
+        return None
+
+    client = _build_cloudflare_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        try:
+            response = client.get(path)
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        raw_payload = response.text
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_cloudflare(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Cloudflare KV key value."""
+    path = _build_cloudflare_kv_path(cache_settings=cache_settings)
+    if path is None:
+        return False
+
+    client = _build_cloudflare_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        # Pre-provisioned mode: require key to already exist.
+        try:
+            preflight_response = client.get(path)
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.put(path, content=serialized_payload, headers={"content-type": "application/json"})
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:

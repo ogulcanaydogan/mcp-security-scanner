@@ -927,6 +927,43 @@ This file records the actual implementation status after Sprint 8AA.
   - dispatch map completeness is validated against all non-local supported backends
   - existing persistent bypass, non-fatal provider error, compare contract, and local-only `cache rotate` invariants remain enforced
 
+### Sprint 8AB (Cloudflare KV Backend v1)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+    - `doppler_secrets`
+    - `onepassword_connect`
+    - `bitwarden_secrets`
+    - `infisical_secrets`
+    - `akeyless_secrets`
+    - `gitlab_variables`
+    - `github_actions_variables`
+    - `github_environment_variables`
+    - `github_organization_variables`
+    - `consul_kv`
+    - `redis_kv`
+    - `cloudflare_kv`
+- Cloudflare backend contract:
+  - required: `cf_account_id`, `cf_namespace_id`, `cf_kv_key`
+  - optional: `cf_api_token_env` (default `CLOUDFLARE_API_TOKEN`), `cf_api_url` (`https`, default `https://api.cloudflare.com/client/v4`)
+  - pre-provisioned model (scanner does not auto-create missing Cloudflare KV keys)
+- Cloudflare backend behavior:
+  - auth uses env token only (`cf_api_token_env` / `CLOUDFLARE_API_TOKEN`)
+  - reads/writes JSON envelope in configured Cloudflare KV key
+  - account/namespace/key path segments are URL-encoded before API calls
+  - provider/read/write/parse/auth/network errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -939,7 +976,7 @@ This file records the actual implementation status after Sprint 8AA.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`; Sprint 8AA provides the shared dispatch/contract baseline for future provider onboarding
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA provides the shared dispatch/contract baseline for future provider onboarding
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

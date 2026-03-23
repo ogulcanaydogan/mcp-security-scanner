@@ -2108,6 +2108,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_github_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_consul_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_redis_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_cloudflare_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -3179,6 +3180,54 @@ class TestCLIHelpers:
         assert settings.redis_url is None
         assert settings.redis_password_env == "REDIS_PASSWORD"
 
+    def test_coerce_oauth_cache_settings_accepts_cloudflare_backend(self):
+        """OAuth cache settings should accept cloudflare_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                    "cf_kv_key": "mcp/security/oauth/cache",
+                    "cf_api_token_env": "CLOUDFLARE_API_TOKEN_PROD",
+                    "cf_api_url": "https://api.cloudflare.com/client/v4",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "cloudflare_kv"
+        assert settings.cf_account_id == "1234567890abcdef1234567890abcdef"
+        assert settings.cf_namespace_id == "fedcba0987654321fedcba0987654321"
+        assert settings.cf_kv_key == "mcp/security/oauth/cache"
+        assert settings.cf_api_token_env == "CLOUDFLARE_API_TOKEN_PROD"
+        assert settings.cf_api_url == "https://api.cloudflare.com/client/v4"
+
+    def test_coerce_oauth_cache_settings_sets_cloudflare_defaults(self):
+        """OAuth cache settings should apply default cloudflare_kv optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                    "cf_kv_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.cf_api_token_env == "CLOUDFLARE_API_TOKEN"
+        assert settings.cf_api_url == "https://api.cloudflare.com/client/v4"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3783,6 +3832,76 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "redis_key": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='redis_kv'",
+            ),
+            (
+                {"backend": "cloudflare_kv"},
+                "auth.cache.cf_account_id is required",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                },
+                "auth.cache.cf_namespace_id is required",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                },
+                "auth.cache.cf_kv_key is required",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "invalid id",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                    "cf_kv_key": "mcp/security/oauth/cache",
+                },
+                "auth.cache.cf_account_id must match Cloudflare identifier naming rules.",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "invalid id",
+                    "cf_kv_key": "mcp/security/oauth/cache",
+                },
+                "auth.cache.cf_namespace_id must match Cloudflare identifier naming rules.",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                    "cf_kv_key": "invalid key",
+                },
+                "auth.cache.cf_kv_key must be a valid Cloudflare KV key.",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                    "cf_kv_key": "mcp/security/oauth/cache",
+                    "cf_api_token_env": "9INVALID",
+                },
+                "auth.cache.cf_api_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "cloudflare_kv",
+                    "cf_account_id": "1234567890abcdef1234567890abcdef",
+                    "cf_namespace_id": "fedcba0987654321fedcba0987654321",
+                    "cf_kv_key": "mcp/security/oauth/cache",
+                    "cf_api_url": "http://api.cloudflare.com/client/v4",
+                },
+                "auth.cache.cf_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "cf_account_id": "1234567890abcdef1234567890abcdef"},
+                "only supported when auth.cache.backend='cloudflare_kv'",
             ),
         ],
     )
@@ -8576,6 +8695,271 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_build_cloudflare_kv_path_encodes_segments(self):
+        """Cloudflare KV path builder should URL-encode account, namespace, and key segments."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="cloudflare-prod",
+            backend="cloudflare_kv",
+            cf_account_id="account-123",
+            cf_namespace_id="namespace_456",
+            cf_kv_key="mcp/security/oauth/cache",
+        )
+
+        path = cli_module._build_cloudflare_kv_path(cache_settings=settings)
+
+        assert path == "/accounts/account-123/storage/kv/namespaces/namespace_456/values/mcp%2Fsecurity%2Foauth%2Fcache"
+
+    def test_read_cloudflare_payload_parses_raw_value(self, monkeypatch):
+        """Cloudflare reader should parse envelope from raw KV value response body."""
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, text: str) -> None:
+                self.status_code = status_code
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeCloudflareClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert (
+                    path
+                    == "/accounts/account-123/storage/kv/namespaces/namespace-456/values/mcp%2Fsecurity%2Foauth%2Fcache"
+                )
+                FakeCloudflareClient.call_count += 1
+                if FakeCloudflareClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        text=json.dumps({"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}),
+                    )
+                return FakeResponse(status_code=200, text="")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeCloudflareClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="cloudflare-prod",
+            backend="cloudflare_kv",
+            cf_account_id="account-123",
+            cf_namespace_id="namespace-456",
+            cf_kv_key="mcp/security/oauth/cache",
+            cf_api_token_env="CLOUDFLARE_API_TOKEN",
+            cf_api_url="https://api.cloudflare.com/client/v4",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+
+    def test_read_cloudflare_payload_bypasses_errors_and_missing_key(self, monkeypatch):
+        """Cloudflare reader should fail closed for errors and map missing key to empty envelope."""
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, text: str) -> None:
+                self.status_code = status_code
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeCloudflareClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                FakeCloudflareClient.call_count += 1
+                if FakeCloudflareClient.call_count == 1:
+                    return FakeResponse(status_code=404, text="")
+                if FakeCloudflareClient.call_count == 2:
+                    return FakeResponse(status_code=500, text="")
+                return FakeResponse(status_code=200, text="{invalid-json")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeCloudflareClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="cloudflare-prod",
+            backend="cloudflare_kv",
+            cf_account_id="account-123",
+            cf_namespace_id="namespace-456",
+            cf_kv_key="mcp/security/oauth/cache",
+            cf_api_token_env="CLOUDFLARE_API_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+
+    def test_cloudflare_write_success_and_bypass_paths(self, monkeypatch):
+        """Cloudflare writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, text: str = "") -> None:
+                self.status_code = status_code
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeCloudflareClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeCloudflareClient.init_count += 1
+                self._scenario = FakeCloudflareClient.init_count
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert (
+                    path
+                    == "/accounts/account-123/storage/kv/namespaces/namespace-456/values/mcp%2Fsecurity%2Foauth%2Fcache"
+                )
+                if self._scenario == 1:
+                    return FakeResponse(status_code=200, text="{}")
+                if self._scenario == 2:
+                    return FakeResponse(status_code=404)
+                if self._scenario == 3:
+                    return FakeResponse(status_code=500)
+                return FakeResponse(status_code=200, text="{}")
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert (
+                    path
+                    == "/accounts/account-123/storage/kv/namespaces/namespace-456/values/mcp%2Fsecurity%2Foauth%2Fcache"
+                )
+                if self._scenario == 1:
+                    payload = kwargs.get("content")
+                    assert isinstance(payload, str)
+                    return FakeResponse(status_code=200)
+                raise RuntimeError("post-write-failed")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeCloudflareClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="cloudflare-prod",
+            backend="cloudflare_kv",
+            cf_account_id="account-123",
+            cf_namespace_id="namespace-456",
+            cf_kv_key="mcp/security/oauth/cache",
+            cf_api_token_env="CLOUDFLARE_API_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_cloudflare(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_cloudflare(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_cloudflare(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_cloudflare(cache_settings=settings, entries={}) is False
+
+    def test_cloudflare_build_client_and_required_guards(self, monkeypatch):
+        """Cloudflare helpers should fail closed when token/url/key identity is missing."""
+        monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="cloudflare-prod",
+            backend="cloudflare_kv",
+            cf_account_id="account-123",
+            cf_namespace_id="namespace-456",
+            cf_kv_key="mcp/security/oauth/cache",
+            cf_api_token_env="CLOUDFLARE_API_TOKEN",
+            cf_api_url="https://api.cloudflare.com/client/v4",
+        )
+        assert cli_module._build_cloudflare_http_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_cloudflare(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "token")
+        assert (
+            cli_module._build_cloudflare_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="cloudflare-prod",
+                    backend="cloudflare_kv",
+                    cf_account_id="account-123",
+                    cf_namespace_id="namespace-456",
+                    cf_kv_key="mcp/security/oauth/cache",
+                    cf_api_token_env="CLOUDFLARE_API_TOKEN",
+                    cf_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="cloudflare-prod",
+            backend="cloudflare_kv",
+            cf_account_id=None,
+            cf_namespace_id="namespace-456",
+            cf_kv_key="mcp/security/oauth/cache",
+            cf_api_token_env="CLOUDFLARE_API_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_cloudflare(cache_settings=missing_settings) is None
+        assert cli_module._write_oauth_cache_payload_to_cloudflare(cache_settings=missing_settings, entries={}) is False
+
+    def test_persist_cloudflare_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Cloudflare persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_cloudflare",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_cloudflare", fake_write)
+
+        cli_module._persist_oauth_cache_entry_cloudflare(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="cloudflare-prod",
+                backend="cloudflare_kv",
+                cf_account_id="account-123",
+                cf_namespace_id="namespace-456",
+                cf_kv_key="mcp/security/oauth/cache",
+                cf_api_token_env="CLOUDFLARE_API_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -10780,6 +11164,22 @@ class TestCLIHelpers:
                     redis_key="mcp/security/oauth/cache",
                     redis_url="redis://127.0.0.1:6379/0",
                     redis_password_env="REDIS_PASSWORD",
+                ),
+            ),
+            (
+                "_build_cloudflare_http_client",
+                None,
+                "_read_oauth_cache_payload_from_cloudflare",
+                "_write_oauth_cache_payload_to_cloudflare",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="cloudflare_kv",
+                    cf_account_id="account-123",
+                    cf_namespace_id="namespace-456",
+                    cf_kv_key="mcp/security/oauth/cache",
+                    cf_api_token_env="CLOUDFLARE_API_TOKEN",
+                    cf_api_url="https://api.cloudflare.com/client/v4",
                 ),
             ),
         ],

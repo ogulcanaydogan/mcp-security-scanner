@@ -104,6 +104,7 @@ Current index for the implemented Sprint 1-8AA scope.
     - `backend=github_organization_variables` (single organization-variable JSON envelope for OAuth cache entries via GitHub Organization Variables API)
     - `backend=consul_kv` (single KV-value JSON envelope for OAuth cache entries via Consul KV API)
     - `backend=redis_kv` (single key-value JSON envelope for OAuth cache entries via Redis KV)
+    - `backend=cloudflare_kv` (single KV-value JSON envelope for OAuth cache entries via Cloudflare KV API)
     - backend read/write failures are non-fatal and fall back to live token flow
   - `token_endpoint_auth_method` support (`client_secret_post` / `client_secret_basic` / `private_key_jwt`) for config OAuth entries
   - `private_key_jwt` signer inputs with exclusivity (`client_assertion_key_env` or `client_assertion_key_file` or `client_assertion_kms_key_id`), optional `client_assertion_kid`
@@ -167,4 +168,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`; Sprint 8AA established a shared backend dispatch/contract baseline for future providers
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA established a shared backend dispatch/contract baseline for future providers
