@@ -124,6 +124,24 @@ jobs:
       - name: Build distributions
         run: python -m build
 
+      - name: Smoke-check built wheel CLI version
+        run: |
+          set -euo pipefail
+          PROJECT_VERSION="$(python - <<'PY'
+          import pathlib
+          import tomllib
+
+          payload = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(payload["project"]["version"])
+          PY
+          )"
+          python -m pip install --force-reinstall dist/*.whl
+          CLI_VERSION="$(mcp-scan --version | sed -E 's/^.*version[[:space:]]+//')"
+          if [ "$CLI_VERSION" != "$PROJECT_VERSION" ]; then
+            echo "::error::Installed CLI version ($CLI_VERSION) does not match project version ($PROJECT_VERSION)."
+            exit 1
+          fi
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -176,6 +194,17 @@ jobs:
           fi
           if ! ls dist/*"$PROJECT_VERSION"* >/dev/null 2>&1; then
             echo "::error::Built artifacts do not include version $PROJECT_VERSION."
+            exit 1
+          fi
+
+      - name: Verify wheel CLI version matches tag
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          python -m pip install --force-reinstall dist/*.whl
+          CLI_VERSION="$(mcp-scan --version | sed -E 's/^.*version[[:space:]]+//')"
+          if [ "$CLI_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Installed CLI version ($CLI_VERSION) does not match tag version ($TAG_VERSION)."
             exit 1
           fi
 

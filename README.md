@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8W)
+## Capability Snapshot (Sprint 1-8X)
 
 | Area | Status |
 |---|---|
@@ -42,7 +42,7 @@ flowchart LR
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
 | Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables` |
-| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + tag/version guard + PyPI visibility verification |
+| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke check + tag/version guard + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
 
@@ -67,6 +67,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8U): added `github_actions_variables` backend (env-token auth, pre-provisioned repository variable model)
 - OAuth cache provider expansion (Sprint 8V): added `github_environment_variables` backend (env-token auth, pre-provisioned repository environment variable model)
 - OAuth cache provider expansion (Sprint 8W): added `github_organization_variables` backend (env-token auth, pre-provisioned organization variable model)
+- Release + contract hardening (Sprint 8X): added build-wheel CLI smoke verification, publish-time wheel/tag version guard, and expanded `persistent=false` backend invariant coverage
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -779,7 +780,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8W)
+## Roadmap (Post Sprint 8X)
 
 Deferred items:
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, and `github_organization_variables`

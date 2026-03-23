@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8U Implementation State
+# Setup Complete — Sprint 1-8X Implementation State
 
-This file records the actual implementation status after Sprint 8U.
+This file records the actual implementation status after Sprint 8X.
 
 ## Completed Work
 
@@ -831,6 +831,16 @@ This file records the actual implementation status after Sprint 8U.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 8X (Release + Contract Stabilization Hardening)
+
+- release pipeline hardening extended without runtime behavior changes:
+  - build job now smoke-installs the produced wheel and validates `mcp-scan --version` against `pyproject` version
+  - publish job keeps tag/version guard and adds installed wheel CLI/tag version guard before OIDC upload
+  - OIDC publish, Sigstore signing, idempotent GitHub release, and PyPI visibility verification remain unchanged
+- OAuth cache contract test matrix strengthened:
+  - `persistent=false` now explicitly verified across all supported backends for hydration/persist bypass behavior
+  - non-fatal backend error model, dispatch contract, compare contract, and local-only `cache rotate` invariants remain enforced
 
 ## Exit Code Contract (Current)
 

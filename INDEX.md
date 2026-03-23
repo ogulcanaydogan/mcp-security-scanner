@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8V scope.
+Current index for the implemented Sprint 1-8X scope.
 
 ## Status Snapshot
 
@@ -45,6 +45,7 @@ Current index for the implemented Sprint 1-8V scope.
 - Sprint 8U: done (advanced OAuth cache backend v14 with GitHub Actions variables API, env-token auth only, pre-provisioned repository variable model)
 - Sprint 8V: done (advanced OAuth cache backend v15 with GitHub environment variables API, env-token auth only, pre-provisioned repository environment variable model)
 - Sprint 8W: done (advanced OAuth cache backend v16 with GitHub organization variables API, env-token auth only, pre-provisioned organization variable model)
+- Sprint 8X: done (stabilization hardening with build-wheel CLI smoke verification, publish-time wheel/tag version guard, and expanded `persistent=false` OAuth cache invariants)
 
 ## Top-Level Docs
 
@@ -59,7 +60,7 @@ Current index for the implemented Sprint 1-8V scope.
 - Python package/module path unchanged: `mcp_security_scanner`
 - CLI entrypoint unchanged: `mcp-scan`
 - GitHub release publishing path: idempotent `gh release` create/upload in CI publish job
-- Publish safety checks: tag/version guard before publish + post-publish PyPI visibility verification (retry/backoff)
+- Publish safety checks: build-wheel CLI smoke check + tag/version guard + publish-time wheel/tag version guard + post-publish PyPI visibility verification (retry/backoff)
 
 ## Source Map
 

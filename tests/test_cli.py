@@ -9871,16 +9871,18 @@ class TestCLIHelpers:
         )
         assert called == [(persist_name, cache_key, backend)]
 
-    def test_oauth_cache_hydrate_skips_persistent_layer_when_disabled(self, monkeypatch):
-        """Hydration should not call persistent backend loader when cache persistence is disabled."""
+    @pytest.mark.parametrize("backend", sorted(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS))
+    def test_oauth_cache_hydrate_skips_persistent_layer_when_disabled(self, monkeypatch, backend: str):
+        """Hydration should skip persistent backend loaders when persistence is disabled."""
         cache_key = "contract-key"
-        load_calls: list[str] = []
         cli_module._clear_oauth_token_cache()
 
         monkeypatch.setattr(
             cli_module,
             "_load_oauth_persistent_cache_entries",
-            lambda cache_settings=None: load_calls.append("load") or {"contract-key": {"access_token": "cached"}},
+            lambda cache_settings=None: (_ for _ in ()).throw(
+                AssertionError("persistent cache loader must not be called when persistent=false")
+            ),
         )
 
         cli_module._hydrate_oauth_cache_from_persistent(
@@ -9888,12 +9890,73 @@ class TestCLIHelpers:
             cache_settings=cli_module.OAuthCacheSettings(
                 persistent=False,
                 namespace="contract",
-                backend="oci_vault",
+                backend=backend,
             ),
         )
 
-        assert load_calls == []
         assert cache_key not in cli_module._OAUTH_TOKEN_CACHE
+
+    @pytest.mark.parametrize("backend", sorted(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS))
+    def test_store_oauth_cache_skips_persist_when_persistence_disabled(self, monkeypatch, backend: str):
+        """Token store should not invoke persistence layer when persistent=false."""
+        cache_key = "contract-store"
+        cli_module._clear_oauth_token_cache()
+        persist_calls: list[str] = []
+
+        monkeypatch.setattr(
+            cli_module,
+            "_persist_oauth_cache_entry",
+            lambda cache_key, cache_settings=None: persist_calls.append(cache_key),
+        )
+
+        cli_module._store_oauth_token_cache(
+            cache_key=cache_key,
+            token="access-token",
+            expires_in=120.0,
+            refresh_token="refresh-token",
+            persistent=False,
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=False,
+                namespace="contract",
+                backend=backend,
+            ),
+        )
+
+        assert persist_calls == []
+        assert cache_key in cli_module._OAUTH_TOKEN_CACHE
+        cli_module._clear_oauth_token_cache()
+
+    @pytest.mark.parametrize("backend", sorted(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS))
+    def test_drop_refresh_token_skips_persist_when_persistence_disabled(self, monkeypatch, backend: str):
+        """Refresh-token drop should not invoke persistence layer when persistent=false."""
+        cache_key = "contract-drop"
+        cli_module._clear_oauth_token_cache()
+        cli_module._OAUTH_TOKEN_CACHE[cache_key] = {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_at": cli_module._oauth_now() + 120.0,
+        }
+        persist_calls: list[str] = []
+
+        monkeypatch.setattr(
+            cli_module,
+            "_persist_oauth_cache_entry",
+            lambda cache_key, cache_settings=None: persist_calls.append(cache_key),
+        )
+
+        cli_module._drop_oauth_refresh_token(
+            cache_key=cache_key,
+            persistent=False,
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=False,
+                namespace="contract",
+                backend=backend,
+            ),
+        )
+
+        assert persist_calls == []
+        assert "refresh_token" not in cli_module._OAUTH_TOKEN_CACHE[cache_key]
+        cli_module._clear_oauth_token_cache()
 
     @pytest.mark.parametrize(
         ("primary_builder_name", "secondary_builder_name", "read_fn_name", "write_fn_name", "settings"),
