@@ -74,6 +74,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8AB): added `cloudflare_kv` backend (env-token auth, pre-provisioned KV key model)
 - OAuth cache provider expansion (Sprint 8AC): added `gitlab_group_variables` backend (env-token auth, pre-provisioned group variable model)
 - v1.0 RC stabilization (Sprint 8AD): feature-freeze with backend contract lock, RC-safe tag/version normalization (`v1.0.0-rcN` -> `1.0.0rcN`) in publish guards, and post-1.0 deferred-provider positioning
+- v1.0.0 GA finalization: RC2 snapshot promoted to stable without runtime/CLI/auth/report contract changes
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -899,10 +900,11 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8AD / v1.0 RC Freeze)
+## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.0rc2` as the stabilization checkpoint with no new runtime/provider features.
+- `1.0.0` GA is completed from the RC2 stabilization snapshot.
+- Next feature work re-opens in post-1.0 provider backlog under the same contract baseline.
 
 Deferred (post-1.0):
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

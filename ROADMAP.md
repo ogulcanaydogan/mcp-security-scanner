@@ -1,29 +1,23 @@
-# ROADMAP — mcp-security-scanner (Post Sprint 8AD)
+# ROADMAP — mcp-security-scanner (Post v1.0.0 GA)
 
 ## Current State
 
-- Release line is stable through `v0.1.25`.
-- Sprint `8A..8AC` scope is complete.
-- Sprint `8AD` is a v1.0 release-candidate stabilization freeze:
-  - no new runtime/provider features
-  - OAuth cache backend contract is locked during RC
-  - release guards support prerelease tag normalization (`vX.Y.Z-rcN` -> `X.Y.ZrcN`)
+- Release line is stable at `v1.0.0`.
+- Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
+- Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- Publish `v1.0.0-rc2` / package version `1.0.0rc2`.
-- Validate RC quality gate and release flow end to end:
-  - local lint/type/test/coverage gates
-  - CI tag guard + OIDC publish + Sigstore + GitHub release
-  - PyPI visibility check with retry/backoff
+- Open post-1.0 work while keeping the GA contract stable:
+  - no breaking changes to CLI/exit-code/report/auth-cache contracts
+  - continue release hardening and provider onboarding on the established backend contract matrix
 
-## v1.0 GA Criteria
+## v1.0 GA Status
 
-- RC release is green and reproducible.
-- No contract regressions in:
+- `v1.0.0` GA published successfully.
+- Contract invariants preserved:
   - compare findings (`tool_added` / `tool_removed` / `tool_changed`, `LLM05`)
   - OAuth cache invariants (`persistent=false` bypass, non-fatal provider bypass, local-only `cache rotate`)
-- No blocking regressions in CLI/runtime behavior.
 
 ## Post-1.0 Backlog
 

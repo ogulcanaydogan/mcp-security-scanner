@@ -994,6 +994,16 @@ This file records the actual implementation status after Sprint 8AD.
   - publish tag/version checks now normalize prerelease tag forms (`vX.Y.Z-rcN` -> `X.Y.ZrcN`) before comparing against package metadata
   - wheel CLI smoke, OIDC publish, Sigstore signing, idempotent GitHub Release, and PyPI visibility checks remain in place
 
+### v1.0.0 GA Finalization
+
+- GA completed from the `1.0.0rc2` stabilization snapshot:
+  - package metadata/version sources promoted to `1.0.0`
+  - no new runtime analyzers/transports/auth/cache providers were added in GA finalization
+- Contract posture remains unchanged from RC freeze:
+  - compare contract, OAuth cache invariants, and local-only `cache rotate` behavior are unchanged
+- Release posture remains unchanged:
+  - OIDC publish + Sigstore + idempotent GitHub Release + version/visibility guards continue as-is
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:

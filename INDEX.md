@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8AD scope.
+Current index for the implemented Sprint 1-8AD scope plus v1.0.0 GA finalization.
 
 ## Status Snapshot
 
@@ -52,6 +52,7 @@ Current index for the implemented Sprint 1-8AD scope.
 - Sprint 8AB: done (advanced OAuth cache backend v19 with Cloudflare KV API, env-token auth only, pre-provisioned KV key model)
 - Sprint 8AC: done (advanced OAuth cache backend v20 with GitLab group variables API, env-token auth only, pre-provisioned group variable model)
 - Sprint 8AD: done (v1.0 RC stabilization freeze with explicit backend contract lock and release-guard normalization for `v1.0.0-rcN` tags)
+- v1.0.0 GA: done (RC2 snapshot promoted to stable with feature freeze preserved and no runtime/CLI/auth/report contract changes)
 
 ## Top-Level Docs
 
