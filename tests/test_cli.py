@@ -2924,6 +2924,7 @@ class TestCLIHelpers:
                     "backend": "gitlab_variables",
                     "gitlab_project_id": "12345",
                     "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_environment_scope": "production",
                     "gitlab_token_env": "GITLAB_TOKEN_PROD",
                     "gitlab_api_url": "https://gitlab.example.com/api/v4",
                 }
@@ -2935,6 +2936,7 @@ class TestCLIHelpers:
         assert settings.backend == "gitlab_variables"
         assert settings.gitlab_project_id == "12345"
         assert settings.gitlab_variable_key == "MCP_OAUTH_CACHE"
+        assert settings.gitlab_environment_scope == "production"
         assert settings.gitlab_token_env == "GITLAB_TOKEN_PROD"
         assert settings.gitlab_api_url == "https://gitlab.example.com/api/v4"
 
@@ -2955,6 +2957,7 @@ class TestCLIHelpers:
 
         assert error is None
         assert settings is not None
+        assert settings.gitlab_environment_scope == "*"
         assert settings.gitlab_token_env == "GITLAB_TOKEN"
         assert settings.gitlab_api_url is None
 
@@ -2969,6 +2972,7 @@ class TestCLIHelpers:
                     "backend": "gitlab_group_variables",
                     "gitlab_group_id": "67890",
                     "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_environment_scope": "staging",
                     "gitlab_token_env": "GITLAB_TOKEN_PROD",
                     "gitlab_api_url": "https://gitlab.example.com/api/v4",
                 }
@@ -2980,6 +2984,7 @@ class TestCLIHelpers:
         assert settings.backend == "gitlab_group_variables"
         assert settings.gitlab_group_id == "67890"
         assert settings.gitlab_variable_key == "MCP_OAUTH_CACHE"
+        assert settings.gitlab_environment_scope == "staging"
         assert settings.gitlab_token_env == "GITLAB_TOKEN_PROD"
         assert settings.gitlab_api_url == "https://gitlab.example.com/api/v4"
 
@@ -3000,6 +3005,7 @@ class TestCLIHelpers:
 
         assert error is None
         assert settings is not None
+        assert settings.gitlab_environment_scope == "*"
         assert settings.gitlab_token_env == "GITLAB_TOKEN"
         assert settings.gitlab_api_url is None
 
@@ -3653,6 +3659,15 @@ class TestCLIHelpers:
                     "backend": "gitlab_variables",
                     "gitlab_project_id": "12345",
                     "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_environment_scope": "   ",
+                },
+                "auth.cache.gitlab_environment_scope must be a non-empty string when provided.",
+            ),
+            (
+                {
+                    "backend": "gitlab_variables",
+                    "gitlab_project_id": "12345",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
                     "gitlab_token_env": "9INVALID",
                 },
                 "auth.cache.gitlab_token_env must be a valid environment variable name.",
@@ -3668,6 +3683,10 @@ class TestCLIHelpers:
             ),
             (
                 {"backend": "local", "gitlab_project_id": "12345"},
+                "auth.cache.backend is 'gitlab_variables' or 'gitlab_group_variables'",
+            ),
+            (
+                {"backend": "local", "gitlab_environment_scope": "production"},
                 "auth.cache.backend is 'gitlab_variables' or 'gitlab_group_variables'",
             ),
             (
@@ -7189,8 +7208,8 @@ class TestCLIHelpers:
                 del kwargs
 
             def get(self, path: str, **kwargs: object) -> FakeResponse:
-                del kwargs
                 assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                assert kwargs.get("params") == {"filter[environment_scope]": "*"}
                 FakeGitLabClient.call_count += 1
                 if FakeGitLabClient.call_count == 1:
                     return FakeResponse(
@@ -7259,7 +7278,8 @@ class TestCLIHelpers:
                 del kwargs
 
             def get(self, path: str, **kwargs: object) -> FakeResponse:
-                del path, kwargs
+                assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                assert kwargs.get("params") == {"filter[environment_scope]": "*"}
                 FakeGitLabClient.call_count += 1
                 if FakeGitLabClient.call_count == 1:
                     return FakeResponse(status_code=404, json_data={})
@@ -7318,8 +7338,8 @@ class TestCLIHelpers:
                 self._get_calls = 0
 
             def get(self, path: str, **kwargs: object) -> FakeResponse:
-                del kwargs
                 assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                assert kwargs.get("params") == {"filter[environment_scope]": "*"}
                 self._get_calls += 1
                 if self._scenario == 1:
                     return FakeResponse(status_code=200, json_data={"value": "{}"})
@@ -7331,10 +7351,12 @@ class TestCLIHelpers:
 
             def put(self, path: str, **kwargs: object) -> FakeResponse:
                 assert path == "/projects/12345/variables/MCP_OAUTH_CACHE"
+                assert kwargs.get("params") == {"filter[environment_scope]": "*"}
                 if self._scenario == 1:
                     payload = kwargs.get("data")
                     assert isinstance(payload, dict)
                     assert isinstance(payload.get("value"), str)
+                    assert payload.get("environment_scope") == "*"
                     return FakeResponse(status_code=200, json_data={})
                 raise RuntimeError("post-write-failed")
 
@@ -7422,6 +7444,12 @@ class TestCLIHelpers:
         assert cli_module._build_gitlab_variable_path(cache_settings=group_settings) == (
             "/groups/67890/variables/MCP_OAUTH_CACHE"
         )
+        assert cli_module._build_gitlab_variable_query_params(cache_settings=project_settings) == {
+            "filter[environment_scope]": "*"
+        }
+        assert cli_module._build_gitlab_variable_query_params(cache_settings=group_settings) == {
+            "filter[environment_scope]": "*"
+        }
 
     def test_gitlab_group_read_and_write_use_group_variable_path(self, monkeypatch):
         """GitLab group backend should read/write through /groups/<id>/variables/<key> path."""
@@ -7439,8 +7467,8 @@ class TestCLIHelpers:
                 if self.status_code >= 400:
                     raise RuntimeError(f"status={self.status_code}")
 
-        saw_get_paths: list[str] = []
-        saw_put_paths: list[str] = []
+        saw_get_requests: list[tuple[str, object]] = []
+        saw_put_requests: list[tuple[str, object, object]] = []
         scenario = {"value": 0}
 
         class FakeGitLabClient:
@@ -7449,8 +7477,7 @@ class TestCLIHelpers:
                 del kwargs
 
             def get(self, path: str, **kwargs: object) -> FakeResponse:
-                del kwargs
-                saw_get_paths.append(path)
+                saw_get_requests.append((path, kwargs.get("params")))
                 if scenario["value"] == 0:
                     scenario["value"] = 1
                     return FakeResponse(
@@ -7464,10 +7491,11 @@ class TestCLIHelpers:
                 return FakeResponse(status_code=200, json_data={"value": "{}"})
 
             def put(self, path: str, **kwargs: object) -> FakeResponse:
-                saw_put_paths.append(path)
+                saw_put_requests.append((path, kwargs.get("params"), kwargs.get("data")))
                 payload = kwargs.get("data")
                 assert isinstance(payload, dict)
                 assert isinstance(payload.get("value"), str)
+                assert payload.get("environment_scope") == "production"
                 return FakeResponse(status_code=200, json_data={})
 
             def close(self) -> None:
@@ -7481,6 +7509,7 @@ class TestCLIHelpers:
             backend="gitlab_group_variables",
             gitlab_group_id="67890",
             gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_environment_scope="production",
             gitlab_token_env="GITLAB_TOKEN",
             gitlab_api_url="https://gitlab.example.com/api/v4",
         )
@@ -7490,8 +7519,12 @@ class TestCLIHelpers:
 
         assert isinstance(payload, dict)
         assert wrote is True
-        assert saw_get_paths[0] == "/groups/67890/variables/MCP_OAUTH_CACHE"
-        assert saw_put_paths[0] == "/groups/67890/variables/MCP_OAUTH_CACHE"
+        assert saw_get_requests[0] == (
+            "/groups/67890/variables/MCP_OAUTH_CACHE",
+            {"filter[environment_scope]": "production"},
+        )
+        assert saw_put_requests[0][0] == "/groups/67890/variables/MCP_OAUTH_CACHE"
+        assert saw_put_requests[0][1] == {"filter[environment_scope]": "production"}
 
     def test_persist_gitlab_removes_deleted_in_memory_entry(self, monkeypatch):
         """GitLab persister should remove cache key when in-memory entry is missing."""

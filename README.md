@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-8AB)
+## Capability Snapshot (Sprint 1-9A)
 
 | Area | Status |
 |---|---|
@@ -75,6 +75,7 @@ flowchart LR
 - OAuth cache provider expansion (Sprint 8AC): added `gitlab_group_variables` backend (env-token auth, pre-provisioned group variable model)
 - v1.0 RC stabilization (Sprint 8AD): feature-freeze with backend contract lock, RC-safe tag/version normalization (`v1.0.0-rcN` -> `1.0.0rcN`) in publish guards, and post-1.0 deferred-provider positioning
 - v1.0.0 GA finalization: RC2 snapshot promoted to stable without runtime/CLI/auth/report contract changes
+- Post-1.0 provider v2 expansion (Sprint 9A): GitLab project/group variable backends now support optional `gitlab_environment_scope` (default `*`)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -666,6 +667,7 @@ Notes:
   - `gitlab_project_id` (required when `backend=gitlab_variables`, numeric project ID)
   - `gitlab_group_id` (required when `backend=gitlab_group_variables`, numeric group ID)
   - `gitlab_variable_key` (required when `backend=gitlab_variables` or `backend=gitlab_group_variables`, env-style key)
+  - optional `gitlab_environment_scope` (default `*`, only for `backend=gitlab_variables` or `backend=gitlab_group_variables`)
   - optional `gitlab_token_env` (default `GITLAB_TOKEN`)
   - optional `gitlab_api_url` (`https` URL; defaults to `https://gitlab.com/api/v4`)
   - `github_repository` (required when `backend=github_actions_variables` or `backend=github_environment_variables`, format `<owner>/<repo>`)
@@ -767,14 +769,16 @@ Notes:
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - `backend=gitlab_variables`:
     - cache payload is stored as a single JSON envelope in configured GitLab project variable value
-      (`auth.cache.gitlab_project_id` / `auth.cache.gitlab_variable_key`)
+      (`auth.cache.gitlab_project_id` / `auth.cache.gitlab_variable_key` / `auth.cache.gitlab_environment_scope`)
     - auth uses env token only (`auth.cache.gitlab_token_env`, default `GITLAB_TOKEN`)
+    - `auth.cache.gitlab_environment_scope` is optional and defaults to `*`
     - variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - `backend=gitlab_group_variables`:
     - cache payload is stored as a single JSON envelope in configured GitLab group variable value
-      (`auth.cache.gitlab_group_id` / `auth.cache.gitlab_variable_key`)
+      (`auth.cache.gitlab_group_id` / `auth.cache.gitlab_variable_key` / `auth.cache.gitlab_environment_scope`)
     - auth uses env token only (`auth.cache.gitlab_token_env`, default `GITLAB_TOKEN`)
+    - `auth.cache.gitlab_environment_scope` is optional and defaults to `*`
     - variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - `backend=github_actions_variables`:
@@ -903,8 +907,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.0` GA is completed from the RC2 stabilization snapshot.
-- Next feature work re-opens in post-1.0 provider backlog under the same contract baseline.
+- `1.0.1` patch release with GitLab scope v2 (`gitlab_environment_scope`) for existing GitLab cache backends.
+- Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
