@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8X Implementation State
+# Setup Complete — Sprint 1-8Y Implementation State
 
-This file records the actual implementation status after Sprint 8X.
+This file records the actual implementation status after Sprint 8Y.
 
 ## Completed Work
 
@@ -842,6 +842,41 @@ This file records the actual implementation status after Sprint 8X.
   - `persistent=false` now explicitly verified across all supported backends for hydration/persist bypass behavior
   - non-fatal backend error model, dispatch contract, compare contract, and local-only `cache rotate` invariants remain enforced
 
+### Sprint 8Y (Consul KV Backend v1)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+    - `doppler_secrets`
+    - `onepassword_connect`
+    - `bitwarden_secrets`
+    - `infisical_secrets`
+    - `akeyless_secrets`
+    - `gitlab_variables`
+    - `github_actions_variables`
+    - `github_environment_variables`
+    - `github_organization_variables`
+    - `consul_kv`
+- Consul backend contract:
+  - required: `consul_key_path`
+  - optional: `consul_token_env` (default `CONSUL_HTTP_TOKEN`), `consul_api_url` (`http/https`, default `http://127.0.0.1:8500`)
+  - pre-provisioned model (scanner does not auto-create missing Consul KV keys)
+- Consul backend behavior:
+  - auth uses env token only (`consul_token_env` / `CONSUL_HTTP_TOKEN`)
+  - reads/writes JSON envelope in configured Consul KV key
+  - key path is URL-encoded (with `/` preserved) for API calls
+  - provider/read/write/parse/auth/network errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -854,7 +889,7 @@ This file records the actual implementation status after Sprint 8X.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, and `github_organization_variables`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, and `consul_kv`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

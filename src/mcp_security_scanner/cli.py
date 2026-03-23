@@ -68,6 +68,7 @@ _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES = "gitlab_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES = "github_actions_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variables"
+_OAUTH_CACHE_BACKEND_CONSUL_KV = "consul_kv"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -86,6 +87,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES,
+    _OAUTH_CACHE_BACKEND_CONSUL_KV,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -106,6 +108,7 @@ _INFISICAL_DEFAULT_API_URL = "https://app.infisical.com/api"
 _AKEYLESS_DEFAULT_API_URL = "https://api.akeyless.io"
 _GITLAB_DEFAULT_API_URL = "https://gitlab.com/api/v4"
 _GITHUB_DEFAULT_API_URL = "https://api.github.com"
+_CONSUL_DEFAULT_API_URL = "http://127.0.0.1:8500"
 
 
 @dataclass(frozen=True)
@@ -165,6 +168,9 @@ class OAuthCacheSettings:
     github_variable_name: str | None = None
     github_token_env: str | None = None
     github_api_url: str | None = None
+    consul_key_path: str | None = None
+    consul_token_env: str | None = None
+    consul_api_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2325,6 +2331,9 @@ def _coerce_oauth_cache_settings(
             "github_variable_name",
             "github_token_env",
             "github_api_url",
+            "consul_key_path",
+            "consul_token_env",
+            "consul_api_url",
         }
     ]
     if unknown_fields:
@@ -2343,7 +2352,7 @@ def _coerce_oauth_cache_settings(
             "infisical_api_url, akeyless_secret_name, akeyless_token_env, akeyless_api_url, "
             "gitlab_project_id, gitlab_variable_key, gitlab_token_env, gitlab_api_url, "
             "github_repository, github_organization, github_environment_name, github_variable_name, "
-            "github_token_env, github_api_url.",
+            "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2819,6 +2828,35 @@ def _coerce_oauth_cache_settings(
         if parsed_github_api_url.scheme != "https" or not parsed_github_api_url.netloc:
             return None, "auth.cache.github_api_url must be a valid https URL."
 
+    consul_key_path_value = cache_value.get("consul_key_path")
+    if consul_key_path_value is not None and (
+        not isinstance(consul_key_path_value, str) or not consul_key_path_value.strip()
+    ):
+        return None, "auth.cache.consul_key_path must be a non-empty string when provided."
+    consul_key_path = consul_key_path_value.strip() if isinstance(consul_key_path_value, str) else None
+    if consul_key_path is not None and not _is_valid_consul_key_path(consul_key_path):
+        return None, "auth.cache.consul_key_path must be a valid Consul KV path."
+
+    consul_token_env_value = cache_value.get("consul_token_env")
+    if consul_token_env_value is not None and (
+        not isinstance(consul_token_env_value, str) or not consul_token_env_value.strip()
+    ):
+        return None, "auth.cache.consul_token_env must be a non-empty string when provided."
+    consul_token_env = consul_token_env_value.strip() if isinstance(consul_token_env_value, str) else None
+    if consul_token_env is not None and not _is_valid_env_var_name(consul_token_env):
+        return None, "auth.cache.consul_token_env must be a valid environment variable name."
+
+    consul_api_url_value = cache_value.get("consul_api_url")
+    if consul_api_url_value is not None and (
+        not isinstance(consul_api_url_value, str) or not consul_api_url_value.strip()
+    ):
+        return None, "auth.cache.consul_api_url must be a non-empty string when provided."
+    consul_api_url = consul_api_url_value.strip() if isinstance(consul_api_url_value, str) else None
+    if consul_api_url is not None:
+        parsed_consul_api_url = urlparse(consul_api_url)
+        if parsed_consul_api_url.scheme not in {"http", "https"} or not parsed_consul_api_url.netloc:
+            return None, "auth.cache.consul_api_url must be a valid http/https URL."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -2990,6 +3028,20 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.github_organization is required when auth.cache.backend='github_organization_variables'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_CONSUL_KV and (
+        consul_key_path is not None or consul_token_env is not None or consul_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.consul_key_path, auth.cache.consul_token_env, and auth.cache.consul_api_url are "
+            "only supported when auth.cache.backend='consul_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_CONSUL_KV and consul_key_path is None:
+        return (
+            None,
+            "auth.cache.consul_key_path is required when auth.cache.backend='consul_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -3930,6 +3982,13 @@ def _coerce_oauth_cache_settings(
                 )
             ),
             github_api_url=github_api_url,
+            consul_key_path=consul_key_path,
+            consul_token_env=(
+                consul_token_env
+                if consul_token_env is not None
+                else ("CONSUL_HTTP_TOKEN" if backend == _OAUTH_CACHE_BACKEND_CONSUL_KV else None)
+            ),
+            consul_api_url=consul_api_url,
         ),
         None,
     )
@@ -4022,6 +4081,14 @@ def _is_valid_github_organization(value: str) -> bool:
 def _is_valid_github_variable_name(value: str) -> bool:
     """Validate GitHub Actions variable naming shape."""
     return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", value) is not None
+
+
+def _is_valid_consul_key_path(value: str) -> bool:
+    """Validate Consul KV key path shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.\-/]{1,512}", normalized) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -5751,6 +5818,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_github_environment(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES:
         return _load_oauth_persistent_cache_entries_from_github_organization(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_CONSUL_KV:
+        return _load_oauth_persistent_cache_entries_from_consul(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -5822,6 +5891,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES:
         _persist_oauth_cache_entry_github_organization(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_CONSUL_KV:
+        _persist_oauth_cache_entry_consul(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -8200,6 +8272,155 @@ def _write_oauth_cache_payload_to_github_organization(
                     "value": serialized_payload,
                 },
             )
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_consul(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Consul KV value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_consul(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_consul(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Consul KV value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_consul(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_consul(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_consul_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Consul API client for OAuth cache backend."""
+    token_env_name = cache_settings.consul_token_env or "CONSUL_HTTP_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.consul_api_url or _CONSUL_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "X-Consul-Token": token_value,
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _build_consul_kv_path(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build Consul KV API path from validated cache settings."""
+    if cache_settings.consul_key_path is None:
+        return None
+    normalized_key = cache_settings.consul_key_path.strip().strip("/")
+    if not normalized_key:
+        return None
+    encoded_key = quote(normalized_key, safe="/")
+    return f"/v1/kv/{encoded_key}"
+
+
+def _read_oauth_cache_payload_from_consul(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned Consul KV key value."""
+    path = _build_consul_kv_path(cache_settings=cache_settings)
+    if path is None:
+        return None
+
+    client = _build_consul_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        try:
+            response = client.get(path, params={"raw": "true"})
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        raw_payload = response.text
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_consul(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing Consul KV key value."""
+    path = _build_consul_kv_path(cache_settings=cache_settings)
+    if path is None:
+        return False
+
+    client = _build_consul_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        # Pre-provisioned mode: require key to already exist.
+        try:
+            preflight_response = client.get(path, params={"raw": "true"})
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.put(path, content=serialized_payload)
         except Exception:
             return False
         if response.status_code == 404:

@@ -2106,6 +2106,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_akeyless_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_gitlab_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_github_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_consul_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -3093,6 +3094,48 @@ class TestCLIHelpers:
         assert settings.github_token_env == "GITHUB_TOKEN"
         assert settings.github_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_consul_backend(self):
+        """OAuth cache settings should accept consul_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "consul_kv",
+                    "consul_key_path": "mcp/security/oauth/cache",
+                    "consul_token_env": "CONSUL_HTTP_TOKEN_PROD",
+                    "consul_api_url": "https://consul.example.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "consul_kv"
+        assert settings.consul_key_path == "mcp/security/oauth/cache"
+        assert settings.consul_token_env == "CONSUL_HTTP_TOKEN_PROD"
+        assert settings.consul_api_url == "https://consul.example.com"
+
+    def test_coerce_oauth_cache_settings_sets_consul_defaults(self):
+        """OAuth cache settings should apply default consul_kv optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "consul_kv",
+                    "consul_key_path": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.consul_token_env == "CONSUL_HTTP_TOKEN"
+        assert settings.consul_api_url is None
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3635,6 +3678,37 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "github_organization": "ogulcanaydogan"},
                 "auth.cache.github_organization is only supported when auth.cache.backend='github_organization_variables'.",
+            ),
+            (
+                {"backend": "consul_kv"},
+                "auth.cache.consul_key_path is required",
+            ),
+            (
+                {
+                    "backend": "consul_kv",
+                    "consul_key_path": "invalid key path",
+                },
+                "auth.cache.consul_key_path must be a valid Consul KV path.",
+            ),
+            (
+                {
+                    "backend": "consul_kv",
+                    "consul_key_path": "mcp/security/oauth/cache",
+                    "consul_token_env": "9INVALID",
+                },
+                "auth.cache.consul_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "consul_kv",
+                    "consul_key_path": "mcp/security/oauth/cache",
+                    "consul_api_url": "ftp://consul.example.com",
+                },
+                "auth.cache.consul_api_url must be a valid http/https URL.",
+            ),
+            (
+                {"backend": "local", "consul_key_path": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='consul_kv'",
             ),
         ],
     )
@@ -7955,6 +8029,245 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_build_consul_kv_path_encodes_key_path(self):
+        """Consul KV path builder should URL-encode key segments while preserving slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="consul-prod",
+            backend="consul_kv",
+            consul_key_path="mcp security/oauth cache",
+        )
+
+        path = cli_module._build_consul_kv_path(cache_settings=settings)
+
+        assert path == "/v1/kv/mcp%20security/oauth%20cache"
+
+    def test_read_consul_payload_parses_raw_value(self, monkeypatch):
+        """Consul reader should parse envelope from raw KV response body."""
+        monkeypatch.setenv("CONSUL_HTTP_TOKEN", "consul-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, text: str) -> None:
+                self.status_code = status_code
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeConsulClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v1/kv/mcp/security/oauth/cache"
+                assert kwargs.get("params") == {"raw": "true"}
+                FakeConsulClient.call_count += 1
+                if FakeConsulClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        text=json.dumps({"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}),
+                    )
+                return FakeResponse(status_code=200, text="")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeConsulClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="consul-prod",
+            backend="consul_kv",
+            consul_key_path="mcp/security/oauth/cache",
+            consul_token_env="CONSUL_HTTP_TOKEN",
+            consul_api_url="https://consul.example.com",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_consul(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_consul(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+
+    def test_read_consul_payload_bypasses_errors_and_missing_key(self, monkeypatch):
+        """Consul reader should fail closed for errors and map missing key to empty envelope."""
+        monkeypatch.setenv("CONSUL_HTTP_TOKEN", "consul-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, text: str) -> None:
+                self.status_code = status_code
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeConsulClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                FakeConsulClient.call_count += 1
+                if FakeConsulClient.call_count == 1:
+                    return FakeResponse(status_code=404, text="")
+                if FakeConsulClient.call_count == 2:
+                    return FakeResponse(status_code=500, text="")
+                return FakeResponse(status_code=200, text="{invalid-json")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeConsulClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="consul-prod",
+            backend="consul_kv",
+            consul_key_path="mcp/security/oauth/cache",
+            consul_token_env="CONSUL_HTTP_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_consul(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_consul(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_consul(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+
+    def test_consul_write_success_and_bypass_paths(self, monkeypatch):
+        """Consul writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("CONSUL_HTTP_TOKEN", "consul-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, text: str = "") -> None:
+                self.status_code = status_code
+                self.text = text
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeConsulClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeConsulClient.init_count += 1
+                self._scenario = FakeConsulClient.init_count
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v1/kv/mcp/security/oauth/cache"
+                assert kwargs.get("params") == {"raw": "true"}
+                if self._scenario == 1:
+                    return FakeResponse(status_code=200, text="{}")
+                if self._scenario == 2:
+                    return FakeResponse(status_code=404)
+                if self._scenario == 3:
+                    return FakeResponse(status_code=500)
+                return FakeResponse(status_code=200, text="{}")
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v1/kv/mcp/security/oauth/cache"
+                if self._scenario == 1:
+                    payload = kwargs.get("content")
+                    assert isinstance(payload, str)
+                    return FakeResponse(status_code=200)
+                raise RuntimeError("post-write-failed")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeConsulClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="consul-prod",
+            backend="consul_kv",
+            consul_key_path="mcp/security/oauth/cache",
+            consul_token_env="CONSUL_HTTP_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_consul(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_consul(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_consul(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_consul(cache_settings=settings, entries={}) is False
+
+    def test_consul_build_client_and_required_guards(self, monkeypatch):
+        """Consul helpers should fail closed when token/url/key identity is missing."""
+        monkeypatch.delenv("CONSUL_HTTP_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="consul-prod",
+            backend="consul_kv",
+            consul_key_path="mcp/security/oauth/cache",
+            consul_token_env="CONSUL_HTTP_TOKEN",
+        )
+        assert cli_module._build_consul_http_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_consul(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_consul(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("CONSUL_HTTP_TOKEN", "token")
+        assert (
+            cli_module._build_consul_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="consul-prod",
+                    backend="consul_kv",
+                    consul_key_path="mcp/security/oauth/cache",
+                    consul_token_env="CONSUL_HTTP_TOKEN",
+                    consul_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="consul-prod",
+            backend="consul_kv",
+            consul_key_path=None,
+            consul_token_env="CONSUL_HTTP_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_consul(cache_settings=missing_settings) is None
+        assert cli_module._write_oauth_cache_payload_to_consul(cache_settings=missing_settings, entries={}) is False
+
+    def test_persist_consul_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Consul persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_consul",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_consul", fake_write)
+
+        cli_module._persist_oauth_cache_entry_consul(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="consul-prod",
+                backend="consul_kv",
+                consul_key_path="mcp/security/oauth/cache",
+                consul_token_env="CONSUL_HTTP_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -9751,6 +10064,7 @@ class TestCLIHelpers:
             ("github_actions_variables", "_load_oauth_persistent_cache_entries_from_github"),
             ("github_environment_variables", "_load_oauth_persistent_cache_entries_from_github_environment"),
             ("github_organization_variables", "_load_oauth_persistent_cache_entries_from_github_organization"),
+            ("consul_kv", "_load_oauth_persistent_cache_entries_from_consul"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -9775,6 +10089,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_github",
             "_load_oauth_persistent_cache_entries_from_github_environment",
             "_load_oauth_persistent_cache_entries_from_github_organization",
+            "_load_oauth_persistent_cache_entries_from_consul",
         }
 
         for name in backend_loaders:
@@ -9820,6 +10135,7 @@ class TestCLIHelpers:
             ("github_actions_variables", "_persist_oauth_cache_entry_github"),
             ("github_environment_variables", "_persist_oauth_cache_entry_github_environment"),
             ("github_organization_variables", "_persist_oauth_cache_entry_github_organization"),
+            ("consul_kv", "_persist_oauth_cache_entry_consul"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -9844,6 +10160,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_github",
             "_persist_oauth_cache_entry_github_environment",
             "_persist_oauth_cache_entry_github_organization",
+            "_persist_oauth_cache_entry_consul",
         }
 
         for name in backend_persisters:
@@ -10182,6 +10499,20 @@ class TestCLIHelpers:
                     github_variable_name="MCP_OAUTH_CACHE",
                     github_token_env="GITHUB_TOKEN",
                     github_api_url="https://api.github.com",
+                ),
+            ),
+            (
+                "_build_consul_http_client",
+                None,
+                "_read_oauth_cache_payload_from_consul",
+                "_write_oauth_cache_payload_to_consul",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="consul_kv",
+                    consul_key_path="mcp/security/oauth/cache",
+                    consul_token_env="CONSUL_HTTP_TOKEN",
+                    consul_api_url="https://consul.example.com",
                 ),
             ),
         ],
