@@ -73,6 +73,7 @@ _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variab
 _OAUTH_CACHE_BACKEND_CONSUL_KV = "consul_kv"
 _OAUTH_CACHE_BACKEND_REDIS_KV = "redis_kv"
 _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV = "cloudflare_kv"
+_OAUTH_CACHE_BACKEND_ETCD_KV = "etcd_kv"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -95,6 +96,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_CONSUL_KV,
     _OAUTH_CACHE_BACKEND_REDIS_KV,
     _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV,
+    _OAUTH_CACHE_BACKEND_ETCD_KV,
 }
 _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_load_oauth_persistent_cache_entries_from_aws",
@@ -117,6 +119,7 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
     _OAUTH_CACHE_BACKEND_CONSUL_KV: "_load_oauth_persistent_cache_entries_from_consul",
     _OAUTH_CACHE_BACKEND_REDIS_KV: "_load_oauth_persistent_cache_entries_from_redis",
     _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: "_load_oauth_persistent_cache_entries_from_cloudflare",
+    _OAUTH_CACHE_BACKEND_ETCD_KV: "_load_oauth_persistent_cache_entries_from_etcd",
 }
 _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_persist_oauth_cache_entry_aws",
@@ -139,6 +142,7 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
     _OAUTH_CACHE_BACKEND_CONSUL_KV: "_persist_oauth_cache_entry_consul",
     _OAUTH_CACHE_BACKEND_REDIS_KV: "_persist_oauth_cache_entry_redis",
     _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: "_persist_oauth_cache_entry_cloudflare",
+    _OAUTH_CACHE_BACKEND_ETCD_KV: "_persist_oauth_cache_entry_etcd",
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -162,6 +166,7 @@ _GITHUB_DEFAULT_API_URL = "https://api.github.com"
 _CONSUL_DEFAULT_API_URL = "http://127.0.0.1:8500"
 _REDIS_DEFAULT_URL = "redis://127.0.0.1:6379/0"
 _CLOUDFLARE_DEFAULT_API_URL = "https://api.cloudflare.com/client/v4"
+_ETCD_DEFAULT_API_URL = "http://127.0.0.1:2379"
 
 
 @dataclass(frozen=True)
@@ -234,6 +239,9 @@ class OAuthCacheSettings:
     cf_kv_key: str | None = None
     cf_api_token_env: str | None = None
     cf_api_url: str | None = None
+    etcd_key: str | None = None
+    etcd_api_url: str | None = None
+    etcd_token_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2407,6 +2415,9 @@ def _coerce_oauth_cache_settings(
             "cf_kv_key",
             "cf_api_token_env",
             "cf_api_url",
+            "etcd_key",
+            "etcd_api_url",
+            "etcd_token_env",
         }
     ]
     if unknown_fields:
@@ -2428,7 +2439,7 @@ def _coerce_oauth_cache_settings(
             "github_repository, github_organization, github_environment_name, github_variable_name, "
             "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url, "
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
-            "cf_api_token_env, cf_api_url.",
+            "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -3024,6 +3035,31 @@ def _coerce_oauth_cache_settings(
         if parsed_cf_api_url.scheme != "https" or not parsed_cf_api_url.netloc:
             return None, "auth.cache.cf_api_url must be a valid https URL."
 
+    etcd_key_value = cache_value.get("etcd_key")
+    if etcd_key_value is not None and (not isinstance(etcd_key_value, str) or not etcd_key_value.strip()):
+        return None, "auth.cache.etcd_key must be a non-empty string when provided."
+    etcd_key = etcd_key_value.strip() if isinstance(etcd_key_value, str) else None
+    if etcd_key is not None and not _is_valid_etcd_key(etcd_key):
+        return None, "auth.cache.etcd_key must be a valid etcd key path."
+
+    etcd_api_url_value = cache_value.get("etcd_api_url")
+    if etcd_api_url_value is not None and (not isinstance(etcd_api_url_value, str) or not etcd_api_url_value.strip()):
+        return None, "auth.cache.etcd_api_url must be a non-empty string when provided."
+    etcd_api_url = etcd_api_url_value.strip() if isinstance(etcd_api_url_value, str) else None
+    if etcd_api_url is not None:
+        parsed_etcd_api_url = urlparse(etcd_api_url)
+        if parsed_etcd_api_url.scheme not in {"http", "https"} or not parsed_etcd_api_url.netloc:
+            return None, "auth.cache.etcd_api_url must be a valid http/https URL."
+
+    etcd_token_env_value = cache_value.get("etcd_token_env")
+    if etcd_token_env_value is not None and (
+        not isinstance(etcd_token_env_value, str) or not etcd_token_env_value.strip()
+    ):
+        return None, "auth.cache.etcd_token_env must be a non-empty string when provided."
+    etcd_token_env = etcd_token_env_value.strip() if isinstance(etcd_token_env_value, str) else None
+    if etcd_token_env is not None and not _is_valid_env_var_name(etcd_token_env):
+        return None, "auth.cache.etcd_token_env must be a valid environment variable name."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3275,6 +3311,20 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.cf_kv_key is required when auth.cache.backend='cloudflare_kv'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_ETCD_KV and (
+        etcd_key is not None or etcd_api_url is not None or etcd_token_env is not None
+    ):
+        return (
+            None,
+            "auth.cache.etcd_key, auth.cache.etcd_api_url, and auth.cache.etcd_token_env are only "
+            "supported when auth.cache.backend='etcd_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_ETCD_KV and etcd_key is None:
+        return (
+            None,
+            "auth.cache.etcd_key is required when auth.cache.backend='etcd_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -4264,6 +4314,17 @@ def _coerce_oauth_cache_settings(
                 if cf_api_url is not None
                 else (_CLOUDFLARE_DEFAULT_API_URL if backend == _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV else None)
             ),
+            etcd_key=etcd_key,
+            etcd_api_url=(
+                etcd_api_url
+                if etcd_api_url is not None
+                else (_ETCD_DEFAULT_API_URL if backend == _OAUTH_CACHE_BACKEND_ETCD_KV else None)
+            ),
+            etcd_token_env=(
+                etcd_token_env
+                if etcd_token_env is not None
+                else ("ETCD_TOKEN" if backend == _OAUTH_CACHE_BACKEND_ETCD_KV else None)
+            ),
         ),
         None,
     )
@@ -4373,6 +4434,14 @@ def _is_valid_consul_key_path(value: str) -> bool:
 
 def _is_valid_redis_key(value: str) -> bool:
     """Validate Redis key path shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_etcd_key(value: str) -> bool:
+    """Validate etcd v3 key path shape."""
     normalized = value.strip().strip("/")
     if not normalized:
         return False
@@ -9080,6 +9149,189 @@ def _write_oauth_cache_payload_to_cloudflare(
 
         try:
             response = client.put(path, content=serialized_payload, headers={"content-type": "application/json"})
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_etcd(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from etcd v3 KV value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_etcd(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_etcd(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to etcd v3 KV value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_etcd(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_etcd(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_etcd_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create etcd v3 JSON API client for OAuth cache backend."""
+    api_url = (cache_settings.etcd_api_url or _ETCD_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    token_env_name = cache_settings.etcd_token_env or "ETCD_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    headers: dict[str, str] = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if token_value:
+        headers["Authorization"] = f"Bearer {token_value}"
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers=headers,
+        )
+    except Exception:
+        return None
+
+
+def _build_etcd_kv_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build etcd key from validated cache settings."""
+    if cache_settings.etcd_key is None:
+        return None
+    normalized_key = cache_settings.etcd_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _read_oauth_cache_payload_from_etcd(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned etcd v3 key value."""
+    key_name = _build_etcd_kv_key(cache_settings=cache_settings)
+    if key_name is None:
+        return None
+
+    client = _build_etcd_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    encoded_key = base64.b64encode(key_name.encode("utf-8")).decode("utf-8")
+    try:
+        try:
+            response = client.post("/v3/kv/range", json={"key": encoded_key})
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            response_body = response.json()
+        except Exception:
+            return None
+        if not isinstance(response_body, dict):
+            return None
+
+        kvs_value = response_body.get("kvs")
+        if not isinstance(kvs_value, list) or not kvs_value:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        first_kv = kvs_value[0]
+        if not isinstance(first_kv, dict):
+            return None
+        encoded_payload_value = first_kv.get("value")
+        if not isinstance(encoded_payload_value, str) or not encoded_payload_value.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            payload_text = base64.b64decode(encoded_payload_value.encode("utf-8")).decode("utf-8")
+        except Exception:
+            return None
+        if not payload_text.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_etcd(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to existing etcd v3 key value."""
+    key_name = _build_etcd_kv_key(cache_settings=cache_settings)
+    if key_name is None:
+        return False
+
+    client = _build_etcd_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    encoded_key = base64.b64encode(key_name.encode("utf-8")).decode("utf-8")
+    try:
+        # Pre-provisioned mode: require key to already exist.
+        try:
+            preflight_response = client.post("/v3/kv/range", json={"key": encoded_key})
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+        try:
+            preflight_body = preflight_response.json()
+        except Exception:
+            return False
+        if not isinstance(preflight_body, dict):
+            return False
+        preflight_kvs = preflight_body.get("kvs")
+        if not isinstance(preflight_kvs, list) or not preflight_kvs:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        encoded_payload = base64.b64encode(serialized_payload.encode("utf-8")).decode("utf-8")
+
+        try:
+            response = client.post("/v3/kv/put", json={"key": encoded_key, "value": encoded_payload})
         except Exception:
             return False
         if response.status_code == 404:

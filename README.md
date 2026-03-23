@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9B)
+## Capability Snapshot (Sprint 1-9D)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke + tag/version consistency guard (`pyproject`/`__version__`/wheel/CLI) + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -78,6 +78,7 @@ flowchart LR
 - Post-1.0 provider v2 expansion (Sprint 9A): GitLab project/group variable backends now support optional `gitlab_environment_scope` (default `*`)
 - Post-1.0 provider v2 expansion (Sprint 9B): GitHub organization variable backend preserves existing visibility (`all` / `private` / `selected`) during cache updates
 - Post-1.0 stabilization hardening (Sprint 9C): OAuth cache dispatch error paths fail closed (`load -> {}`, `persist -> no-op`) and publish visibility verification uses explicit PyPI index/no-cache flags
+- Post-1.0 provider expansion (Sprint 9D): added `etcd_kv` backend (etcd v3 JSON API, env-token auth, pre-provisioned key model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -559,6 +560,24 @@ Supported entry styles:
         }
       }
     },
+    "remote-oauth-etcd-cache": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "auth": {
+        "type": "oauth_client_credentials",
+        "token_url": "https://auth.example.com/oauth/token",
+        "client_id_env": "MCP_OAUTH_CLIENT_ID",
+        "client_secret_env": "MCP_OAUTH_CLIENT_SECRET",
+        "cache": {
+          "persistent": true,
+          "namespace": "prod-security",
+          "backend": "etcd_kv",
+          "etcd_key": "mcp/security/oauth/cache",
+          "etcd_api_url": "https://etcd.example.com:2379",
+          "etcd_token_env": "ETCD_TOKEN"
+        }
+      }
+    },
     "remote-device-oauth": {
       "transport": "sse",
       "url": "https://example.com/sse",
@@ -626,7 +645,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, or `cloudflare_kv`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, or `etcd_kv`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -689,6 +708,9 @@ Notes:
   - `cf_kv_key` (required when `backend=cloudflare_kv`, Cloudflare KV key)
   - optional `cf_api_token_env` (default `CLOUDFLARE_API_TOKEN`)
   - optional `cf_api_url` (`https` URL; defaults to `https://api.cloudflare.com/client/v4`)
+  - `etcd_key` (required when `backend=etcd_kv`, etcd v3 key path)
+  - optional `etcd_api_url` (`http/https` URL; defaults to `http://127.0.0.1:2379`)
+  - optional `etcd_token_env` (default `ETCD_TOKEN`)
 - cache lookup order for OAuth:
   - in-memory
   - persistent disk cache (`auth.cache.persistent=true`)
@@ -825,6 +847,12 @@ Notes:
     - key must be pre-provisioned; scanner updates existing key value and does not auto-create missing keys
     - account/namespace/key path segments are URL-encoded before API calls
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=etcd_kv`:
+    - cache payload is stored as a single JSON envelope in configured etcd v3 key (`auth.cache.etcd_key`)
+    - auth uses env token when present (`auth.cache.etcd_token_env`, default `ETCD_TOKEN`); missing token falls back to auth-less client
+    - key must be pre-provisioned; scanner updates existing key value and does not auto-create missing keys
+    - read uses `POST /v3/kv/range` with base64 key, write uses `POST /v3/kv/put` with base64 key/value
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - backend read/write/decrypt/parse failures are non-fatal; scanner falls back to live token flow
 - `oauth_device_code` uses copy/paste UX (`verification_uri` + `user_code`) and supports refresh-token reuse on expiry
 - in headless/CI environments (no interactive TTY), `oauth_device_code` entries produce `auth_token_error` and scan continues
@@ -911,8 +939,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.3` patch release with post-1.0 stabilization hardening for OAuth cache dispatch and publish visibility checks.
+- `1.0.4` patch release with `etcd_kv` backend onboarding (etcd v3 JSON API, pre-provisioned key model).
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, and `etcd_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

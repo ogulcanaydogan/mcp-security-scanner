@@ -2109,6 +2109,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_consul_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_redis_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_cloudflare_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_etcd_http_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -3279,6 +3280,48 @@ class TestCLIHelpers:
         assert settings.cf_api_token_env == "CLOUDFLARE_API_TOKEN"
         assert settings.cf_api_url == "https://api.cloudflare.com/client/v4"
 
+    def test_coerce_oauth_cache_settings_accepts_etcd_backend(self):
+        """OAuth cache settings should accept etcd_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "etcd_kv",
+                    "etcd_key": "mcp/security/oauth/cache",
+                    "etcd_api_url": "https://etcd.example.com:2379",
+                    "etcd_token_env": "ETCD_TOKEN_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "etcd_kv"
+        assert settings.etcd_key == "mcp/security/oauth/cache"
+        assert settings.etcd_api_url == "https://etcd.example.com:2379"
+        assert settings.etcd_token_env == "ETCD_TOKEN_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_etcd_defaults(self):
+        """OAuth cache settings should apply default etcd_kv optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "etcd_kv",
+                    "etcd_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.etcd_api_url == "http://127.0.0.1:2379"
+        assert settings.etcd_token_env == "ETCD_TOKEN"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3987,6 +4030,37 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "cf_account_id": "1234567890abcdef1234567890abcdef"},
                 "only supported when auth.cache.backend='cloudflare_kv'",
+            ),
+            (
+                {"backend": "etcd_kv"},
+                "auth.cache.etcd_key is required",
+            ),
+            (
+                {
+                    "backend": "etcd_kv",
+                    "etcd_key": "invalid key",
+                },
+                "auth.cache.etcd_key must be a valid etcd key path.",
+            ),
+            (
+                {
+                    "backend": "etcd_kv",
+                    "etcd_key": "mcp/security/oauth/cache",
+                    "etcd_token_env": "9INVALID",
+                },
+                "auth.cache.etcd_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "etcd_kv",
+                    "etcd_key": "mcp/security/oauth/cache",
+                    "etcd_api_url": "ftp://etcd.example.com:2379",
+                },
+                "auth.cache.etcd_api_url must be a valid http/https URL.",
+            ),
+            (
+                {"backend": "local", "etcd_key": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='etcd_kv'",
             ),
         ],
     )
@@ -9208,6 +9282,317 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_build_etcd_key_normalizes_path(self):
+        """etcd key builder should normalize leading/trailing slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="etcd-prod",
+            backend="etcd_kv",
+            etcd_key="/mcp/security/oauth/cache/",
+        )
+
+        key_name = cli_module._build_etcd_kv_key(cache_settings=settings)
+
+        assert key_name == "mcp/security/oauth/cache"
+
+    def test_read_etcd_payload_parses_raw_value(self, monkeypatch):
+        """etcd reader should parse envelope from v3 range response value."""
+        expected_key = base64.b64encode(b"mcp/security/oauth/cache").decode("utf-8")
+        encoded_payload = base64.b64encode(
+            json.dumps({"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}).encode("utf-8")
+        ).decode("utf-8")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, payload: object) -> None:
+                self.status_code = status_code
+                self._payload = payload
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+            def json(self) -> object:
+                return self._payload
+
+        class FakeEtcdClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/v3/kv/range"
+                request_payload = kwargs.get("json")
+                assert request_payload == {"key": expected_key}
+                FakeEtcdClient.call_count += 1
+                if FakeEtcdClient.call_count == 1:
+                    return FakeResponse(status_code=200, payload={"kvs": [{"value": encoded_payload}]})
+                return FakeResponse(status_code=200, payload={"kvs": []})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeEtcdClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="etcd-prod",
+            backend="etcd_kv",
+            etcd_key="mcp/security/oauth/cache",
+            etcd_api_url="https://etcd.example.com:2379",
+            etcd_token_env="ETCD_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_etcd(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_etcd(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+
+    def test_read_etcd_payload_bypasses_errors_and_missing_key(self, monkeypatch):
+        """etcd reader should fail closed for errors and map missing key to empty envelope."""
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, payload: object) -> None:
+                self.status_code = status_code
+                self._payload = payload
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+            def json(self) -> object:
+                return self._payload
+
+        class FakeEtcdClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                FakeEtcdClient.call_count += 1
+                if FakeEtcdClient.call_count == 1:
+                    return FakeResponse(status_code=404, payload={})
+                if FakeEtcdClient.call_count == 2:
+                    return FakeResponse(status_code=500, payload={})
+                return FakeResponse(status_code=200, payload={"kvs": [{"value": "not-base64"}]})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeEtcdClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="etcd-prod",
+            backend="etcd_kv",
+            etcd_key="mcp/security/oauth/cache",
+            etcd_token_env="ETCD_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_etcd(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_etcd(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_etcd(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+
+    def test_etcd_write_success_and_bypass_paths(self, monkeypatch):
+        """etcd writer should support success flow and fail-closed preflight/post paths."""
+        expected_key = base64.b64encode(b"mcp/security/oauth/cache").decode("utf-8")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, payload: object) -> None:
+                self.status_code = status_code
+                self._payload = payload
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+            def json(self) -> object:
+                return self._payload
+
+        class FakeEtcdClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeEtcdClient.init_count += 1
+                self._scenario = FakeEtcdClient.init_count
+
+            def post(self, path: str, **kwargs: object) -> FakeResponse:
+                request_payload = kwargs.get("json")
+                if path == "/v3/kv/range":
+                    assert request_payload == {"key": expected_key}
+                    if self._scenario == 1:
+                        return FakeResponse(status_code=200, payload={"kvs": [{"key": expected_key, "value": "e30="}]})
+                    if self._scenario == 2:
+                        return FakeResponse(status_code=200, payload={"kvs": []})
+                    if self._scenario == 3:
+                        return FakeResponse(status_code=500, payload={})
+                    return FakeResponse(status_code=200, payload={"kvs": [{"key": expected_key, "value": "e30="}]})
+                if path == "/v3/kv/put":
+                    if self._scenario == 1:
+                        assert isinstance(request_payload, dict)
+                        assert request_payload.get("key") == expected_key
+                        encoded_value = request_payload.get("value")
+                        assert isinstance(encoded_value, str)
+                        decoded_payload = base64.b64decode(encoded_value.encode("utf-8")).decode("utf-8")
+                        parsed_payload = json.loads(decoded_payload)
+                        assert parsed_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+                        assert isinstance(parsed_payload["entries"], dict)
+                        return FakeResponse(status_code=200, payload={})
+                    raise RuntimeError("write failed")
+                raise AssertionError(path)
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeEtcdClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="etcd-prod",
+            backend="etcd_kv",
+            etcd_key="mcp/security/oauth/cache",
+            etcd_token_env="ETCD_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_etcd(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_etcd(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_etcd(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_etcd(cache_settings=settings, entries={}) is False
+
+    def test_etcd_build_client_and_required_guards(self, monkeypatch):
+        """etcd helpers should fail closed when api_url/key identity is missing."""
+        monkeypatch.delenv("ETCD_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="etcd-prod",
+            backend="etcd_kv",
+            etcd_key="mcp/security/oauth/cache",
+            etcd_token_env="ETCD_TOKEN",
+            etcd_api_url="http://127.0.0.1:2379",
+        )
+        client = cli_module._build_etcd_http_client(cache_settings=settings)
+        assert client is not None
+        assert client.headers.get("Authorization") is None
+        client.close()
+
+        monkeypatch.setenv("ETCD_TOKEN", "token")
+        client_with_token = cli_module._build_etcd_http_client(cache_settings=settings)
+        assert client_with_token is not None
+        assert client_with_token.headers.get("Authorization") == "Bearer token"
+        client_with_token.close()
+
+        assert (
+            cli_module._build_etcd_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="etcd-prod",
+                    backend="etcd_kv",
+                    etcd_key="mcp/security/oauth/cache",
+                    etcd_token_env="ETCD_TOKEN",
+                    etcd_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="etcd-prod",
+            backend="etcd_kv",
+            etcd_key=None,
+            etcd_token_env="ETCD_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_etcd(cache_settings=missing_settings) is None
+        assert cli_module._write_oauth_cache_payload_to_etcd(cache_settings=missing_settings, entries={}) is False
+
+    def test_persist_etcd_removes_deleted_in_memory_entry(self, monkeypatch):
+        """etcd persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_etcd",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_etcd", fake_write)
+
+        cli_module._persist_oauth_cache_entry_etcd(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="etcd-prod",
+                backend="etcd_kv",
+                etcd_key="mcp/security/oauth/cache",
+                etcd_token_env="ETCD_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_load_etcd_entries_parses_and_bypasses_payload(self, monkeypatch):
+        """etcd loader should parse payload entries and bypass cleanly on provider None."""
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_etcd",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = cli_module._load_oauth_persistent_cache_entries_from_etcd(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="etcd-prod",
+                backend="etcd_kv",
+                etcd_key="mcp/security/oauth/cache",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_etcd", lambda *, cache_settings: None)
+        bypass_entries = cli_module._load_oauth_persistent_cache_entries_from_etcd(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="etcd-prod",
+                backend="etcd_kv",
+                etcd_key="mcp/security/oauth/cache",
+            )
+        )
+        assert bypass_entries == {}
+
+    def test_etcd_build_client_bypasses_client_init_error(self, monkeypatch):
+        """etcd client builder should fail closed when HTTP client init raises."""
+        monkeypatch.setattr(
+            cli_module.httpx,
+            "Client",
+            lambda **kwargs: (_ for _ in ()).throw(RuntimeError("client-init-failed")),
+        )
+
+        client = cli_module._build_etcd_http_client(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="etcd-prod",
+                backend="etcd_kv",
+                etcd_key="mcp/security/oauth/cache",
+                etcd_api_url="http://127.0.0.1:2379",
+            )
+        )
+        assert client is None
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -11008,6 +11393,7 @@ class TestCLIHelpers:
             "consul_kv",
             "redis_kv",
             "cloudflare_kv",
+            "etcd_kv",
         }
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
@@ -11523,6 +11909,20 @@ class TestCLIHelpers:
                     cf_kv_key="mcp/security/oauth/cache",
                     cf_api_token_env="CLOUDFLARE_API_TOKEN",
                     cf_api_url="https://api.cloudflare.com/client/v4",
+                ),
+            ),
+            (
+                "_build_etcd_http_client",
+                None,
+                "_read_oauth_cache_payload_from_etcd",
+                "_write_oauth_cache_payload_to_etcd",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="etcd_kv",
+                    etcd_key="mcp/security/oauth/cache",
+                    etcd_api_url="http://127.0.0.1:2379",
+                    etcd_token_env="ETCD_TOKEN",
                 ),
             ),
         ],

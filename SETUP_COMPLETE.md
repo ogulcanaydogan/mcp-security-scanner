@@ -1016,6 +1016,25 @@ This file records the actual implementation status after Sprint 8AD.
 - Release visibility check hardened for deterministic index lookups:
   - `pip index versions` now runs with `--no-cache-dir --index-url https://pypi.org/simple`
 
+### Sprint 9D (etcd v3 KV Backend v1)
+
+- OAuth persistent cache backend abstraction expanded:
+  - `auth.cache.backend` now also supports:
+    - `etcd_kv`
+- etcd backend contract:
+  - required: `etcd_key`
+  - optional: `etcd_api_url` (default `http://127.0.0.1:2379`)
+  - optional: `etcd_token_env` (default `ETCD_TOKEN`)
+  - auth token is env-only; if env token is missing, client proceeds auth-less
+  - pre-provisioned model (scanner does not auto-create missing keys)
+- etcd backend behavior:
+  - read via `POST /v3/kv/range` with base64 key
+  - write via preflight `range` + `POST /v3/kv/put` with base64 key/value
+  - provider/read/write/parse/auth/network errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -1028,7 +1047,7 @@ This file records the actual implementation status after Sprint 8AD.
 
 ## Current Non-Goals / Deferred (Post-1.0)
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, and `etcd_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
