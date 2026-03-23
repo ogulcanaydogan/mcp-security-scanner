@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8AA scope.
+Current index for the implemented Sprint 1-8AC scope.
 
 ## Status Snapshot
 
@@ -49,6 +49,8 @@ Current index for the implemented Sprint 1-8AA scope.
 - Sprint 8Y: done (advanced OAuth cache backend v17 with Consul KV API, env-token auth only, pre-provisioned KV key model)
 - Sprint 8Z: done (advanced OAuth cache backend v18 with Redis KV, env-password auth only, pre-provisioned key model)
 - Sprint 8AA: done (OAuth cache stabilization: centralized backend dispatch contract + publish-time version consistency guard across `pyproject`/`__version__`/wheel/CLI)
+- Sprint 8AB: done (advanced OAuth cache backend v19 with Cloudflare KV API, env-token auth only, pre-provisioned KV key model)
+- Sprint 8AC: done (advanced OAuth cache backend v20 with GitLab group variables API, env-token auth only, pre-provisioned group variable model)
 
 ## Top-Level Docs
 
@@ -77,7 +79,7 @@ Current index for the implemented Sprint 1-8AA scope.
   - Config auth normalization (`bearer` / `api_key` / `session_cookie` / `oauth_client_credentials` / `oauth_device_code` / `oauth_auth_code_pkce`)
   - Auth finding flow: `auth_config_error` (schema/env) and `auth_token_error` (token endpoint)
   - OAuth client-credentials + device-code + auth-code PKCE/refresh with in-memory cache
-  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_ssm_parameter_name`, `aws_region`, `aws_endpoint_url`, `gcp_secret_name`, `gcp_endpoint_url`, `azure_vault_url`, `azure_secret_name`, `azure_secret_version`, `vault_url`, `vault_secret_path`, `vault_token_env`, `vault_namespace`, `k8s_secret_namespace`, `k8s_secret_name`, `k8s_secret_key`, `oci_secret_ocid`, `oci_region`, `oci_endpoint_url`, `doppler_project`, `doppler_config`, `doppler_secret_name`, `doppler_token_env`, `doppler_api_url`, `op_connect_host`, `op_vault_id`, `op_item_id`, `op_field_label`, `op_connect_token_env`, `bw_secret_id`, `bw_access_token_env`, `bw_api_url`, `infisical_project_id`, `infisical_environment`, `infisical_secret_name`, `infisical_token_env`, `infisical_api_url`, `akeyless_secret_name`, `akeyless_token_env`, `akeyless_api_url`, `gitlab_project_id`, `gitlab_variable_key`, `gitlab_token_env`, `gitlab_api_url`, `github_repository`, `github_organization`, `github_environment_name`, `github_variable_name`, `github_token_env`, `github_api_url`, `consul_key_path`, `consul_token_env`, `consul_api_url`, `redis_key`, `redis_url`, `redis_password_env`)
+  - Optional encrypted persistent OAuth cache via `auth.cache` (`persistent`, `namespace`, `backend`, `aws_secret_id`, `aws_ssm_parameter_name`, `aws_region`, `aws_endpoint_url`, `gcp_secret_name`, `gcp_endpoint_url`, `azure_vault_url`, `azure_secret_name`, `azure_secret_version`, `vault_url`, `vault_secret_path`, `vault_token_env`, `vault_namespace`, `k8s_secret_namespace`, `k8s_secret_name`, `k8s_secret_key`, `oci_secret_ocid`, `oci_region`, `oci_endpoint_url`, `doppler_project`, `doppler_config`, `doppler_secret_name`, `doppler_token_env`, `doppler_api_url`, `op_connect_host`, `op_vault_id`, `op_item_id`, `op_field_label`, `op_connect_token_env`, `bw_secret_id`, `bw_access_token_env`, `bw_api_url`, `infisical_project_id`, `infisical_environment`, `infisical_secret_name`, `infisical_token_env`, `infisical_api_url`, `akeyless_secret_name`, `akeyless_token_env`, `akeyless_api_url`, `gitlab_project_id`, `gitlab_group_id`, `gitlab_variable_key`, `gitlab_token_env`, `gitlab_api_url`, `github_repository`, `github_organization`, `github_environment_name`, `github_variable_name`, `github_token_env`, `github_api_url`, `consul_key_path`, `consul_token_env`, `consul_api_url`, `redis_key`, `redis_url`, `redis_password_env`)
   - Persistent cache hardening:
     - strict lock file with retry/timeout and non-fatal bypass
     - corrupt cache quarantine (`*.corrupt.<timestamp>`)
@@ -99,6 +101,7 @@ Current index for the implemented Sprint 1-8AA scope.
     - `backend=infisical_secrets` (single secret-value JSON envelope for OAuth cache entries via Infisical Secrets API)
     - `backend=akeyless_secrets` (single secret-value JSON envelope for OAuth cache entries via Akeyless API)
     - `backend=gitlab_variables` (single project-variable JSON envelope for OAuth cache entries via GitLab API)
+    - `backend=gitlab_group_variables` (single group-variable JSON envelope for OAuth cache entries via GitLab API)
     - `backend=github_actions_variables` (single repository-variable JSON envelope for OAuth cache entries via GitHub Actions Variables API)
     - `backend=github_environment_variables` (single repository-environment-variable JSON envelope for OAuth cache entries via GitHub Environments Variables API)
     - `backend=github_organization_variables` (single organization-variable JSON envelope for OAuth cache entries via GitHub Organization Variables API)
@@ -168,4 +171,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA established a shared backend dispatch/contract baseline for future providers
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA established a shared backend dispatch/contract baseline for future providers

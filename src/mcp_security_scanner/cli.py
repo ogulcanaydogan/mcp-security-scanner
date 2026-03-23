@@ -66,6 +66,7 @@ _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS = "bitwarden_secrets"
 _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS = "infisical_secrets"
 _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS = "akeyless_secrets"
 _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES = "gitlab_variables"
+_OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES = "gitlab_group_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES = "github_actions_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variables"
@@ -87,6 +88,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS,
     _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS,
     _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
+    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES,
@@ -108,6 +110,7 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
     _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: "_load_oauth_persistent_cache_entries_from_infisical",
     _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: "_load_oauth_persistent_cache_entries_from_akeyless",
     _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: "_load_oauth_persistent_cache_entries_from_gitlab",
+    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES: "_load_oauth_persistent_cache_entries_from_gitlab",
     _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: "_load_oauth_persistent_cache_entries_from_github",
     _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_environment",
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_organization",
@@ -129,6 +132,7 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
     _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: "_persist_oauth_cache_entry_infisical",
     _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: "_persist_oauth_cache_entry_akeyless",
     _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: "_persist_oauth_cache_entry_gitlab",
+    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES: "_persist_oauth_cache_entry_gitlab",
     _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: "_persist_oauth_cache_entry_github",
     _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: "_persist_oauth_cache_entry_github_environment",
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_persist_oauth_cache_entry_github_organization",
@@ -208,6 +212,7 @@ class OAuthCacheSettings:
     akeyless_token_env: str | None = None
     akeyless_api_url: str | None = None
     gitlab_project_id: str | None = None
+    gitlab_group_id: str | None = None
     gitlab_variable_key: str | None = None
     gitlab_token_env: str | None = None
     gitlab_api_url: str | None = None
@@ -2379,6 +2384,7 @@ def _coerce_oauth_cache_settings(
             "akeyless_token_env",
             "akeyless_api_url",
             "gitlab_project_id",
+            "gitlab_group_id",
             "gitlab_variable_key",
             "gitlab_token_env",
             "gitlab_api_url",
@@ -2415,7 +2421,7 @@ def _coerce_oauth_cache_settings(
             "bw_secret_id, bw_access_token_env, bw_api_url, "
             "infisical_project_id, infisical_environment, infisical_secret_name, infisical_token_env, "
             "infisical_api_url, akeyless_secret_name, akeyless_token_env, akeyless_api_url, "
-            "gitlab_project_id, gitlab_variable_key, gitlab_token_env, gitlab_api_url, "
+            "gitlab_project_id, gitlab_group_id, gitlab_variable_key, gitlab_token_env, gitlab_api_url, "
             "github_repository, github_organization, github_environment_name, github_variable_name, "
             "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url, "
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
@@ -2815,6 +2821,15 @@ def _coerce_oauth_cache_settings(
     if gitlab_project_id is not None and not _is_valid_gitlab_project_id(gitlab_project_id):
         return None, "auth.cache.gitlab_project_id must be a numeric GitLab project ID."
 
+    gitlab_group_id_value = cache_value.get("gitlab_group_id")
+    if gitlab_group_id_value is not None and (
+        not isinstance(gitlab_group_id_value, str) or not gitlab_group_id_value.strip()
+    ):
+        return None, "auth.cache.gitlab_group_id must be a non-empty string when provided."
+    gitlab_group_id = gitlab_group_id_value.strip() if isinstance(gitlab_group_id_value, str) else None
+    if gitlab_group_id is not None and not _is_valid_gitlab_group_id(gitlab_group_id):
+        return None, "auth.cache.gitlab_group_id must be a numeric GitLab group ID."
+
     gitlab_variable_key_value = cache_value.get("gitlab_variable_key")
     if gitlab_variable_key_value is not None and (
         not isinstance(gitlab_variable_key_value, str) or not gitlab_variable_key_value.strip()
@@ -3063,16 +3078,18 @@ def _coerce_oauth_cache_settings(
             "auth.cache.akeyless_secret_name is required when auth.cache.backend='akeyless_secrets'.",
         )
 
-    if backend != _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES and (
+    if backend not in {_OAUTH_CACHE_BACKEND_GITLAB_VARIABLES, _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES} and (
         gitlab_project_id is not None
+        or gitlab_group_id is not None
         or gitlab_variable_key is not None
         or gitlab_token_env is not None
         or gitlab_api_url is not None
     ):
         return (
             None,
-            "auth.cache.gitlab_project_id, auth.cache.gitlab_variable_key, auth.cache.gitlab_token_env, and "
-            "auth.cache.gitlab_api_url are only supported when auth.cache.backend='gitlab_variables'.",
+            "auth.cache.gitlab_project_id, auth.cache.gitlab_group_id, auth.cache.gitlab_variable_key, "
+            "auth.cache.gitlab_token_env, and auth.cache.gitlab_api_url are only supported when "
+            "auth.cache.backend is 'gitlab_variables' or 'gitlab_group_variables'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES and gitlab_project_id is None:
@@ -3080,10 +3097,29 @@ def _coerce_oauth_cache_settings(
             None,
             "auth.cache.gitlab_project_id is required when auth.cache.backend='gitlab_variables'.",
         )
-    if backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES and gitlab_variable_key is None:
+    if backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES and gitlab_group_id is not None:
         return (
             None,
-            "auth.cache.gitlab_variable_key is required when auth.cache.backend='gitlab_variables'.",
+            "auth.cache.gitlab_group_id is only supported when auth.cache.backend='gitlab_group_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES and gitlab_group_id is None:
+        return (
+            None,
+            "auth.cache.gitlab_group_id is required when auth.cache.backend='gitlab_group_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES and gitlab_project_id is not None:
+        return (
+            None,
+            "auth.cache.gitlab_project_id is only supported when auth.cache.backend='gitlab_variables'.",
+        )
+    if (
+        backend in {_OAUTH_CACHE_BACKEND_GITLAB_VARIABLES, _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES}
+        and gitlab_variable_key is None
+    ):
+        return (
+            None,
+            "auth.cache.gitlab_variable_key is required when auth.cache.backend is "
+            "'gitlab_variables' or 'gitlab_group_variables'.",
         )
 
     if backend != _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES and github_environment_name is not None:
@@ -3824,7 +3860,7 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
                 "supported when auth.cache.backend='oci_vault'.",
             )
-    elif backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES:
+    elif backend in {_OAUTH_CACHE_BACKEND_GITLAB_VARIABLES, _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES}:
         if (
             aws_secret_id is not None
             or aws_ssm_parameter_name is not None
@@ -4139,11 +4175,20 @@ def _coerce_oauth_cache_settings(
             ),
             akeyless_api_url=akeyless_api_url,
             gitlab_project_id=gitlab_project_id,
+            gitlab_group_id=gitlab_group_id,
             gitlab_variable_key=gitlab_variable_key,
             gitlab_token_env=(
                 gitlab_token_env
                 if gitlab_token_env is not None
-                else ("GITLAB_TOKEN" if backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES else None)
+                else (
+                    "GITLAB_TOKEN"
+                    if backend
+                    in {
+                        _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
+                        _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
+                    }
+                    else None
+                )
             ),
             gitlab_api_url=gitlab_api_url,
             github_repository=github_repository,
@@ -4263,6 +4308,11 @@ def _is_valid_akeyless_secret_name(value: str) -> bool:
 
 def _is_valid_gitlab_project_id(value: str) -> bool:
     """Validate GitLab project identifier shape for API path usage."""
+    return re.fullmatch(r"[0-9]{1,20}", value) is not None
+
+
+def _is_valid_gitlab_group_id(value: str) -> bool:
+    """Validate GitLab group identifier shape for API path usage."""
     return re.fullmatch(r"[0-9]{1,20}", value) is not None
 
 
@@ -7900,9 +7950,17 @@ def _build_gitlab_http_client(cache_settings: OAuthCacheSettings) -> httpx.Clien
 
 def _build_gitlab_variable_path(cache_settings: OAuthCacheSettings) -> str | None:
     """Build GitLab variable API path from validated cache settings."""
-    if cache_settings.gitlab_project_id is None or cache_settings.gitlab_variable_key is None:
+    if cache_settings.gitlab_variable_key is None:
         return None
-    return f"/projects/{cache_settings.gitlab_project_id}/variables/{cache_settings.gitlab_variable_key}"
+    key_segment = quote(cache_settings.gitlab_variable_key, safe="")
+    if cache_settings.backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES and cache_settings.gitlab_project_id is not None:
+        return f"/projects/{quote(cache_settings.gitlab_project_id, safe='')}/variables/{key_segment}"
+    if (
+        cache_settings.backend == _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES
+        and cache_settings.gitlab_group_id is not None
+    ):
+        return f"/groups/{quote(cache_settings.gitlab_group_id, safe='')}/variables/{key_segment}"
+    return None
 
 
 def _read_oauth_cache_payload_from_gitlab(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
