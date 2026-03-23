@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9D scope plus `v1.0.4` provider target.
+Current index for the implemented Sprint 1-9E scope plus `v1.0.5` stabilization target.
 
 ## Status Snapshot
 
@@ -57,6 +57,7 @@ Current index for the implemented Sprint 1-9D scope plus `v1.0.4` provider targe
 - Sprint 9B: done (GitHub organization variable v2 with visibility-preserving updates for `all`/`private`/`selected`)
 - Sprint 9C: done (post-1.0 stabilization hardening for OAuth cache dispatch fail-closed behavior and deterministic PyPI visibility verification flags)
 - Sprint 9D: done (advanced OAuth cache backend v21 with etcd v3 KV JSON API, env-token auth, pre-provisioned key model)
+- Sprint 9E: done (post-1.0 stabilization hardening with canonical remote-backend spec-derived dispatch maps and stricter dispatch matrix contract checks)
 
 ## Top-Level Docs
 

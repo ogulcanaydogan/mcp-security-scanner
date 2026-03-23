@@ -11397,11 +11397,22 @@ class TestCLIHelpers:
         }
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
-        """Remote load/persist handler maps should stay complete for every non-local backend."""
+        """Remote backend spec should be the single source of truth for load/persist handler maps."""
         remote_backends = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}
+        expected_loaders = {
+            backend: loader
+            for backend, (loader, _persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
+        }
+        expected_persisters = {
+            backend: persister
+            for backend, (_loader, persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
+        }
 
+        assert set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS) == remote_backends
         assert set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS) == remote_backends
         assert set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS) == remote_backends
+        assert cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS == expected_loaders
+        assert cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS == expected_persisters
 
         for function_name in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.values():
             assert callable(getattr(cli_module, function_name, None))

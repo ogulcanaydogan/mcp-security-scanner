@@ -1035,6 +1035,18 @@ This file records the actual implementation status after Sprint 8AD.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 9E (Post-1.0 Stabilization Hardening)
+
+- No new provider added; stabilization-only patch scope.
+- OAuth cache remote dispatch contract is now driven by one canonical backend-spec source:
+  - load/persist handler maps are derived from the same remote backend spec map
+  - supported backend set and dispatch maps remain contract-locked by tests
+- Contract invariants remain unchanged and explicitly enforced:
+  - `persistent=false` bypasses all remote load/persist calls
+  - provider/read/write/parse/auth/network failures stay non-fatal (fail-closed for persistence layer)
+  - `cache rotate` remains local-backend only
+  - `compare` contract stays fixed (`tool_added` / `tool_removed` / `tool_changed`, `LLM05`)
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:

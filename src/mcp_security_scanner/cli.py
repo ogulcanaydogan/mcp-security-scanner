@@ -74,75 +74,103 @@ _OAUTH_CACHE_BACKEND_CONSUL_KV = "consul_kv"
 _OAUTH_CACHE_BACKEND_REDIS_KV = "redis_kv"
 _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV = "cloudflare_kv"
 _OAUTH_CACHE_BACKEND_ETCD_KV = "etcd_kv"
+_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
+    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: (
+        "_load_oauth_persistent_cache_entries_from_aws",
+        "_persist_oauth_cache_entry_aws",
+    ),
+    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE: (
+        "_load_oauth_persistent_cache_entries_from_aws_ssm",
+        "_persist_oauth_cache_entry_aws_ssm",
+    ),
+    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER: (
+        "_load_oauth_persistent_cache_entries_from_gcp",
+        "_persist_oauth_cache_entry_gcp",
+    ),
+    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT: (
+        "_load_oauth_persistent_cache_entries_from_azure",
+        "_persist_oauth_cache_entry_azure",
+    ),
+    _OAUTH_CACHE_BACKEND_HASHICORP_VAULT: (
+        "_load_oauth_persistent_cache_entries_from_vault",
+        "_persist_oauth_cache_entry_vault",
+    ),
+    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS: (
+        "_load_oauth_persistent_cache_entries_from_kubernetes",
+        "_persist_oauth_cache_entry_kubernetes",
+    ),
+    _OAUTH_CACHE_BACKEND_OCI_VAULT: (
+        "_load_oauth_persistent_cache_entries_from_oci",
+        "_persist_oauth_cache_entry_oci",
+    ),
+    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS: (
+        "_load_oauth_persistent_cache_entries_from_doppler",
+        "_persist_oauth_cache_entry_doppler",
+    ),
+    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT: (
+        "_load_oauth_persistent_cache_entries_from_onepassword_connect",
+        "_persist_oauth_cache_entry_onepassword_connect",
+    ),
+    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS: (
+        "_load_oauth_persistent_cache_entries_from_bitwarden",
+        "_persist_oauth_cache_entry_bitwarden",
+    ),
+    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: (
+        "_load_oauth_persistent_cache_entries_from_infisical",
+        "_persist_oauth_cache_entry_infisical",
+    ),
+    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: (
+        "_load_oauth_persistent_cache_entries_from_akeyless",
+        "_persist_oauth_cache_entry_akeyless",
+    ),
+    _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_gitlab",
+        "_persist_oauth_cache_entry_gitlab",
+    ),
+    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_gitlab",
+        "_persist_oauth_cache_entry_gitlab",
+    ),
+    _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_github",
+        "_persist_oauth_cache_entry_github",
+    ),
+    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_github_environment",
+        "_persist_oauth_cache_entry_github_environment",
+    ),
+    _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_github_organization",
+        "_persist_oauth_cache_entry_github_organization",
+    ),
+    _OAUTH_CACHE_BACKEND_CONSUL_KV: (
+        "_load_oauth_persistent_cache_entries_from_consul",
+        "_persist_oauth_cache_entry_consul",
+    ),
+    _OAUTH_CACHE_BACKEND_REDIS_KV: (
+        "_load_oauth_persistent_cache_entries_from_redis",
+        "_persist_oauth_cache_entry_redis",
+    ),
+    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: (
+        "_load_oauth_persistent_cache_entries_from_cloudflare",
+        "_persist_oauth_cache_entry_cloudflare",
+    ),
+    _OAUTH_CACHE_BACKEND_ETCD_KV: (
+        "_load_oauth_persistent_cache_entries_from_etcd",
+        "_persist_oauth_cache_entry_etcd",
+    ),
+}
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
-    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
-    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE,
-    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER,
-    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT,
-    _OAUTH_CACHE_BACKEND_HASHICORP_VAULT,
-    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS,
-    _OAUTH_CACHE_BACKEND_OCI_VAULT,
-    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS,
-    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT,
-    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS,
-    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS,
-    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS,
-    _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
-    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
-    _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES,
-    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
-    _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES,
-    _OAUTH_CACHE_BACKEND_CONSUL_KV,
-    _OAUTH_CACHE_BACKEND_REDIS_KV,
-    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV,
-    _OAUTH_CACHE_BACKEND_ETCD_KV,
+    *_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.keys(),
 }
 _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
-    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_load_oauth_persistent_cache_entries_from_aws",
-    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE: "_load_oauth_persistent_cache_entries_from_aws_ssm",
-    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER: "_load_oauth_persistent_cache_entries_from_gcp",
-    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT: "_load_oauth_persistent_cache_entries_from_azure",
-    _OAUTH_CACHE_BACKEND_HASHICORP_VAULT: "_load_oauth_persistent_cache_entries_from_vault",
-    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS: "_load_oauth_persistent_cache_entries_from_kubernetes",
-    _OAUTH_CACHE_BACKEND_OCI_VAULT: "_load_oauth_persistent_cache_entries_from_oci",
-    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS: "_load_oauth_persistent_cache_entries_from_doppler",
-    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT: "_load_oauth_persistent_cache_entries_from_onepassword_connect",
-    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS: "_load_oauth_persistent_cache_entries_from_bitwarden",
-    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: "_load_oauth_persistent_cache_entries_from_infisical",
-    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: "_load_oauth_persistent_cache_entries_from_akeyless",
-    _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: "_load_oauth_persistent_cache_entries_from_gitlab",
-    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES: "_load_oauth_persistent_cache_entries_from_gitlab",
-    _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: "_load_oauth_persistent_cache_entries_from_github",
-    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_environment",
-    _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_organization",
-    _OAUTH_CACHE_BACKEND_CONSUL_KV: "_load_oauth_persistent_cache_entries_from_consul",
-    _OAUTH_CACHE_BACKEND_REDIS_KV: "_load_oauth_persistent_cache_entries_from_redis",
-    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: "_load_oauth_persistent_cache_entries_from_cloudflare",
-    _OAUTH_CACHE_BACKEND_ETCD_KV: "_load_oauth_persistent_cache_entries_from_etcd",
+    backend: loader_name
+    for backend, (loader_name, _persister_name) in _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
 }
 _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
-    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_persist_oauth_cache_entry_aws",
-    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE: "_persist_oauth_cache_entry_aws_ssm",
-    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER: "_persist_oauth_cache_entry_gcp",
-    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT: "_persist_oauth_cache_entry_azure",
-    _OAUTH_CACHE_BACKEND_HASHICORP_VAULT: "_persist_oauth_cache_entry_vault",
-    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS: "_persist_oauth_cache_entry_kubernetes",
-    _OAUTH_CACHE_BACKEND_OCI_VAULT: "_persist_oauth_cache_entry_oci",
-    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS: "_persist_oauth_cache_entry_doppler",
-    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT: "_persist_oauth_cache_entry_onepassword_connect",
-    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS: "_persist_oauth_cache_entry_bitwarden",
-    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: "_persist_oauth_cache_entry_infisical",
-    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: "_persist_oauth_cache_entry_akeyless",
-    _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: "_persist_oauth_cache_entry_gitlab",
-    _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES: "_persist_oauth_cache_entry_gitlab",
-    _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: "_persist_oauth_cache_entry_github",
-    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: "_persist_oauth_cache_entry_github_environment",
-    _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_persist_oauth_cache_entry_github_organization",
-    _OAUTH_CACHE_BACKEND_CONSUL_KV: "_persist_oauth_cache_entry_consul",
-    _OAUTH_CACHE_BACKEND_REDIS_KV: "_persist_oauth_cache_entry_redis",
-    _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV: "_persist_oauth_cache_entry_cloudflare",
-    _OAUTH_CACHE_BACKEND_ETCD_KV: "_persist_oauth_cache_entry_etcd",
+    backend: persister_name
+    for backend, (_loader_name, persister_name) in _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"

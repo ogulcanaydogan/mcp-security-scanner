@@ -2,15 +2,16 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.3`.
+- Release line is stable at `v1.0.4`.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.4` provider onboarding while keeping the GA contract stable:
+- `v1.0.5` stabilization hardening while keeping the GA contract stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - add `etcd_kv` backend (etcd v3 JSON API, env-token, pre-provisioned key model)
+  - keep OAuth cache remote dispatch maps derived from one canonical backend spec source
+  - strengthen backend dispatch contract matrix checks (persistent=false, non-fatal bypass, local-only `cache rotate`)
   - keep release hardening deterministic (explicit PyPI index/no-cache visibility checks)
 
 ## v1.0 GA Status

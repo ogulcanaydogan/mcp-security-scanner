@@ -79,6 +79,7 @@ flowchart LR
 - Post-1.0 provider v2 expansion (Sprint 9B): GitHub organization variable backend preserves existing visibility (`all` / `private` / `selected`) during cache updates
 - Post-1.0 stabilization hardening (Sprint 9C): OAuth cache dispatch error paths fail closed (`load -> {}`, `persist -> no-op`) and publish visibility verification uses explicit PyPI index/no-cache flags
 - Post-1.0 provider expansion (Sprint 9D): added `etcd_kv` backend (etcd v3 JSON API, env-token auth, pre-provisioned key model)
+- Post-1.0 stabilization hardening (Sprint 9E): centralized remote backend spec as canonical source for dispatch maps and tightened matrix contract coverage without runtime behavior changes
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -939,7 +940,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.4` patch release with `etcd_kv` backend onboarding (etcd v3 JSON API, pre-provisioned key model).
+- `1.0.5` patch stabilization release (no new provider) with canonical OAuth cache remote-backend spec + stricter dispatch contract checks.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):
