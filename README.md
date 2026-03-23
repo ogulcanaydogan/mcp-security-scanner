@@ -42,7 +42,7 @@ flowchart LR
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
 | Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv` |
-| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke check + tag/version guard + PyPI visibility verification |
+| Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke + tag/version consistency guard (`pyproject`/`__version__`/wheel/CLI) + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
 
@@ -70,6 +70,7 @@ flowchart LR
 - Release + contract hardening (Sprint 8X): added build-wheel CLI smoke verification, publish-time wheel/tag version guard, and expanded `persistent=false` backend invariant coverage
 - OAuth cache provider expansion (Sprint 8Y): added `consul_kv` backend (env-token auth, pre-provisioned KV key model)
 - OAuth cache provider expansion (Sprint 8Z): added `redis_kv` backend (env-password auth, pre-provisioned key model)
+- Stabilization hardening (Sprint 8AA): centralized OAuth cache backend dispatch contract + stricter publish-time version consistency checks (`pyproject`, `__version__`, wheel metadata, CLI)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -837,7 +838,7 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8Z)
+## Roadmap (Post Sprint 8AA)
 
 Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`; backend onboarding now uses a shared dispatch/contract baseline from Sprint 8AA

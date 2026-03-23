@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8Z scope.
+Current index for the implemented Sprint 1-8AA scope.
 
 ## Status Snapshot
 
@@ -48,6 +48,7 @@ Current index for the implemented Sprint 1-8Z scope.
 - Sprint 8X: done (stabilization hardening with build-wheel CLI smoke verification, publish-time wheel/tag version guard, and expanded `persistent=false` OAuth cache invariants)
 - Sprint 8Y: done (advanced OAuth cache backend v17 with Consul KV API, env-token auth only, pre-provisioned KV key model)
 - Sprint 8Z: done (advanced OAuth cache backend v18 with Redis KV, env-password auth only, pre-provisioned key model)
+- Sprint 8AA: done (OAuth cache stabilization: centralized backend dispatch contract + publish-time version consistency guard across `pyproject`/`__version__`/wheel/CLI)
 
 ## Top-Level Docs
 
@@ -62,7 +63,7 @@ Current index for the implemented Sprint 1-8Z scope.
 - Python package/module path unchanged: `mcp_security_scanner`
 - CLI entrypoint unchanged: `mcp-scan`
 - GitHub release publishing path: idempotent `gh release` create/upload in CI publish job
-- Publish safety checks: build-wheel CLI smoke check + tag/version guard + publish-time wheel/tag version guard + post-publish PyPI visibility verification (retry/backoff)
+- Publish safety checks: build-wheel CLI smoke check + tag/version guard + publish-time consistency guard (`pyproject`, `__version__`, wheel metadata, CLI) + post-publish PyPI visibility verification (retry/backoff)
 
 ## Source Map
 
@@ -166,4 +167,4 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`; Sprint 8AA established a shared backend dispatch/contract baseline for future providers

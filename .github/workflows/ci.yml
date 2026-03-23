@@ -135,6 +135,47 @@ jobs:
           print(payload["project"]["version"])
           PY
           )"
+          INIT_VERSION="$(python - <<'PY'
+          import pathlib
+          import re
+
+          content = pathlib.Path("src/mcp_security_scanner/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', content, re.MULTILINE)
+          if match is None:
+              raise SystemExit("Unable to parse __version__ from src/mcp_security_scanner/__init__.py")
+          print(match.group(1))
+          PY
+          )"
+          WHEEL_VERSION="$(python - <<'PY'
+          import glob
+          import zipfile
+
+          wheel_paths = sorted(glob.glob("dist/*.whl"))
+          if not wheel_paths:
+              raise SystemExit("Missing wheel artifact in dist/")
+
+          with zipfile.ZipFile(wheel_paths[0]) as wheel:
+              metadata_candidates = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+              if not metadata_candidates:
+                  raise SystemExit("Missing wheel METADATA entry")
+              metadata = wheel.read(metadata_candidates[0]).decode("utf-8")
+
+          for line in metadata.splitlines():
+              if line.startswith("Version: "):
+                  print(line.split(":", 1)[1].strip())
+                  break
+          else:
+              raise SystemExit("Unable to read Version from wheel METADATA")
+          PY
+          )"
+          if [ "$PROJECT_VERSION" != "$INIT_VERSION" ]; then
+            echo "::error::pyproject version ($PROJECT_VERSION) does not match __version__ ($INIT_VERSION)."
+            exit 1
+          fi
+          if [ "$PROJECT_VERSION" != "$WHEEL_VERSION" ]; then
+            echo "::error::pyproject version ($PROJECT_VERSION) does not match wheel metadata version ($WHEEL_VERSION)."
+            exit 1
+          fi
           python -m pip install --force-reinstall dist/*.whl
           CLI_VERSION="$(mcp-scan --version | sed -E 's/^.*version[[:space:]]+//')"
           if [ "$CLI_VERSION" != "$PROJECT_VERSION" ]; then
@@ -180,8 +221,49 @@ jobs:
           print(payload["project"]["version"])
           PY
           )"
+          INIT_VERSION="$(python - <<'PY'
+          import pathlib
+          import re
+
+          content = pathlib.Path("src/mcp_security_scanner/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'^__version__\s*=\s*"([^"]+)"', content, re.MULTILINE)
+          if match is None:
+              raise SystemExit("Unable to parse __version__ from src/mcp_security_scanner/__init__.py")
+          print(match.group(1))
+          PY
+          )"
+          WHEEL_VERSION="$(python - <<'PY'
+          import glob
+          import zipfile
+
+          wheel_paths = sorted(glob.glob("dist/*.whl"))
+          if not wheel_paths:
+              raise SystemExit("Missing wheel artifact in dist/")
+
+          with zipfile.ZipFile(wheel_paths[0]) as wheel:
+              metadata_candidates = [name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")]
+              if not metadata_candidates:
+                  raise SystemExit("Missing wheel METADATA entry")
+              metadata = wheel.read(metadata_candidates[0]).decode("utf-8")
+
+          for line in metadata.splitlines():
+              if line.startswith("Version: "):
+                  print(line.split(":", 1)[1].strip())
+                  break
+          else:
+              raise SystemExit("Unable to read Version from wheel METADATA")
+          PY
+          )"
           if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
             echo "::error::Tag version ($TAG_VERSION) does not match pyproject version ($PROJECT_VERSION)."
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$INIT_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match __version__ ($INIT_VERSION)."
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$WHEEL_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match wheel metadata version ($WHEEL_VERSION)."
             exit 1
           fi
           if ! ls dist/*.tar.gz >/dev/null 2>&1; then

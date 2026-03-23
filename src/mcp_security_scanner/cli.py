@@ -17,6 +17,7 @@ import shlex
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -90,6 +91,46 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES,
     _OAUTH_CACHE_BACKEND_CONSUL_KV,
     _OAUTH_CACHE_BACKEND_REDIS_KV,
+}
+_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
+    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_load_oauth_persistent_cache_entries_from_aws",
+    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE: "_load_oauth_persistent_cache_entries_from_aws_ssm",
+    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER: "_load_oauth_persistent_cache_entries_from_gcp",
+    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT: "_load_oauth_persistent_cache_entries_from_azure",
+    _OAUTH_CACHE_BACKEND_HASHICORP_VAULT: "_load_oauth_persistent_cache_entries_from_vault",
+    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS: "_load_oauth_persistent_cache_entries_from_kubernetes",
+    _OAUTH_CACHE_BACKEND_OCI_VAULT: "_load_oauth_persistent_cache_entries_from_oci",
+    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS: "_load_oauth_persistent_cache_entries_from_doppler",
+    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT: "_load_oauth_persistent_cache_entries_from_onepassword_connect",
+    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS: "_load_oauth_persistent_cache_entries_from_bitwarden",
+    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: "_load_oauth_persistent_cache_entries_from_infisical",
+    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: "_load_oauth_persistent_cache_entries_from_akeyless",
+    _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: "_load_oauth_persistent_cache_entries_from_gitlab",
+    _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: "_load_oauth_persistent_cache_entries_from_github",
+    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_environment",
+    _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_load_oauth_persistent_cache_entries_from_github_organization",
+    _OAUTH_CACHE_BACKEND_CONSUL_KV: "_load_oauth_persistent_cache_entries_from_consul",
+    _OAUTH_CACHE_BACKEND_REDIS_KV: "_load_oauth_persistent_cache_entries_from_redis",
+}
+_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
+    _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER: "_persist_oauth_cache_entry_aws",
+    _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE: "_persist_oauth_cache_entry_aws_ssm",
+    _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER: "_persist_oauth_cache_entry_gcp",
+    _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT: "_persist_oauth_cache_entry_azure",
+    _OAUTH_CACHE_BACKEND_HASHICORP_VAULT: "_persist_oauth_cache_entry_vault",
+    _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS: "_persist_oauth_cache_entry_kubernetes",
+    _OAUTH_CACHE_BACKEND_OCI_VAULT: "_persist_oauth_cache_entry_oci",
+    _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS: "_persist_oauth_cache_entry_doppler",
+    _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT: "_persist_oauth_cache_entry_onepassword_connect",
+    _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS: "_persist_oauth_cache_entry_bitwarden",
+    _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS: "_persist_oauth_cache_entry_infisical",
+    _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS: "_persist_oauth_cache_entry_akeyless",
+    _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES: "_persist_oauth_cache_entry_gitlab",
+    _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES: "_persist_oauth_cache_entry_github",
+    _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES: "_persist_oauth_cache_entry_github_environment",
+    _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: "_persist_oauth_cache_entry_github_organization",
+    _OAUTH_CACHE_BACKEND_CONSUL_KV: "_persist_oauth_cache_entry_consul",
+    _OAUTH_CACHE_BACKEND_REDIS_KV: "_persist_oauth_cache_entry_redis",
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -2382,6 +2423,11 @@ def _coerce_oauth_cache_settings(
             None,
             "auth.cache.backend must be one of: " f"{', '.join(sorted(_SUPPORTED_OAUTH_CACHE_BACKENDS))}.",
         )
+    remote_backends = _SUPPORTED_OAUTH_CACHE_BACKENDS - {_OAUTH_CACHE_BACKEND_LOCAL}
+    if set(_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS) != remote_backends:
+        return None, "auth.cache backend contract is inconsistent (remote loader map mismatch)."
+    if set(_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS) != remote_backends:
+        return None, "auth.cache backend contract is inconsistent (remote persister map mismatch)."
 
     aws_secret_id_value = cache_value.get("aws_secret_id")
     if aws_secret_id_value is not None and (
@@ -5845,47 +5891,38 @@ def _hydrate_oauth_cache_from_persistent(cache_key: str, cache_settings: OAuthCa
     _OAUTH_TOKEN_CACHE[cache_key] = dict(cached_entry)
 
 
+def _resolve_oauth_remote_persistent_cache_loader(
+    backend: str,
+) -> Callable[..., dict[str, dict[str, Any]]] | None:
+    """Resolve remote persistent-cache loader handler for backend."""
+    function_name = _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.get(backend)
+    if function_name is None:
+        return None
+    resolved = globals().get(function_name)
+    if not callable(resolved):
+        return None
+    return cast(Callable[..., dict[str, dict[str, Any]]], resolved)
+
+
+def _resolve_oauth_remote_persistent_cache_persister(backend: str) -> Callable[..., None] | None:
+    """Resolve remote persistent-cache persister handler for backend."""
+    function_name = _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.get(backend)
+    if function_name is None:
+        return None
+    resolved = globals().get(function_name)
+    if not callable(resolved):
+        return None
+    return cast(Callable[..., None], resolved)
+
+
 def _load_oauth_persistent_cache_entries(
     cache_settings: OAuthCacheSettings | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Load persistent OAuth cache entries from configured backend; returns empty map on failure/bypass."""
     resolved_settings = cache_settings or OAuthCacheSettings()
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
-        return _load_oauth_persistent_cache_entries_from_aws(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
-        return _load_oauth_persistent_cache_entries_from_aws_ssm(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
-        return _load_oauth_persistent_cache_entries_from_gcp(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
-        return _load_oauth_persistent_cache_entries_from_azure(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
-        return _load_oauth_persistent_cache_entries_from_vault(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
-        return _load_oauth_persistent_cache_entries_from_kubernetes(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
-        return _load_oauth_persistent_cache_entries_from_oci(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
-        return _load_oauth_persistent_cache_entries_from_doppler(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
-        return _load_oauth_persistent_cache_entries_from_onepassword_connect(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
-        return _load_oauth_persistent_cache_entries_from_bitwarden(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
-        return _load_oauth_persistent_cache_entries_from_infisical(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS:
-        return _load_oauth_persistent_cache_entries_from_akeyless(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES:
-        return _load_oauth_persistent_cache_entries_from_gitlab(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES:
-        return _load_oauth_persistent_cache_entries_from_github(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES:
-        return _load_oauth_persistent_cache_entries_from_github_environment(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES:
-        return _load_oauth_persistent_cache_entries_from_github_organization(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_CONSUL_KV:
-        return _load_oauth_persistent_cache_entries_from_consul(cache_settings=resolved_settings)
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_REDIS_KV:
-        return _load_oauth_persistent_cache_entries_from_redis(cache_settings=resolved_settings)
+    loader = _resolve_oauth_remote_persistent_cache_loader(resolved_settings.backend)
+    if loader is not None:
+        return loader(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -5910,59 +5947,9 @@ def _load_oauth_persistent_cache_entries_local() -> dict[str, dict[str, Any]]:
 def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSettings | None = None) -> None:
     """Persist one in-memory OAuth cache entry to configured persistent backend when possible."""
     resolved_settings = cache_settings or OAuthCacheSettings()
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
-        _persist_oauth_cache_entry_aws(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE:
-        _persist_oauth_cache_entry_aws_ssm(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER:
-        _persist_oauth_cache_entry_gcp(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT:
-        _persist_oauth_cache_entry_azure(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
-        _persist_oauth_cache_entry_vault(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS:
-        _persist_oauth_cache_entry_kubernetes(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_OCI_VAULT:
-        _persist_oauth_cache_entry_oci(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS:
-        _persist_oauth_cache_entry_doppler(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_ONEPASSWORD_CONNECT:
-        _persist_oauth_cache_entry_onepassword_connect(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_BITWARDEN_SECRETS:
-        _persist_oauth_cache_entry_bitwarden(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS:
-        _persist_oauth_cache_entry_infisical(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS:
-        _persist_oauth_cache_entry_akeyless(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES:
-        _persist_oauth_cache_entry_gitlab(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES:
-        _persist_oauth_cache_entry_github(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES:
-        _persist_oauth_cache_entry_github_environment(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES:
-        _persist_oauth_cache_entry_github_organization(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_CONSUL_KV:
-        _persist_oauth_cache_entry_consul(cache_key=cache_key, cache_settings=resolved_settings)
-        return
-    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_REDIS_KV:
-        _persist_oauth_cache_entry_redis(cache_key=cache_key, cache_settings=resolved_settings)
+    persister = _resolve_oauth_remote_persistent_cache_persister(resolved_settings.backend)
+    if persister is not None:
+        persister(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 

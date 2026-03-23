@@ -10352,28 +10352,24 @@ class TestCLIHelpers:
         dumped = _safe_json_dump(payload)
         assert dumped == repr(payload)
 
+    def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
+        """Remote load/persist handler maps should stay complete for every non-local backend."""
+        remote_backends = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}
+
+        assert set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS) == remote_backends
+        assert set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS) == remote_backends
+
+        for function_name in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.values():
+            assert callable(getattr(cli_module, function_name, None))
+
+        for function_name in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.values():
+            assert callable(getattr(cli_module, function_name, None))
+
     @pytest.mark.parametrize(
         ("backend", "loader_name"),
         [
             ("local", "_load_oauth_persistent_cache_entries_local"),
-            ("aws_secrets_manager", "_load_oauth_persistent_cache_entries_from_aws"),
-            ("aws_ssm_parameter_store", "_load_oauth_persistent_cache_entries_from_aws_ssm"),
-            ("gcp_secret_manager", "_load_oauth_persistent_cache_entries_from_gcp"),
-            ("azure_key_vault", "_load_oauth_persistent_cache_entries_from_azure"),
-            ("hashicorp_vault", "_load_oauth_persistent_cache_entries_from_vault"),
-            ("kubernetes_secrets", "_load_oauth_persistent_cache_entries_from_kubernetes"),
-            ("oci_vault", "_load_oauth_persistent_cache_entries_from_oci"),
-            ("doppler_secrets", "_load_oauth_persistent_cache_entries_from_doppler"),
-            ("onepassword_connect", "_load_oauth_persistent_cache_entries_from_onepassword_connect"),
-            ("bitwarden_secrets", "_load_oauth_persistent_cache_entries_from_bitwarden"),
-            ("infisical_secrets", "_load_oauth_persistent_cache_entries_from_infisical"),
-            ("akeyless_secrets", "_load_oauth_persistent_cache_entries_from_akeyless"),
-            ("gitlab_variables", "_load_oauth_persistent_cache_entries_from_gitlab"),
-            ("github_actions_variables", "_load_oauth_persistent_cache_entries_from_github"),
-            ("github_environment_variables", "_load_oauth_persistent_cache_entries_from_github_environment"),
-            ("github_organization_variables", "_load_oauth_persistent_cache_entries_from_github_organization"),
-            ("consul_kv", "_load_oauth_persistent_cache_entries_from_consul"),
-            ("redis_kv", "_load_oauth_persistent_cache_entries_from_redis"),
+            *sorted(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.items()),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -10381,26 +10377,7 @@ class TestCLIHelpers:
         called: list[tuple[str, str]] = []
         sentinel = {"contract": {"access_token": "cached-token"}}
 
-        backend_loaders = {
-            "_load_oauth_persistent_cache_entries_from_aws",
-            "_load_oauth_persistent_cache_entries_from_aws_ssm",
-            "_load_oauth_persistent_cache_entries_from_gcp",
-            "_load_oauth_persistent_cache_entries_from_azure",
-            "_load_oauth_persistent_cache_entries_from_vault",
-            "_load_oauth_persistent_cache_entries_from_kubernetes",
-            "_load_oauth_persistent_cache_entries_from_oci",
-            "_load_oauth_persistent_cache_entries_from_doppler",
-            "_load_oauth_persistent_cache_entries_from_onepassword_connect",
-            "_load_oauth_persistent_cache_entries_from_bitwarden",
-            "_load_oauth_persistent_cache_entries_from_infisical",
-            "_load_oauth_persistent_cache_entries_from_akeyless",
-            "_load_oauth_persistent_cache_entries_from_gitlab",
-            "_load_oauth_persistent_cache_entries_from_github",
-            "_load_oauth_persistent_cache_entries_from_github_environment",
-            "_load_oauth_persistent_cache_entries_from_github_organization",
-            "_load_oauth_persistent_cache_entries_from_consul",
-            "_load_oauth_persistent_cache_entries_from_redis",
-        }
+        backend_loaders = set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.values())
 
         for name in backend_loaders:
             monkeypatch.setattr(
@@ -10429,24 +10406,7 @@ class TestCLIHelpers:
         ("backend", "persist_name"),
         [
             ("local", "_persist_oauth_cache_entry_local"),
-            ("aws_secrets_manager", "_persist_oauth_cache_entry_aws"),
-            ("aws_ssm_parameter_store", "_persist_oauth_cache_entry_aws_ssm"),
-            ("gcp_secret_manager", "_persist_oauth_cache_entry_gcp"),
-            ("azure_key_vault", "_persist_oauth_cache_entry_azure"),
-            ("hashicorp_vault", "_persist_oauth_cache_entry_vault"),
-            ("kubernetes_secrets", "_persist_oauth_cache_entry_kubernetes"),
-            ("oci_vault", "_persist_oauth_cache_entry_oci"),
-            ("doppler_secrets", "_persist_oauth_cache_entry_doppler"),
-            ("onepassword_connect", "_persist_oauth_cache_entry_onepassword_connect"),
-            ("bitwarden_secrets", "_persist_oauth_cache_entry_bitwarden"),
-            ("infisical_secrets", "_persist_oauth_cache_entry_infisical"),
-            ("akeyless_secrets", "_persist_oauth_cache_entry_akeyless"),
-            ("gitlab_variables", "_persist_oauth_cache_entry_gitlab"),
-            ("github_actions_variables", "_persist_oauth_cache_entry_github"),
-            ("github_environment_variables", "_persist_oauth_cache_entry_github_environment"),
-            ("github_organization_variables", "_persist_oauth_cache_entry_github_organization"),
-            ("consul_kv", "_persist_oauth_cache_entry_consul"),
-            ("redis_kv", "_persist_oauth_cache_entry_redis"),
+            *sorted(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.items()),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -10454,26 +10414,7 @@ class TestCLIHelpers:
         called: list[tuple[str, str, str]] = []
         cache_key = "contract-key"
 
-        backend_persisters = {
-            "_persist_oauth_cache_entry_aws",
-            "_persist_oauth_cache_entry_aws_ssm",
-            "_persist_oauth_cache_entry_gcp",
-            "_persist_oauth_cache_entry_azure",
-            "_persist_oauth_cache_entry_vault",
-            "_persist_oauth_cache_entry_kubernetes",
-            "_persist_oauth_cache_entry_oci",
-            "_persist_oauth_cache_entry_doppler",
-            "_persist_oauth_cache_entry_onepassword_connect",
-            "_persist_oauth_cache_entry_bitwarden",
-            "_persist_oauth_cache_entry_infisical",
-            "_persist_oauth_cache_entry_akeyless",
-            "_persist_oauth_cache_entry_gitlab",
-            "_persist_oauth_cache_entry_github",
-            "_persist_oauth_cache_entry_github_environment",
-            "_persist_oauth_cache_entry_github_organization",
-            "_persist_oauth_cache_entry_consul",
-            "_persist_oauth_cache_entry_redis",
-        }
+        backend_persisters = set(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.values())
 
         for name in backend_persisters:
             monkeypatch.setattr(

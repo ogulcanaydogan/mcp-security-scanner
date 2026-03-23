@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8Z Implementation State
+# Setup Complete — Sprint 1-8AA Implementation State
 
-This file records the actual implementation status after Sprint 8Z.
+This file records the actual implementation status after Sprint 8AA.
 
 ## Completed Work
 
@@ -913,6 +913,20 @@ This file records the actual implementation status after Sprint 8Z.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8AA (OAuth Cache Stabilization + Release Hardening)
+
+- OAuth cache backend dispatch was normalized to a centralized backend->handler contract:
+  - remote load handlers are now resolved from one backend map
+  - remote persist handlers are now resolved from one backend map
+  - behavior remains unchanged (`local` fallback, non-fatal bypass, pre-provisioned semantics)
+- CI release hardening was strengthened without CLI/runtime changes:
+  - build smoke validates `pyproject` version == `__version__` == wheel metadata version == installed `mcp-scan --version`
+  - publish guard now validates tag version against `pyproject`, `__version__`, and wheel metadata before OIDC publish
+  - existing OIDC publish + Sigstore + idempotent GitHub release + PyPI visibility verification remains intact
+- OAuth cache contract tests were tightened:
+  - dispatch map completeness is validated against all non-local supported backends
+  - existing persistent bypass, non-fatal provider error, compare contract, and local-only `cache rotate` invariants remain enforced
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -925,7 +939,7 @@ This file records the actual implementation status after Sprint 8Z.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`; Sprint 8AA provides the shared dispatch/contract baseline for future provider onboarding
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
