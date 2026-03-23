@@ -6113,8 +6113,14 @@ def _load_oauth_persistent_cache_entries(
     resolved_settings = cache_settings or OAuthCacheSettings()
     loader = _resolve_oauth_remote_persistent_cache_loader(resolved_settings.backend)
     if loader is not None:
-        return loader(cache_settings=resolved_settings)
-    return _load_oauth_persistent_cache_entries_local()
+        try:
+            return loader(cache_settings=resolved_settings)
+        except Exception:
+            return {}
+    try:
+        return _load_oauth_persistent_cache_entries_local()
+    except Exception:
+        return {}
 
 
 def _load_oauth_persistent_cache_entries_local() -> dict[str, dict[str, Any]]:
@@ -6140,9 +6146,15 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
     resolved_settings = cache_settings or OAuthCacheSettings()
     persister = _resolve_oauth_remote_persistent_cache_persister(resolved_settings.backend)
     if persister is not None:
-        persister(cache_key=cache_key, cache_settings=resolved_settings)
+        try:
+            persister(cache_key=cache_key, cache_settings=resolved_settings)
+        except Exception:
+            return
         return
-    _persist_oauth_cache_entry_local(cache_key=cache_key)
+    try:
+        _persist_oauth_cache_entry_local(cache_key=cache_key)
+    except Exception:
+        return
 
 
 def _persist_oauth_cache_entry_local(cache_key: str) -> None:

@@ -77,6 +77,7 @@ flowchart LR
 - v1.0.0 GA finalization: RC2 snapshot promoted to stable without runtime/CLI/auth/report contract changes
 - Post-1.0 provider v2 expansion (Sprint 9A): GitLab project/group variable backends now support optional `gitlab_environment_scope` (default `*`)
 - Post-1.0 provider v2 expansion (Sprint 9B): GitHub organization variable backend preserves existing visibility (`all` / `private` / `selected`) during cache updates
+- Post-1.0 stabilization hardening (Sprint 9C): OAuth cache dispatch error paths fail closed (`load -> {}`, `persist -> no-op`) and publish visibility verification uses explicit PyPI index/no-cache flags
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -910,7 +911,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.2` patch release with GitHub organization variable v2 visibility-preserving updates.
+- `1.0.3` patch release with post-1.0 stabilization hardening for OAuth cache dispatch and publish visibility checks.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

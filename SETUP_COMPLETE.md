@@ -1004,6 +1004,18 @@ This file records the actual implementation status after Sprint 8AD.
 - Release posture remains unchanged:
   - OIDC publish + Sigstore + idempotent GitHub Release + version/visibility guards continue as-is
 
+### Sprint 9C (Post-1.0 Stabilization Hardening)
+
+- No new provider added; contract safety was tightened instead.
+- OAuth cache dispatch fail-closed behavior is explicitly hardened:
+  - backend load dispatch exceptions now return empty payload (`{}`) instead of bubbling up
+  - backend persist dispatch exceptions now no-op instead of bubbling up
+- Contract test posture strengthened:
+  - supported backend list + load/persist dispatch map completeness remain explicit and enforced
+  - `persistent=false`, non-fatal bypass, `cache rotate` local-only, and compare contract invariants remain enforced
+- Release visibility check hardened for deterministic index lookups:
+  - `pip index versions` now runs with `--no-cache-dir --index-url https://pypi.org/simple`
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:

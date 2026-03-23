@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9B scope plus `v1.0.1` release line.
+Current index for the implemented Sprint 1-9C scope plus `v1.0.3` stabilization target.
 
 ## Status Snapshot
 
@@ -55,6 +55,7 @@ Current index for the implemented Sprint 1-9B scope plus `v1.0.1` release line.
 - v1.0.0 GA: done (RC2 snapshot promoted to stable with feature freeze preserved and no runtime/CLI/auth/report contract changes)
 - Sprint 9A: done (GitLab project/group variable v2 with optional `gitlab_environment_scope`, default `*`)
 - Sprint 9B: done (GitHub organization variable v2 with visibility-preserving updates for `all`/`private`/`selected`)
+- Sprint 9C: done (post-1.0 stabilization hardening for OAuth cache dispatch fail-closed behavior and deterministic PyPI visibility verification flags)
 
 ## Top-Level Docs
 

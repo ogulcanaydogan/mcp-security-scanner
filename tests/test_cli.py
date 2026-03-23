@@ -10984,8 +10984,8 @@ class TestCLIHelpers:
         dumped = _safe_json_dump(payload)
         assert dumped == repr(payload)
 
-    def test_oauth_cache_supported_backend_contract_is_frozen_for_rc(self):
-        """Supported backend set should remain explicit during v1.0 RC stabilization."""
+    def test_oauth_cache_supported_backend_contract_is_explicit_and_stable(self):
+        """Supported backend set should remain explicit for post-1.0 stabilization."""
         assert set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) == {
             "local",
             "aws_secrets_manager",
@@ -11098,6 +11098,60 @@ class TestCLIHelpers:
             ),
         )
         assert called == [(persist_name, cache_key, backend)]
+
+    @pytest.mark.parametrize("backend", sorted(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS))
+    def test_oauth_cache_load_dispatch_bypasses_on_loader_exception(self, monkeypatch, backend: str):
+        """Persistent cache load should fail closed (empty payload) when backend loader raises."""
+
+        def raise_loader(*args: object, **kwargs: object) -> dict[str, dict[str, object]]:
+            del args, kwargs
+            raise RuntimeError("loader-boom")
+
+        if backend == cli_module._OAUTH_CACHE_BACKEND_LOCAL:
+            monkeypatch.setattr(cli_module, "_load_oauth_persistent_cache_entries_local", raise_loader)
+        else:
+            loader_name = cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS[backend]
+            monkeypatch.setattr(cli_module, loader_name, raise_loader)
+
+        entries = cli_module._load_oauth_persistent_cache_entries(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="contract",
+                backend=backend,
+            )
+        )
+        assert entries == {}
+
+    @pytest.mark.parametrize("backend", sorted(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS))
+    def test_oauth_cache_persist_dispatch_bypasses_on_persister_exception(self, monkeypatch, backend: str):
+        """Persistent cache write should bypass silently when backend persister raises."""
+        cache_key = "contract-key"
+        cli_module._clear_oauth_token_cache()
+        cli_module._OAUTH_TOKEN_CACHE[cache_key] = {
+            "access_token": "access-token",
+            "expires_at": cli_module._oauth_now() + 300.0,
+        }
+
+        def raise_persister(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise RuntimeError("persister-boom")
+
+        if backend == cli_module._OAUTH_CACHE_BACKEND_LOCAL:
+            monkeypatch.setattr(cli_module, "_persist_oauth_cache_entry_local", raise_persister)
+        else:
+            persist_name = cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS[backend]
+            monkeypatch.setattr(cli_module, persist_name, raise_persister)
+
+        cli_module._persist_oauth_cache_entry(
+            cache_key,
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="contract",
+                backend=backend,
+            ),
+        )
+        assert cli_module._OAUTH_TOKEN_CACHE[cache_key]["access_token"] == "access-token"
+        cli_module._clear_oauth_token_cache()
 
     @pytest.mark.parametrize("backend", sorted(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS))
     def test_oauth_cache_hydrate_skips_persistent_layer_when_disabled(self, monkeypatch, backend: str):
