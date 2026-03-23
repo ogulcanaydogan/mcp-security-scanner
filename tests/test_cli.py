@@ -10896,6 +10896,32 @@ class TestCLIHelpers:
         dumped = _safe_json_dump(payload)
         assert dumped == repr(payload)
 
+    def test_oauth_cache_supported_backend_contract_is_frozen_for_rc(self):
+        """Supported backend set should remain explicit during v1.0 RC stabilization."""
+        assert set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) == {
+            "local",
+            "aws_secrets_manager",
+            "aws_ssm_parameter_store",
+            "gcp_secret_manager",
+            "azure_key_vault",
+            "hashicorp_vault",
+            "kubernetes_secrets",
+            "oci_vault",
+            "doppler_secrets",
+            "onepassword_connect",
+            "bitwarden_secrets",
+            "infisical_secrets",
+            "akeyless_secrets",
+            "gitlab_variables",
+            "gitlab_group_variables",
+            "github_actions_variables",
+            "github_environment_variables",
+            "github_organization_variables",
+            "consul_kv",
+            "redis_kv",
+            "cloudflare_kv",
+        }
+
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
         """Remote load/persist handler maps should stay complete for every non-local backend."""
         remote_backends = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}

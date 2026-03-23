@@ -73,6 +73,7 @@ flowchart LR
 - Stabilization hardening (Sprint 8AA): centralized OAuth cache backend dispatch contract + stricter publish-time version consistency checks (`pyproject`, `__version__`, wheel metadata, CLI)
 - OAuth cache provider expansion (Sprint 8AB): added `cloudflare_kv` backend (env-token auth, pre-provisioned KV key model)
 - OAuth cache provider expansion (Sprint 8AC): added `gitlab_group_variables` backend (env-token auth, pre-provisioned group variable model)
+- v1.0 RC stabilization (Sprint 8AD): feature-freeze with backend contract lock, RC-safe tag/version normalization (`v1.0.0-rcN` -> `1.0.0rcN`) in publish guards, and post-1.0 deferred-provider positioning
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -898,7 +899,10 @@ Current quality gate:
 - coverage `>=80%`
 - `mypy src` clean
 
-## Roadmap (Post Sprint 8AC)
+## Roadmap (Post Sprint 8AD / v1.0 RC Freeze)
 
-Deferred items:
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; backend onboarding now uses a shared dispatch/contract baseline from Sprint 8AA
+Current release target:
+- `1.0.0rc1` as the stabilization checkpoint with no new runtime/provider features.
+
+Deferred (post-1.0):
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

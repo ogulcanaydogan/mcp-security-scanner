@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8AC scope.
+Current index for the implemented Sprint 1-8AD scope.
 
 ## Status Snapshot
 
@@ -51,6 +51,7 @@ Current index for the implemented Sprint 1-8AC scope.
 - Sprint 8AA: done (OAuth cache stabilization: centralized backend dispatch contract + publish-time version consistency guard across `pyproject`/`__version__`/wheel/CLI)
 - Sprint 8AB: done (advanced OAuth cache backend v19 with Cloudflare KV API, env-token auth only, pre-provisioned KV key model)
 - Sprint 8AC: done (advanced OAuth cache backend v20 with GitLab group variables API, env-token auth only, pre-provisioned group variable model)
+- Sprint 8AD: done (v1.0 RC stabilization freeze with explicit backend contract lock and release-guard normalization for `v1.0.0-rcN` tags)
 
 ## Top-Level Docs
 
@@ -169,6 +170,6 @@ mypy src
 
 Coverage threshold is enforced at `>=80%`.
 
-## Current Deferred Backlog
+## Current Deferred Backlog (Post-1.0)
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA established a shared backend dispatch/contract baseline for future providers
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; Sprint 8AA established the shared backend dispatch/contract baseline used for post-1.0 provider onboarding

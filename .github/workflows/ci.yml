@@ -212,7 +212,8 @@ jobs:
       - name: Validate tag/version and build artifacts
         run: |
           set -euo pipefail
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION_RAW="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION="$(printf '%s' "$TAG_VERSION_RAW" | sed -E 's/-([ab]|rc)/\1/g')"
           PROJECT_VERSION="$(python - <<'PY'
           import pathlib
           import tomllib
@@ -255,15 +256,15 @@ jobs:
           PY
           )"
           if [ "$TAG_VERSION" != "$PROJECT_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match pyproject version ($PROJECT_VERSION)."
+            echo "::error::Tag version ($TAG_VERSION_RAW -> normalized $TAG_VERSION) does not match pyproject version ($PROJECT_VERSION)."
             exit 1
           fi
           if [ "$TAG_VERSION" != "$INIT_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match __version__ ($INIT_VERSION)."
+            echo "::error::Tag version ($TAG_VERSION_RAW -> normalized $TAG_VERSION) does not match __version__ ($INIT_VERSION)."
             exit 1
           fi
           if [ "$TAG_VERSION" != "$WHEEL_VERSION" ]; then
-            echo "::error::Tag version ($TAG_VERSION) does not match wheel metadata version ($WHEEL_VERSION)."
+            echo "::error::Tag version ($TAG_VERSION_RAW -> normalized $TAG_VERSION) does not match wheel metadata version ($WHEEL_VERSION)."
             exit 1
           fi
           if ! ls dist/*.tar.gz >/dev/null 2>&1; then
@@ -282,11 +283,12 @@ jobs:
       - name: Verify wheel CLI version matches tag
         run: |
           set -euo pipefail
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION_RAW="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION="$(printf '%s' "$TAG_VERSION_RAW" | sed -E 's/-([ab]|rc)/\1/g')"
           python -m pip install --force-reinstall dist/*.whl
           CLI_VERSION="$(mcp-scan --version | sed -E 's/^.*version[[:space:]]+//')"
           if [ "$CLI_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::Installed CLI version ($CLI_VERSION) does not match tag version ($TAG_VERSION)."
+            echo "::error::Installed CLI version ($CLI_VERSION) does not match tag version ($TAG_VERSION_RAW -> normalized $TAG_VERSION)."
             exit 1
           fi
 
@@ -319,7 +321,8 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_NAME="ogulcanaydogan-mcp-security-scanner"
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION_RAW="${GITHUB_REF#refs/tags/v}"
+          TAG_VERSION="$(printf '%s' "$TAG_VERSION_RAW" | sed -E 's/-([ab]|rc)/\1/g')"
           ATTEMPTS=12
           SLEEP_SECONDS=10
 
