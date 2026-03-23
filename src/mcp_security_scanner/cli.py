@@ -67,6 +67,7 @@ _OAUTH_CACHE_BACKEND_INFISICAL_SECRETS = "infisical_secrets"
 _OAUTH_CACHE_BACKEND_AKEYLESS_SECRETS = "akeyless_secrets"
 _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES = "gitlab_variables"
 _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES = "gitlab_group_variables"
+_OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES = "gitlab_instance_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES = "github_actions_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variables"
@@ -128,6 +129,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
         "_persist_oauth_cache_entry_gitlab",
     ),
     _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_gitlab",
+        "_persist_oauth_cache_entry_gitlab",
+    ),
+    _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES: (
         "_load_oauth_persistent_cache_entries_from_gitlab",
         "_persist_oauth_cache_entry_gitlab",
     ),
@@ -3154,7 +3159,11 @@ def _coerce_oauth_cache_settings(
             "auth.cache.akeyless_secret_name is required when auth.cache.backend='akeyless_secrets'.",
         )
 
-    if backend not in {_OAUTH_CACHE_BACKEND_GITLAB_VARIABLES, _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES} and (
+    if backend not in {
+        _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
+        _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
+        _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES,
+    } and (
         gitlab_project_id is not None
         or gitlab_group_id is not None
         or gitlab_variable_key is not None
@@ -3167,7 +3176,8 @@ def _coerce_oauth_cache_settings(
             "auth.cache.gitlab_project_id, auth.cache.gitlab_group_id, auth.cache.gitlab_variable_key, "
             "auth.cache.gitlab_environment_scope, auth.cache.gitlab_token_env, and auth.cache.gitlab_api_url "
             "are only supported when "
-            "auth.cache.backend is 'gitlab_variables' or 'gitlab_group_variables'.",
+            "auth.cache.backend is 'gitlab_variables', 'gitlab_group_variables', or "
+            "'gitlab_instance_variables'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES and gitlab_project_id is None:
@@ -3190,14 +3200,35 @@ def _coerce_oauth_cache_settings(
             None,
             "auth.cache.gitlab_project_id is only supported when auth.cache.backend='gitlab_variables'.",
         )
+    if backend == _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES and gitlab_project_id is not None:
+        return (
+            None,
+            "auth.cache.gitlab_project_id is only supported when auth.cache.backend='gitlab_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES and gitlab_group_id is not None:
+        return (
+            None,
+            "auth.cache.gitlab_group_id is only supported when auth.cache.backend='gitlab_group_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES and gitlab_environment_scope is not None:
+        return (
+            None,
+            "auth.cache.gitlab_environment_scope is only supported when auth.cache.backend is "
+            "'gitlab_variables' or 'gitlab_group_variables'.",
+        )
     if (
-        backend in {_OAUTH_CACHE_BACKEND_GITLAB_VARIABLES, _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES}
+        backend
+        in {
+            _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
+            _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
+            _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES,
+        }
         and gitlab_variable_key is None
     ):
         return (
             None,
             "auth.cache.gitlab_variable_key is required when auth.cache.backend is "
-            "'gitlab_variables' or 'gitlab_group_variables'.",
+            "'gitlab_variables', 'gitlab_group_variables', or 'gitlab_instance_variables'.",
         )
 
     if backend != _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES and github_environment_name is not None:
@@ -4291,6 +4322,7 @@ def _coerce_oauth_cache_settings(
                     in {
                         _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
                         _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
+                        _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES,
                     }
                     else None
                 )
@@ -8096,11 +8128,15 @@ def _build_gitlab_variable_path(cache_settings: OAuthCacheSettings) -> str | Non
         and cache_settings.gitlab_group_id is not None
     ):
         return f"/groups/{quote(cache_settings.gitlab_group_id, safe='')}/variables/{key_segment}"
+    if cache_settings.backend == _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES:
+        return f"/admin/ci/variables/{key_segment}"
     return None
 
 
 def _build_gitlab_variable_query_params(cache_settings: OAuthCacheSettings) -> dict[str, str] | None:
     """Build query params for GitLab variable API access from validated cache settings."""
+    if cache_settings.backend == _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES:
+        return {}
     if cache_settings.backend not in {
         _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
         _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
@@ -8204,18 +8240,21 @@ def _write_oauth_cache_payload_to_gitlab(
             "entries": entries,
         }
         serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        environment_scope = (cache_settings.gitlab_environment_scope or "*").strip()
-        if not environment_scope:
-            return False
+        request_payload: dict[str, str] = {"value": serialized_payload}
+        if cache_settings.backend in {
+            _OAUTH_CACHE_BACKEND_GITLAB_VARIABLES,
+            _OAUTH_CACHE_BACKEND_GITLAB_GROUP_VARIABLES,
+        }:
+            environment_scope = (cache_settings.gitlab_environment_scope or "*").strip()
+            if not environment_scope:
+                return False
+            request_payload["environment_scope"] = environment_scope
 
         try:
             response = client.put(
                 path,
                 params=params,
-                data={
-                    "value": serialized_payload,
-                    "environment_scope": environment_scope,
-                },
+                data=request_payload,
             )
         except Exception:
             return False

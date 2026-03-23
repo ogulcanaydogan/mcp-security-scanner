@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ogulcanaydogan-mcp-security-scanner"
-version = "1.0.5"
+version = "1.0.6"
 description = "Security scanner for Model Context Protocol (MCP) servers. Detects prompt injection, tool poisoning, capability escalation, and rug-pull attacks."
 readme = "README.md"
 license = { text = "Apache-2.0" }

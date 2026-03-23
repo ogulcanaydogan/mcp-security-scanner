@@ -3010,6 +3010,50 @@ class TestCLIHelpers:
         assert settings.gitlab_token_env == "GITLAB_TOKEN"
         assert settings.gitlab_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_gitlab_instance_backend(self):
+        """OAuth cache settings should accept gitlab_instance_variables backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "gitlab_instance_variables",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_token_env": "GITLAB_TOKEN_ADMIN",
+                    "gitlab_api_url": "https://gitlab.example.com/api/v4",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "gitlab_instance_variables"
+        assert settings.gitlab_variable_key == "MCP_OAUTH_CACHE"
+        assert settings.gitlab_token_env == "GITLAB_TOKEN_ADMIN"
+        assert settings.gitlab_api_url == "https://gitlab.example.com/api/v4"
+        assert settings.gitlab_environment_scope is None
+
+    def test_coerce_oauth_cache_settings_sets_gitlab_instance_defaults(self):
+        """OAuth cache settings should apply default gitlab_instance_variables optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "gitlab_instance_variables",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.gitlab_token_env == "GITLAB_TOKEN"
+        assert settings.gitlab_api_url is None
+        assert settings.gitlab_environment_scope is None
+
     def test_coerce_oauth_cache_settings_accepts_github_backend(self):
         """OAuth cache settings should accept github_actions_variables backend with required fields."""
         settings, error = cli_module._coerce_oauth_cache_settings(
@@ -3726,11 +3770,11 @@ class TestCLIHelpers:
             ),
             (
                 {"backend": "local", "gitlab_project_id": "12345"},
-                "auth.cache.backend is 'gitlab_variables' or 'gitlab_group_variables'",
+                "auth.cache.backend is 'gitlab_variables', 'gitlab_group_variables', or " "'gitlab_instance_variables'",
             ),
             (
                 {"backend": "local", "gitlab_environment_scope": "production"},
-                "auth.cache.backend is 'gitlab_variables' or 'gitlab_group_variables'",
+                "auth.cache.backend is 'gitlab_variables', 'gitlab_group_variables', or " "'gitlab_instance_variables'",
             ),
             (
                 {"backend": "gitlab_group_variables"},
@@ -3752,6 +3796,35 @@ class TestCLIHelpers:
                     "gitlab_project_id": "12345",
                 },
                 "auth.cache.gitlab_project_id is only supported when auth.cache.backend='gitlab_variables'.",
+            ),
+            (
+                {"backend": "gitlab_instance_variables"},
+                "auth.cache.gitlab_variable_key is required",
+            ),
+            (
+                {
+                    "backend": "gitlab_instance_variables",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_project_id": "12345",
+                },
+                "auth.cache.gitlab_project_id is only supported when auth.cache.backend='gitlab_variables'.",
+            ),
+            (
+                {
+                    "backend": "gitlab_instance_variables",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_group_id": "67890",
+                },
+                "auth.cache.gitlab_group_id is only supported when auth.cache.backend='gitlab_group_variables'.",
+            ),
+            (
+                {
+                    "backend": "gitlab_instance_variables",
+                    "gitlab_variable_key": "MCP_OAUTH_CACHE",
+                    "gitlab_environment_scope": "production",
+                },
+                "auth.cache.gitlab_environment_scope is only supported when auth.cache.backend is "
+                "'gitlab_variables' or 'gitlab_group_variables'.",
             ),
             (
                 {"backend": "github_actions_variables"},
@@ -7495,8 +7568,8 @@ class TestCLIHelpers:
         assert cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=missing_settings) is None
         assert cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=missing_settings, entries={}) is False
 
-    def test_gitlab_variable_path_supports_group_backend(self):
-        """GitLab variable path builder should support both project and group backends."""
+    def test_gitlab_variable_path_supports_project_group_and_instance_backends(self):
+        """GitLab variable path/query builder should support project, group, and instance backends."""
         project_settings = cli_module.OAuthCacheSettings(
             persistent=True,
             namespace="gitlab-prod",
@@ -7511,6 +7584,12 @@ class TestCLIHelpers:
             gitlab_group_id="67890",
             gitlab_variable_key="MCP_OAUTH_CACHE",
         )
+        instance_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-prod",
+            backend="gitlab_instance_variables",
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+        )
 
         assert cli_module._build_gitlab_variable_path(cache_settings=project_settings) == (
             "/projects/12345/variables/MCP_OAUTH_CACHE"
@@ -7518,12 +7597,16 @@ class TestCLIHelpers:
         assert cli_module._build_gitlab_variable_path(cache_settings=group_settings) == (
             "/groups/67890/variables/MCP_OAUTH_CACHE"
         )
+        assert cli_module._build_gitlab_variable_path(cache_settings=instance_settings) == (
+            "/admin/ci/variables/MCP_OAUTH_CACHE"
+        )
         assert cli_module._build_gitlab_variable_query_params(cache_settings=project_settings) == {
             "filter[environment_scope]": "*"
         }
         assert cli_module._build_gitlab_variable_query_params(cache_settings=group_settings) == {
             "filter[environment_scope]": "*"
         }
+        assert cli_module._build_gitlab_variable_query_params(cache_settings=instance_settings) == {}
 
     def test_gitlab_group_read_and_write_use_group_variable_path(self, monkeypatch):
         """GitLab group backend should read/write through /groups/<id>/variables/<key> path."""
@@ -7599,6 +7682,76 @@ class TestCLIHelpers:
         )
         assert saw_put_requests[0][0] == "/groups/67890/variables/MCP_OAUTH_CACHE"
         assert saw_put_requests[0][1] == {"filter[environment_scope]": "production"}
+
+    def test_gitlab_instance_read_and_write_use_instance_variable_path(self, monkeypatch):
+        """GitLab instance backend should read/write through /admin/ci/variables/<key> path."""
+        monkeypatch.setenv("GITLAB_TOKEN", "gitlab-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        saw_get_requests: list[tuple[str, object]] = []
+        saw_put_requests: list[tuple[str, object, object]] = []
+        scenario = {"value": 0}
+
+        class FakeGitLabClient:
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                saw_get_requests.append((path, kwargs.get("params")))
+                if scenario["value"] == 0:
+                    scenario["value"] = 1
+                    return FakeResponse(
+                        status_code=200,
+                        json_data={
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        },
+                    )
+                return FakeResponse(status_code=200, json_data={"value": "{}"})
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                saw_put_requests.append((path, kwargs.get("params"), kwargs.get("data")))
+                payload = kwargs.get("data")
+                assert isinstance(payload, dict)
+                assert isinstance(payload.get("value"), str)
+                assert "environment_scope" not in payload
+                return FakeResponse(status_code=200, json_data={})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeGitLabClient)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="gitlab-instance",
+            backend="gitlab_instance_variables",
+            gitlab_variable_key="MCP_OAUTH_CACHE",
+            gitlab_token_env="GITLAB_TOKEN",
+            gitlab_api_url="https://gitlab.example.com/api/v4",
+        )
+
+        payload = cli_module._read_oauth_cache_payload_from_gitlab(cache_settings=settings)
+        wrote = cli_module._write_oauth_cache_payload_to_gitlab(cache_settings=settings, entries={})
+
+        assert isinstance(payload, dict)
+        assert wrote is True
+        assert saw_get_requests[0] == ("/admin/ci/variables/MCP_OAUTH_CACHE", {})
+        assert saw_put_requests[0][0] == "/admin/ci/variables/MCP_OAUTH_CACHE"
+        assert saw_put_requests[0][1] == {}
 
     def test_persist_gitlab_removes_deleted_in_memory_entry(self, monkeypatch):
         """GitLab persister should remove cache key when in-memory entry is missing."""
@@ -11387,6 +11540,7 @@ class TestCLIHelpers:
             "akeyless_secrets",
             "gitlab_variables",
             "gitlab_group_variables",
+            "gitlab_instance_variables",
             "github_actions_variables",
             "github_environment_variables",
             "github_organization_variables",
@@ -11827,6 +11981,20 @@ class TestCLIHelpers:
                     namespace="contract",
                     backend="gitlab_group_variables",
                     gitlab_group_id="67890",
+                    gitlab_variable_key="MCP_OAUTH_CACHE",
+                    gitlab_token_env="GITLAB_TOKEN",
+                    gitlab_api_url="https://gitlab.example.com/api/v4",
+                ),
+            ),
+            (
+                "_build_gitlab_http_client",
+                None,
+                "_read_oauth_cache_payload_from_gitlab",
+                "_write_oauth_cache_payload_to_gitlab",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="gitlab_instance_variables",
                     gitlab_variable_key="MCP_OAUTH_CACHE",
                     gitlab_token_env="GITLAB_TOKEN",
                     gitlab_api_url="https://gitlab.example.com/api/v4",

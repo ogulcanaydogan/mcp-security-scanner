@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke + tag/version consistency guard (`pyproject`/`__version__`/wheel/CLI) + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -80,6 +80,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9C): OAuth cache dispatch error paths fail closed (`load -> {}`, `persist -> no-op`) and publish visibility verification uses explicit PyPI index/no-cache flags
 - Post-1.0 provider expansion (Sprint 9D): added `etcd_kv` backend (etcd v3 JSON API, env-token auth, pre-provisioned key model)
 - Post-1.0 stabilization hardening (Sprint 9E): centralized remote backend spec as canonical source for dispatch maps and tightened matrix contract coverage without runtime behavior changes
+- Post-1.0 provider expansion (Sprint 9F): added `gitlab_instance_variables` backend (GitLab admin instance variable API, env-token auth, pre-provisioned variable model without environment scope)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -646,7 +647,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, or `etcd_kv`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, or `etcd_kv`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store`)
@@ -688,7 +689,7 @@ Notes:
   - optional `akeyless_api_url` (`https` URL; defaults to Akeyless API)
   - `gitlab_project_id` (required when `backend=gitlab_variables`, numeric project ID)
   - `gitlab_group_id` (required when `backend=gitlab_group_variables`, numeric group ID)
-  - `gitlab_variable_key` (required when `backend=gitlab_variables` or `backend=gitlab_group_variables`, env-style key)
+  - `gitlab_variable_key` (required when `backend=gitlab_variables`, `backend=gitlab_group_variables`, or `backend=gitlab_instance_variables`, env-style key)
   - optional `gitlab_environment_scope` (default `*`, only for `backend=gitlab_variables` or `backend=gitlab_group_variables`)
   - optional `gitlab_token_env` (default `GITLAB_TOKEN`)
   - optional `gitlab_api_url` (`https` URL; defaults to `https://gitlab.com/api/v4`)
@@ -804,6 +805,13 @@ Notes:
       (`auth.cache.gitlab_group_id` / `auth.cache.gitlab_variable_key` / `auth.cache.gitlab_environment_scope`)
     - auth uses env token only (`auth.cache.gitlab_token_env`, default `GITLAB_TOKEN`)
     - `auth.cache.gitlab_environment_scope` is optional and defaults to `*`
+    - variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=gitlab_instance_variables`:
+    - cache payload is stored as a single JSON envelope in configured GitLab instance variable value
+      (`auth.cache.gitlab_variable_key`)
+    - auth uses env token only (`auth.cache.gitlab_token_env`, default `GITLAB_TOKEN`)
+    - environment scope is not used in v1 for instance variables
     - variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - `backend=github_actions_variables`:
@@ -940,8 +948,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.5` patch stabilization release (no new provider) with canonical OAuth cache remote-backend spec + stricter dispatch contract checks.
+- `1.0.6` patch provider expansion release (`gitlab_instance_variables`) under the existing post-1.0 contract baseline.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, and `etcd_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, and `etcd_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

@@ -2,17 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.4`.
+- Release line is stable at `v1.0.6`.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.5` stabilization hardening while keeping the GA contract stable:
+- `v1.0.6` provider expansion while keeping the GA contract stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - keep OAuth cache remote dispatch maps derived from one canonical backend spec source
-  - strengthen backend dispatch contract matrix checks (persistent=false, non-fatal bypass, local-only `cache rotate`)
-  - keep release hardening deterministic (explicit PyPI index/no-cache visibility checks)
+  - add `gitlab_instance_variables` backend using GitLab admin CI variable API (`/admin/ci/variables/{key}`)
+  - keep v1 behavior pre-provisioned-only (no variable create) and non-fatal bypass on provider errors
+  - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks)
 
 ## v1.0 GA Status
 
@@ -24,5 +24,5 @@
 ## Post-1.0 Backlog
 
 - Additional persistent secret-store providers beyond:
-  - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`
+  - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`
 - Optional report/visual schema improvements that do not break contracts.
