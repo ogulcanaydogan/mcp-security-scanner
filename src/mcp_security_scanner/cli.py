@@ -69,6 +69,7 @@ _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES = "github_actions_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variables"
 _OAUTH_CACHE_BACKEND_CONSUL_KV = "consul_kv"
+_OAUTH_CACHE_BACKEND_REDIS_KV = "redis_kv"
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
     _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
@@ -88,6 +89,7 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES,
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES,
     _OAUTH_CACHE_BACKEND_CONSUL_KV,
+    _OAUTH_CACHE_BACKEND_REDIS_KV,
 }
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
@@ -109,6 +111,7 @@ _AKEYLESS_DEFAULT_API_URL = "https://api.akeyless.io"
 _GITLAB_DEFAULT_API_URL = "https://gitlab.com/api/v4"
 _GITHUB_DEFAULT_API_URL = "https://api.github.com"
 _CONSUL_DEFAULT_API_URL = "http://127.0.0.1:8500"
+_REDIS_DEFAULT_URL = "redis://127.0.0.1:6379/0"
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,9 @@ class OAuthCacheSettings:
     consul_key_path: str | None = None
     consul_token_env: str | None = None
     consul_api_url: str | None = None
+    redis_key: str | None = None
+    redis_url: str | None = None
+    redis_password_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2334,6 +2340,9 @@ def _coerce_oauth_cache_settings(
             "consul_key_path",
             "consul_token_env",
             "consul_api_url",
+            "redis_key",
+            "redis_url",
+            "redis_password_env",
         }
     ]
     if unknown_fields:
@@ -2352,7 +2361,8 @@ def _coerce_oauth_cache_settings(
             "infisical_api_url, akeyless_secret_name, akeyless_token_env, akeyless_api_url, "
             "gitlab_project_id, gitlab_variable_key, gitlab_token_env, gitlab_api_url, "
             "github_repository, github_organization, github_environment_name, github_variable_name, "
-            "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url.",
+            "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url, "
+            "redis_key, redis_url, redis_password_env.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -2857,6 +2867,31 @@ def _coerce_oauth_cache_settings(
         if parsed_consul_api_url.scheme not in {"http", "https"} or not parsed_consul_api_url.netloc:
             return None, "auth.cache.consul_api_url must be a valid http/https URL."
 
+    redis_key_value = cache_value.get("redis_key")
+    if redis_key_value is not None and (not isinstance(redis_key_value, str) or not redis_key_value.strip()):
+        return None, "auth.cache.redis_key must be a non-empty string when provided."
+    redis_key = redis_key_value.strip() if isinstance(redis_key_value, str) else None
+    if redis_key is not None and not _is_valid_redis_key(redis_key):
+        return None, "auth.cache.redis_key must be a valid Redis key path."
+
+    redis_url_value = cache_value.get("redis_url")
+    if redis_url_value is not None and (not isinstance(redis_url_value, str) or not redis_url_value.strip()):
+        return None, "auth.cache.redis_url must be a non-empty string when provided."
+    redis_url = redis_url_value.strip() if isinstance(redis_url_value, str) else None
+    if redis_url is not None:
+        parsed_redis_url = urlparse(redis_url)
+        if parsed_redis_url.scheme not in {"redis", "rediss"} or not parsed_redis_url.netloc:
+            return None, "auth.cache.redis_url must be a valid redis:// or rediss:// URL."
+
+    redis_password_env_value = cache_value.get("redis_password_env")
+    if redis_password_env_value is not None and (
+        not isinstance(redis_password_env_value, str) or not redis_password_env_value.strip()
+    ):
+        return None, "auth.cache.redis_password_env must be a non-empty string when provided."
+    redis_password_env = redis_password_env_value.strip() if isinstance(redis_password_env_value, str) else None
+    if redis_password_env is not None and not _is_valid_env_var_name(redis_password_env):
+        return None, "auth.cache.redis_password_env must be a valid environment variable name."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3042,6 +3077,20 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.consul_key_path is required when auth.cache.backend='consul_kv'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_REDIS_KV and (
+        redis_key is not None or redis_url is not None or redis_password_env is not None
+    ):
+        return (
+            None,
+            "auth.cache.redis_key, auth.cache.redis_url, and auth.cache.redis_password_env are only "
+            "supported when auth.cache.backend='redis_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_REDIS_KV and redis_key is None:
+        return (
+            None,
+            "auth.cache.redis_key is required when auth.cache.backend='redis_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -3989,6 +4038,13 @@ def _coerce_oauth_cache_settings(
                 else ("CONSUL_HTTP_TOKEN" if backend == _OAUTH_CACHE_BACKEND_CONSUL_KV else None)
             ),
             consul_api_url=consul_api_url,
+            redis_key=redis_key,
+            redis_url=redis_url,
+            redis_password_env=(
+                redis_password_env
+                if redis_password_env is not None
+                else ("REDIS_PASSWORD" if backend == _OAUTH_CACHE_BACKEND_REDIS_KV else None)
+            ),
         ),
         None,
     )
@@ -4089,6 +4145,14 @@ def _is_valid_consul_key_path(value: str) -> bool:
     if not normalized:
         return False
     return re.fullmatch(r"[0-9A-Za-z_.\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_redis_key(value: str) -> bool:
+    """Validate Redis key path shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
 
 
 def _join_auth_env_vars(*env_vars: str | None) -> str | None:
@@ -5820,6 +5884,8 @@ def _load_oauth_persistent_cache_entries(
         return _load_oauth_persistent_cache_entries_from_github_organization(cache_settings=resolved_settings)
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_CONSUL_KV:
         return _load_oauth_persistent_cache_entries_from_consul(cache_settings=resolved_settings)
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_REDIS_KV:
+        return _load_oauth_persistent_cache_entries_from_redis(cache_settings=resolved_settings)
     return _load_oauth_persistent_cache_entries_local()
 
 
@@ -5894,6 +5960,9 @@ def _persist_oauth_cache_entry(cache_key: str, cache_settings: OAuthCacheSetting
         return
     if resolved_settings.backend == _OAUTH_CACHE_BACKEND_CONSUL_KV:
         _persist_oauth_cache_entry_consul(cache_key=cache_key, cache_settings=resolved_settings)
+        return
+    if resolved_settings.backend == _OAUTH_CACHE_BACKEND_REDIS_KV:
+        _persist_oauth_cache_entry_redis(cache_key=cache_key, cache_settings=resolved_settings)
         return
     _persist_oauth_cache_entry_local(cache_key=cache_key)
 
@@ -8432,6 +8501,160 @@ def _write_oauth_cache_payload_to_consul(
         return True
     finally:
         client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_redis(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Redis key value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_redis(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_redis(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Redis key value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_redis(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_redis(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_redis_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create Redis client for OAuth cache backend."""
+    try:
+        redis_module = importlib.import_module("redis")
+    except Exception:
+        return None
+
+    redis_url = (cache_settings.redis_url or _REDIS_DEFAULT_URL).strip()
+    if not redis_url:
+        return None
+
+    token_env_name = cache_settings.redis_password_env or "REDIS_PASSWORD"
+    password_value = os.getenv(token_env_name, "").strip()
+    password = password_value if password_value else None
+
+    try:
+        redis_client_cls = getattr(redis_module, "Redis", None)
+        if redis_client_cls is None:
+            return None
+        return redis_client_cls.from_url(
+            redis_url,
+            password=password,
+            socket_timeout=10.0,
+            socket_connect_timeout=10.0,
+            decode_responses=False,
+        )
+    except Exception:
+        return None
+
+
+def _build_redis_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build Redis key name from validated cache settings."""
+    if cache_settings.redis_key is None:
+        return None
+    normalized_key = cache_settings.redis_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _close_redis_client(client: Any) -> None:
+    """Close Redis client safely when close method exists."""
+    close_method = getattr(client, "close", None)
+    if callable(close_method):
+        try:
+            close_method()
+        except Exception:
+            pass
+
+
+def _read_oauth_cache_payload_from_redis(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned Redis key value."""
+    key_name = _build_redis_key(cache_settings=cache_settings)
+    if key_name is None:
+        return None
+
+    client = _build_redis_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        try:
+            raw_payload = client.get(key_name)
+        except Exception:
+            return None
+
+        if raw_payload is None:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        if isinstance(raw_payload, bytes):
+            payload_text = raw_payload.decode("utf-8", errors="ignore")
+        elif isinstance(raw_payload, str):
+            payload_text = raw_payload
+        else:
+            return None
+
+        if not payload_text.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        _close_redis_client(client)
+
+
+def _write_oauth_cache_payload_to_redis(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to existing Redis key value."""
+    key_name = _build_redis_key(cache_settings=cache_settings)
+    if key_name is None:
+        return False
+
+    client = _build_redis_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        # Pre-provisioned mode: require key to already exist.
+        try:
+            preflight_value = client.get(key_name)
+        except Exception:
+            return False
+        if preflight_value is None:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            write_result = client.set(key_name, serialized_payload)
+        except Exception:
+            return False
+        if not bool(write_result):
+            return False
+        return True
+    finally:
+        _close_redis_client(client)
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:

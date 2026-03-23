@@ -2107,6 +2107,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_gitlab_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_github_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_consul_http_client", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_redis_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -3136,6 +3137,48 @@ class TestCLIHelpers:
         assert settings.consul_token_env == "CONSUL_HTTP_TOKEN"
         assert settings.consul_api_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_redis_backend(self):
+        """OAuth cache settings should accept redis_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "redis_kv",
+                    "redis_key": "mcp/security/oauth/cache",
+                    "redis_url": "rediss://redis.example.com:6380/0",
+                    "redis_password_env": "REDIS_PASSWORD_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "redis_kv"
+        assert settings.redis_key == "mcp/security/oauth/cache"
+        assert settings.redis_url == "rediss://redis.example.com:6380/0"
+        assert settings.redis_password_env == "REDIS_PASSWORD_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_redis_defaults(self):
+        """OAuth cache settings should apply default redis_kv optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "redis_kv",
+                    "redis_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.redis_url is None
+        assert settings.redis_password_env == "REDIS_PASSWORD"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -3709,6 +3752,37 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "consul_key_path": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='consul_kv'",
+            ),
+            (
+                {"backend": "redis_kv"},
+                "auth.cache.redis_key is required",
+            ),
+            (
+                {
+                    "backend": "redis_kv",
+                    "redis_key": "invalid key",
+                },
+                "auth.cache.redis_key must be a valid Redis key path.",
+            ),
+            (
+                {
+                    "backend": "redis_kv",
+                    "redis_key": "mcp/security/oauth/cache",
+                    "redis_password_env": "9INVALID",
+                },
+                "auth.cache.redis_password_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "redis_kv",
+                    "redis_key": "mcp/security/oauth/cache",
+                    "redis_url": "http://redis.example.com:6379/0",
+                },
+                "auth.cache.redis_url must be a valid redis:// or rediss:// URL.",
+            ),
+            (
+                {"backend": "local", "redis_key": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='redis_kv'",
             ),
         ],
     )
@@ -8268,6 +8342,240 @@ class TestCLIHelpers:
 
         assert seen_entries == {}
 
+    def test_build_redis_key_normalizes_path(self):
+        """Redis key builder should normalize leading/trailing slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="redis-prod",
+            backend="redis_kv",
+            redis_key="/mcp/security/oauth/cache/",
+        )
+
+        key_name = cli_module._build_redis_key(cache_settings=settings)
+
+        assert key_name == "mcp/security/oauth/cache"
+
+    def test_read_redis_payload_parses_raw_value(self, monkeypatch):
+        """Redis reader should parse envelope from raw GET response value."""
+        monkeypatch.setenv("REDIS_PASSWORD", "redis-password-test")
+
+        class FakeRedisClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            @classmethod
+            def from_url(cls, url: str, **kwargs: object) -> "FakeRedisClient":
+                assert url == "rediss://redis.example.com:6380/0"
+                assert kwargs.get("password") == "redis-password-test"
+                return cls()
+
+            def get(self, key: str) -> bytes:
+                assert key == "mcp/security/oauth/cache"
+                FakeRedisClient.call_count += 1
+                if FakeRedisClient.call_count == 1:
+                    return json.dumps(
+                        {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                    ).encode("utf-8")
+                return b""
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            cli_module.importlib, "import_module", lambda name: types.SimpleNamespace(Redis=FakeRedisClient)
+        )
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="redis-prod",
+            backend="redis_kv",
+            redis_key="mcp/security/oauth/cache",
+            redis_url="rediss://redis.example.com:6380/0",
+            redis_password_env="REDIS_PASSWORD",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_redis(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_redis(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+
+    def test_read_redis_payload_bypasses_errors_and_missing_key(self, monkeypatch):
+        """Redis reader should fail closed for errors and map missing key to empty envelope."""
+        monkeypatch.setenv("REDIS_PASSWORD", "redis-password-test")
+
+        class FakeRedisClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            @classmethod
+            def from_url(cls, url: str, **kwargs: object) -> "FakeRedisClient":
+                del url, kwargs
+                return cls()
+
+            def get(self, key: str) -> object:
+                del key
+                FakeRedisClient.call_count += 1
+                if FakeRedisClient.call_count == 1:
+                    return None
+                if FakeRedisClient.call_count == 2:
+                    raise RuntimeError("redis read failed")
+                return b"{invalid-json"
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            cli_module.importlib, "import_module", lambda name: types.SimpleNamespace(Redis=FakeRedisClient)
+        )
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="redis-prod",
+            backend="redis_kv",
+            redis_key="mcp/security/oauth/cache",
+            redis_url="redis://127.0.0.1:6379/0",
+            redis_password_env="REDIS_PASSWORD",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_redis(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_redis(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_redis(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+
+    def test_redis_write_success_and_bypass_paths(self, monkeypatch):
+        """Redis writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("REDIS_PASSWORD", "redis-password-test")
+
+        class FakeRedisClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeRedisClient.init_count += 1
+                self._scenario = FakeRedisClient.init_count
+
+            @classmethod
+            def from_url(cls, url: str, **kwargs: object) -> "FakeRedisClient":
+                del url, kwargs
+                return cls()
+
+            def get(self, key: str) -> object:
+                assert key == "mcp/security/oauth/cache"
+                if self._scenario == 1:
+                    return b"{}"
+                if self._scenario == 2:
+                    return None
+                if self._scenario == 3:
+                    raise RuntimeError("preflight failed")
+                return b"{}"
+
+            def set(self, key: str, value: str) -> object:
+                assert key == "mcp/security/oauth/cache"
+                if self._scenario == 1:
+                    assert isinstance(value, str)
+                    return True
+                if self._scenario == 4:
+                    raise RuntimeError("write failed")
+                return False
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            cli_module.importlib, "import_module", lambda name: types.SimpleNamespace(Redis=FakeRedisClient)
+        )
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="redis-prod",
+            backend="redis_kv",
+            redis_key="mcp/security/oauth/cache",
+            redis_url="redis://127.0.0.1:6379/0",
+            redis_password_env="REDIS_PASSWORD",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_redis(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_redis(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_redis(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_redis(cache_settings=settings, entries={}) is False
+
+    def test_redis_build_client_and_required_guards(self, monkeypatch):
+        """Redis helpers should fail closed when dependency/url/key identity is missing."""
+        monkeypatch.delenv("REDIS_PASSWORD", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="redis-prod",
+            backend="redis_kv",
+            redis_key="mcp/security/oauth/cache",
+            redis_url="redis://127.0.0.1:6379/0",
+            redis_password_env="REDIS_PASSWORD",
+        )
+
+        monkeypatch.setattr(
+            cli_module.importlib, "import_module", lambda name: (_ for _ in ()).throw(ImportError(name))
+        )
+        assert cli_module._build_redis_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_redis(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_redis(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("REDIS_PASSWORD", "redis-password-test")
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda name: types.SimpleNamespace(Redis=types.SimpleNamespace()),
+        )
+        assert cli_module._build_redis_client(cache_settings=settings) is None
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="redis-prod",
+            backend="redis_kv",
+            redis_key=None,
+            redis_url="redis://127.0.0.1:6379/0",
+            redis_password_env="REDIS_PASSWORD",
+        )
+        assert cli_module._read_oauth_cache_payload_from_redis(cache_settings=missing_settings) is None
+        assert cli_module._write_oauth_cache_payload_to_redis(cache_settings=missing_settings, entries={}) is False
+
+    def test_persist_redis_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Redis persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_redis",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_redis", fake_write)
+
+        cli_module._persist_oauth_cache_entry_redis(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="redis-prod",
+                backend="redis_kv",
+                redis_key="mcp/security/oauth/cache",
+                redis_url="redis://127.0.0.1:6379/0",
+                redis_password_env="REDIS_PASSWORD",
+            ),
+        )
+
+        assert seen_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -10065,6 +10373,7 @@ class TestCLIHelpers:
             ("github_environment_variables", "_load_oauth_persistent_cache_entries_from_github_environment"),
             ("github_organization_variables", "_load_oauth_persistent_cache_entries_from_github_organization"),
             ("consul_kv", "_load_oauth_persistent_cache_entries_from_consul"),
+            ("redis_kv", "_load_oauth_persistent_cache_entries_from_redis"),
         ],
     )
     def test_oauth_cache_load_dispatch_contract(self, monkeypatch, backend: str, loader_name: str):
@@ -10090,6 +10399,7 @@ class TestCLIHelpers:
             "_load_oauth_persistent_cache_entries_from_github_environment",
             "_load_oauth_persistent_cache_entries_from_github_organization",
             "_load_oauth_persistent_cache_entries_from_consul",
+            "_load_oauth_persistent_cache_entries_from_redis",
         }
 
         for name in backend_loaders:
@@ -10136,6 +10446,7 @@ class TestCLIHelpers:
             ("github_environment_variables", "_persist_oauth_cache_entry_github_environment"),
             ("github_organization_variables", "_persist_oauth_cache_entry_github_organization"),
             ("consul_kv", "_persist_oauth_cache_entry_consul"),
+            ("redis_kv", "_persist_oauth_cache_entry_redis"),
         ],
     )
     def test_oauth_cache_persist_dispatch_contract(self, monkeypatch, backend: str, persist_name: str):
@@ -10161,6 +10472,7 @@ class TestCLIHelpers:
             "_persist_oauth_cache_entry_github_environment",
             "_persist_oauth_cache_entry_github_organization",
             "_persist_oauth_cache_entry_consul",
+            "_persist_oauth_cache_entry_redis",
         }
 
         for name in backend_persisters:
@@ -10513,6 +10825,20 @@ class TestCLIHelpers:
                     consul_key_path="mcp/security/oauth/cache",
                     consul_token_env="CONSUL_HTTP_TOKEN",
                     consul_api_url="https://consul.example.com",
+                ),
+            ),
+            (
+                "_build_redis_client",
+                None,
+                "_read_oauth_cache_payload_from_redis",
+                "_write_oauth_cache_payload_to_redis",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="redis_kv",
+                    redis_key="mcp/security/oauth/cache",
+                    redis_url="redis://127.0.0.1:6379/0",
+                    redis_password_env="REDIS_PASSWORD",
                 ),
             ),
         ],

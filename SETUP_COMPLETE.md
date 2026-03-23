@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8Y Implementation State
+# Setup Complete — Sprint 1-8Z Implementation State
 
-This file records the actual implementation status after Sprint 8Y.
+This file records the actual implementation status after Sprint 8Z.
 
 ## Completed Work
 
@@ -877,6 +877,42 @@ This file records the actual implementation status after Sprint 8Y.
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
 
+### Sprint 8Z (Redis KV Backend v1)
+
+- OAuth persistent cache backend abstraction expanded again:
+  - `auth.cache.backend` now supports:
+    - `local`
+    - `aws_secrets_manager`
+    - `aws_ssm_parameter_store`
+    - `gcp_secret_manager`
+    - `azure_key_vault`
+    - `hashicorp_vault`
+    - `kubernetes_secrets`
+    - `oci_vault`
+    - `doppler_secrets`
+    - `onepassword_connect`
+    - `bitwarden_secrets`
+    - `infisical_secrets`
+    - `akeyless_secrets`
+    - `gitlab_variables`
+    - `github_actions_variables`
+    - `github_environment_variables`
+    - `github_organization_variables`
+    - `consul_kv`
+    - `redis_kv`
+- Redis backend contract:
+  - required: `redis_key`
+  - optional: `redis_url` (default `redis://127.0.0.1:6379/0`), `redis_password_env` (default `REDIS_PASSWORD`)
+  - pre-provisioned model (scanner does not auto-create missing Redis keys)
+- Redis backend behavior:
+  - auth uses env password only (`redis_password_env` / `REDIS_PASSWORD`)
+  - reads/writes JSON envelope in configured Redis key
+  - supports both `redis://` and `rediss://` connection URLs
+  - provider/read/write/parse/auth/network errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -889,7 +925,7 @@ This file records the actual implementation status after Sprint 8Y.
 
 ## Current Non-Goals / Deferred
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, and `consul_kv`
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, and `redis_kv`
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
