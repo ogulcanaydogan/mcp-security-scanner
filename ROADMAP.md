@@ -11,7 +11,7 @@
 
 ## Current Target
 
-- Publish `v1.0.0-rc1` / package version `1.0.0rc1`.
+- Publish `v1.0.0-rc2` / package version `1.0.0rc2`.
 - Validate RC quality gate and release flow end to end:
   - local lint/type/test/coverage gates
   - CI tag guard + OIDC publish + Sigstore + GitHub release

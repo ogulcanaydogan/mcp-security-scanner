@@ -325,9 +325,13 @@ jobs:
           TAG_VERSION="$(printf '%s' "$TAG_VERSION_RAW" | sed -E 's/-([ab]|rc)/\1/g')"
           ATTEMPTS=12
           SLEEP_SECONDS=10
+          PIP_INDEX_ARGS=()
+          if printf '%s' "$TAG_VERSION" | grep -Eq '(a|b|rc)[0-9]+$'; then
+            PIP_INDEX_ARGS=(--pre)
+          fi
 
           for attempt in $(seq 1 "$ATTEMPTS"); do
-            OUTPUT="$(python -m pip index versions "$PACKAGE_NAME" 2>/dev/null || true)"
+            OUTPUT="$(python -m pip index versions "${PIP_INDEX_ARGS[@]}" "$PACKAGE_NAME" 2>/dev/null || true)"
             VERSIONS_LINE="$(printf '%s\n' "$OUTPUT" | grep '^Available versions:' || true)"
             if printf '%s' "$VERSIONS_LINE" | grep -Eq "(^|[, ])${TAG_VERSION}([, ]|$)"; then
               echo "Version ${TAG_VERSION} is visible on PyPI (attempt ${attempt}/${ATTEMPTS})."
@@ -338,5 +342,5 @@ jobs:
           done
 
           echo "::error::Version ${TAG_VERSION} not visible on PyPI after ${ATTEMPTS} attempts."
-          python -m pip index versions "$PACKAGE_NAME" || true
+          python -m pip index versions "${PIP_INDEX_ARGS[@]}" "$PACKAGE_NAME" || true
           exit 1

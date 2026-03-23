@@ -902,7 +902,7 @@ Current quality gate:
 ## Roadmap (Post Sprint 8AD / v1.0 RC Freeze)
 
 Current release target:
-- `1.0.0rc1` as the stabilization checkpoint with no new runtime/provider features.
+- `1.0.0rc2` as the stabilization checkpoint with no new runtime/provider features.
 
 Deferred (post-1.0):
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, and `cloudflare_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
