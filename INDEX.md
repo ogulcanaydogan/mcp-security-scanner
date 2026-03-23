@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-8AD scope plus v1.0.0 GA finalization.
+Current index for the implemented Sprint 1-9B scope plus `v1.0.1` release line.
 
 ## Status Snapshot
 
@@ -53,6 +53,8 @@ Current index for the implemented Sprint 1-8AD scope plus v1.0.0 GA finalization
 - Sprint 8AC: done (advanced OAuth cache backend v20 with GitLab group variables API, env-token auth only, pre-provisioned group variable model)
 - Sprint 8AD: done (v1.0 RC stabilization freeze with explicit backend contract lock and release-guard normalization for `v1.0.0-rcN` tags)
 - v1.0.0 GA: done (RC2 snapshot promoted to stable with feature freeze preserved and no runtime/CLI/auth/report contract changes)
+- Sprint 9A: done (GitLab project/group variable v2 with optional `gitlab_environment_scope`, default `*`)
+- Sprint 9B: done (GitHub organization variable v2 with visibility-preserving updates for `all`/`private`/`selected`)
 
 ## Top-Level Docs
 
@@ -102,11 +104,11 @@ Current index for the implemented Sprint 1-8AD scope plus v1.0.0 GA finalization
     - `backend=bitwarden_secrets` (single secret-value JSON envelope for OAuth cache entries via Bitwarden Secrets Manager API)
     - `backend=infisical_secrets` (single secret-value JSON envelope for OAuth cache entries via Infisical Secrets API)
     - `backend=akeyless_secrets` (single secret-value JSON envelope for OAuth cache entries via Akeyless API)
-    - `backend=gitlab_variables` (single project-variable JSON envelope for OAuth cache entries via GitLab API)
-    - `backend=gitlab_group_variables` (single group-variable JSON envelope for OAuth cache entries via GitLab API)
+    - `backend=gitlab_variables` (single project-variable JSON envelope via GitLab API, v2 supports optional `environment_scope`)
+    - `backend=gitlab_group_variables` (single group-variable JSON envelope via GitLab API, v2 supports optional `environment_scope`)
     - `backend=github_actions_variables` (single repository-variable JSON envelope for OAuth cache entries via GitHub Actions Variables API)
     - `backend=github_environment_variables` (single repository-environment-variable JSON envelope for OAuth cache entries via GitHub Environments Variables API)
-    - `backend=github_organization_variables` (single organization-variable JSON envelope for OAuth cache entries via GitHub Organization Variables API)
+    - `backend=github_organization_variables` (single organization-variable JSON envelope via GitHub Organization Variables API, v2 preserves existing `visibility`)
     - `backend=consul_kv` (single KV-value JSON envelope for OAuth cache entries via Consul KV API)
     - `backend=redis_kv` (single key-value JSON envelope for OAuth cache entries via Redis KV)
     - `backend=cloudflare_kv` (single KV-value JSON envelope for OAuth cache entries via Cloudflare KV API)

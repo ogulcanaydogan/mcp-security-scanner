@@ -8540,6 +8540,55 @@ def _write_oauth_cache_payload_to_github_organization(
             preflight_response.raise_for_status()
         except Exception:
             return False
+        try:
+            preflight_payload = preflight_response.json()
+        except ValueError:
+            return False
+        if not isinstance(preflight_payload, dict):
+            return False
+        variable_payload = preflight_payload.get("variable")
+        if isinstance(variable_payload, dict):
+            preflight_payload = variable_payload
+
+        visibility = preflight_payload.get("visibility")
+        if not isinstance(visibility, str) or visibility not in {"all", "private", "selected"}:
+            return False
+
+        selected_repository_ids: list[int] | None = None
+        if visibility == "selected":
+            selected_repositories_url = preflight_payload.get("selected_repositories_url")
+            if not isinstance(selected_repositories_url, str) or not selected_repositories_url.strip():
+                return False
+
+            try:
+                selected_repositories_response = client.get(selected_repositories_url.strip())
+            except Exception:
+                return False
+            if selected_repositories_response.status_code == 404:
+                return False
+            try:
+                selected_repositories_response.raise_for_status()
+            except Exception:
+                return False
+
+            try:
+                selected_repositories_payload = selected_repositories_response.json()
+            except ValueError:
+                return False
+            if not isinstance(selected_repositories_payload, dict):
+                return False
+            repositories_value = selected_repositories_payload.get("repositories")
+            if not isinstance(repositories_value, list):
+                return False
+
+            selected_repository_ids = []
+            for repository_entry in repositories_value:
+                if not isinstance(repository_entry, dict):
+                    return False
+                repository_id = repository_entry.get("id")
+                if not isinstance(repository_id, int):
+                    return False
+                selected_repository_ids.append(repository_id)
 
         payload = {
             "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
@@ -8547,15 +8596,16 @@ def _write_oauth_cache_payload_to_github_organization(
             "entries": entries,
         }
         serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        request_payload: dict[str, Any] = {
+            "name": cache_settings.github_variable_name,
+            "value": serialized_payload,
+            "visibility": visibility,
+        }
+        if selected_repository_ids is not None:
+            request_payload["selected_repository_ids"] = selected_repository_ids
 
         try:
-            response = client.patch(
-                path,
-                json={
-                    "name": cache_settings.github_variable_name,
-                    "value": serialized_payload,
-                },
-            )
+            response = client.patch(path, json=request_payload)
         except Exception:
             return False
         if response.status_code == 404:

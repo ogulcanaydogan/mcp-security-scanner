@@ -8289,23 +8289,67 @@ class TestCLIHelpers:
 
             def get(self, path: str, **kwargs: object) -> FakeResponse:
                 del kwargs
-                assert path == "/orgs/ogulcanaydogan/actions/variables/MCP_OAUTH_CACHE"
-                if self._scenario == 1:
-                    return FakeResponse(status_code=200, json_data={"value": "{}"})
-                if self._scenario == 2:
-                    return FakeResponse(status_code=404, json_data={})
-                if self._scenario == 3:
-                    return FakeResponse(status_code=500, json_data={})
-                return FakeResponse(status_code=200, json_data={"value": "{}"})
+                selected_url = (
+                    "https://api.github.com/orgs/ogulcanaydogan/actions/variables/MCP_OAUTH_CACHE/repositories"
+                )
+                if path == "/orgs/ogulcanaydogan/actions/variables/MCP_OAUTH_CACHE":
+                    if self._scenario == 1:
+                        return FakeResponse(status_code=200, json_data={"visibility": "all", "value": "{}"})
+                    if self._scenario == 2:
+                        return FakeResponse(status_code=200, json_data={"visibility": "private", "value": "{}"})
+                    if self._scenario == 3:
+                        return FakeResponse(
+                            status_code=200,
+                            json_data={
+                                "visibility": "selected",
+                                "selected_repositories_url": selected_url,
+                                "value": "{}",
+                            },
+                        )
+                    if self._scenario == 4:
+                        return FakeResponse(status_code=200, json_data={"value": "{}"})
+                    if self._scenario == 5:
+                        return FakeResponse(status_code=200, json_data={"visibility": "selected", "value": "{}"})
+                    if self._scenario == 6:
+                        return FakeResponse(
+                            status_code=200,
+                            json_data={
+                                "visibility": "selected",
+                                "selected_repositories_url": selected_url,
+                                "value": "{}",
+                            },
+                        )
+                    if self._scenario == 7:
+                        return FakeResponse(status_code=404, json_data={})
+                    if self._scenario == 8:
+                        return FakeResponse(status_code=500, json_data={})
+                    return FakeResponse(status_code=200, json_data={"visibility": "all", "value": "{}"})
+                if self._scenario == 3 and path == selected_url:
+                    return FakeResponse(status_code=200, json_data={"repositories": [{"id": 101}, {"id": 202}]})
+                if self._scenario == 6 and path == selected_url:
+                    return FakeResponse(status_code=200, json_data={"repositories": [{"id": "bad"}]})
+                return FakeResponse(status_code=500, json_data={})
 
             def patch(self, path: str, **kwargs: object) -> FakeResponse:
                 assert path == "/orgs/ogulcanaydogan/actions/variables/MCP_OAUTH_CACHE"
+                payload = kwargs.get("json")
+                assert isinstance(payload, dict)
+                assert payload.get("name") == "MCP_OAUTH_CACHE"
+                assert isinstance(payload.get("value"), str)
                 if self._scenario == 1:
-                    payload = kwargs.get("json")
-                    assert isinstance(payload, dict)
-                    assert payload.get("name") == "MCP_OAUTH_CACHE"
-                    assert isinstance(payload.get("value"), str)
+                    assert payload.get("visibility") == "all"
+                    assert "selected_repository_ids" not in payload
                     return FakeResponse(status_code=204, json_data={})
+                if self._scenario == 2:
+                    assert payload.get("visibility") == "private"
+                    assert "selected_repository_ids" not in payload
+                    return FakeResponse(status_code=204, json_data={})
+                if self._scenario == 3:
+                    assert payload.get("visibility") == "selected"
+                    assert payload.get("selected_repository_ids") == [101, 202]
+                    return FakeResponse(status_code=204, json_data={})
+                if self._scenario == 9:
+                    assert payload.get("visibility") == "all"
                 raise RuntimeError("post-write-failed")
 
             def close(self) -> None:
@@ -8322,6 +8366,17 @@ class TestCLIHelpers:
         )
 
         assert cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is True
+        assert (
+            cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is False
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is False
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is False
+        )
         assert (
             cli_module._write_oauth_cache_payload_to_github_organization(cache_settings=settings, entries={}) is False
         )
