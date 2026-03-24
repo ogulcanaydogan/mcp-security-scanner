@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-8AD Implementation State
+# Setup Complete — Sprint 1-9G Implementation State
 
-This file records the actual implementation status after Sprint 8AD.
+This file records the actual implementation status after Sprint 9G.
 
 ## Completed Work
 
@@ -1066,6 +1066,21 @@ This file records the actual implementation status after Sprint 8AD.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 9G (Post-1.0 Stabilization Hardening)
+
+- No new provider added; stabilization-only patch scope.
+- GitLab backend contract now uses one canonical capability matrix (`project` / `group` / `instance`):
+  - same matrix drives coerce/validation rules for required/forbidden fields
+  - same matrix drives GitLab path/query/body builders
+  - project/group keep environment-scope handling, instance keeps scope forbidden
+- Release consistency checks are consolidated into a single shared script:
+  - build smoke and publish validation both call `scripts/verify_release_consistency.py`
+  - checks cover `pyproject` version, `__version__`, wheel metadata, and `mcp-scan --version`
+  - publish mode additionally enforces tag normalization/equality and artifact version presence
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+  - compare contract remains unchanged (`tool_added` / `tool_removed` / `tool_changed`, `LLM05`)
 
 ## Exit Code Contract (Current)
 

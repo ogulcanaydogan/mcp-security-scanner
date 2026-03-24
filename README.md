@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9D)
+## Capability Snapshot (Sprint 1-9G)
 
 | Area | Status |
 |---|---|
@@ -81,6 +81,7 @@ flowchart LR
 - Post-1.0 provider expansion (Sprint 9D): added `etcd_kv` backend (etcd v3 JSON API, env-token auth, pre-provisioned key model)
 - Post-1.0 stabilization hardening (Sprint 9E): centralized remote backend spec as canonical source for dispatch maps and tightened matrix contract coverage without runtime behavior changes
 - Post-1.0 provider expansion (Sprint 9F): added `gitlab_instance_variables` backend (GitLab admin instance variable API, env-token auth, pre-provisioned variable model without environment scope)
+- Post-1.0 stabilization hardening (Sprint 9G): centralized GitLab backend capability matrix reused across validation and API path/query/body builders, plus single-script version consistency checks reused in build/publish CI stages
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -948,7 +949,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.6` patch provider expansion release (`gitlab_instance_variables`) under the existing post-1.0 contract baseline.
+- `1.0.7` stabilization patch release (no new backend) under the existing post-1.0 contract baseline.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

@@ -2,15 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.6`.
+- Release line is stable at `v1.0.7`.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.6` provider expansion while keeping the GA contract stable:
+- `v1.0.7` stabilization hardening while keeping the GA contract stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - add `gitlab_instance_variables` backend using GitLab admin CI variable API (`/admin/ci/variables/{key}`)
+  - keep backend set unchanged (no new provider in this sprint)
+  - centralize GitLab backend capability matrix for validation + path/query/body construction consistency
+  - reuse a single release consistency script across build smoke and publish checks
   - keep v1 behavior pre-provisioned-only (no variable create) and non-fatal bypass on provider errors
   - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks)
 

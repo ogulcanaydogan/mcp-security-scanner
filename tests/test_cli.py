@@ -7570,6 +7570,20 @@ class TestCLIHelpers:
 
     def test_gitlab_variable_path_supports_project_group_and_instance_backends(self):
         """GitLab variable path/query builder should support project, group, and instance backends."""
+        capabilities = cli_module._GITLAB_OAUTH_CACHE_BACKEND_CAPABILITIES
+
+        assert set(capabilities) == {
+            "gitlab_variables",
+            "gitlab_group_variables",
+            "gitlab_instance_variables",
+        }
+        assert capabilities["gitlab_variables"].identifier_field == "gitlab_project_id"
+        assert capabilities["gitlab_variables"].supports_environment_scope is True
+        assert capabilities["gitlab_group_variables"].identifier_field == "gitlab_group_id"
+        assert capabilities["gitlab_group_variables"].supports_environment_scope is True
+        assert capabilities["gitlab_instance_variables"].identifier_field is None
+        assert capabilities["gitlab_instance_variables"].supports_environment_scope is False
+
         project_settings = cli_module.OAuthCacheSettings(
             persistent=True,
             namespace="gitlab-prod",
