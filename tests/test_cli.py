@@ -3446,6 +3446,45 @@ class TestCLIHelpers:
         assert settings is not None
         assert settings.mysql_dsn_env == "MYSQL_DSN"
 
+    def test_coerce_oauth_cache_settings_accepts_mongo_backend(self):
+        """OAuth cache settings should accept mongo_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "mongo_kv",
+                    "mongo_cache_key": "mcp/security/oauth/cache",
+                    "mongo_dsn_env": "MONGODB_URI_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "mongo_kv"
+        assert settings.mongo_cache_key == "mcp/security/oauth/cache"
+        assert settings.mongo_dsn_env == "MONGODB_URI_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_mongo_defaults(self):
+        """OAuth cache settings should apply default mongo_kv optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "mongo_kv",
+                    "mongo_cache_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.mongo_dsn_env == "MONGODB_URI"
+
     def test_coerce_oauth_cache_settings_rejects_backend_contract_drift(self, monkeypatch):
         """OAuth cache settings should fail closed when backend contract maps are inconsistent."""
         monkeypatch.setattr(
@@ -4276,6 +4315,29 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "mysql_cache_key": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='mysql_kv'",
+            ),
+            (
+                {"backend": "mongo_kv"},
+                "auth.cache.mongo_cache_key is required",
+            ),
+            (
+                {
+                    "backend": "mongo_kv",
+                    "mongo_cache_key": "invalid key",
+                },
+                "auth.cache.mongo_cache_key must be a valid MongoDB cache key path.",
+            ),
+            (
+                {
+                    "backend": "mongo_kv",
+                    "mongo_cache_key": "mcp/security/oauth/cache",
+                    "mongo_dsn_env": "9INVALID",
+                },
+                "auth.cache.mongo_dsn_env must be a valid environment variable name.",
+            ),
+            (
+                {"backend": "local", "mongo_cache_key": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='mongo_kv'",
             ),
         ],
     )
@@ -10494,6 +10556,297 @@ class TestCLIHelpers:
         )
         assert bypass_entries == {}
 
+    def test_build_mongo_cache_key_normalizes_path(self):
+        """Mongo key builder should normalize leading/trailing slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mongo-prod",
+            backend="mongo_kv",
+            mongo_cache_key="/mcp/security/oauth/cache/",
+        )
+
+        key_name = cli_module._build_mongo_cache_key(cache_settings=settings)
+
+        assert key_name == "mcp/security/oauth/cache"
+
+    def test_read_mongo_payload_parses_and_bypasses_paths(self, monkeypatch):
+        """Mongo reader should parse payload, map missing document to empty envelope, and bypass on errors."""
+
+        class FakeCollection:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+
+            def find_one(self, query: dict[str, object]) -> dict[str, object] | None:
+                assert query == {"cache_key": "mcp/security/oauth/cache"}
+                if self._scenario == 1:
+                    return {
+                        "payload_json": json.dumps(
+                            {
+                                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                                "entries": {"k": {"access_token": "t"}},
+                            }
+                        )
+                    }
+                if self._scenario == 2:
+                    return None
+                if self._scenario == 3:
+                    return {"payload_json": b'{"schema_version":"v2","entries":{"k2":{"access_token":"tb"}}}'}
+                if self._scenario == 4:
+                    raise RuntimeError("mongo-read-failed")
+                if self._scenario == 5:
+                    return {"payload_json": "{invalid-json"}
+                return None
+
+        class FakeDatabase:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+
+            def __getitem__(self, collection_name: str) -> FakeCollection:
+                assert collection_name == "oauth_cache_store"
+                return FakeCollection(self._scenario)
+
+        class FakeClient:
+            call_count = 0
+            close_count = 0
+
+            def __init__(self) -> None:
+                FakeClient.call_count += 1
+                self._scenario = FakeClient.call_count
+
+            def __getitem__(self, database_name: str) -> FakeDatabase:
+                assert database_name == "mcp_security_scanner"
+                return FakeDatabase(self._scenario)
+
+            def close(self) -> None:
+                FakeClient.close_count += 1
+
+        monkeypatch.setattr(cli_module, "_build_mongo_client", lambda *, cache_settings: FakeClient())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mongo-prod",
+            backend="mongo_kv",
+            mongo_cache_key="mcp/security/oauth/cache",
+            mongo_dsn_env="MONGODB_URI",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_mongo(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_mongo(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_mongo(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_mongo(cache_settings=settings)
+        fifth = cli_module._read_oauth_cache_payload_from_mongo(cache_settings=settings)
+
+        assert first == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k": {"access_token": "t"}},
+        }
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+        assert third == {
+            "schema_version": "v2",
+            "entries": {"k2": {"access_token": "tb"}},
+        }
+        assert fourth is None
+        assert fifth is None
+        assert FakeClient.close_count == 5
+
+    def test_mongo_write_success_and_bypass_paths(self, monkeypatch):
+        """Mongo writer should support success flow and fail closed when preflight/update fails."""
+
+        class FakeUpdateResult:
+            def __init__(self, matched_count: int) -> None:
+                self.matched_count = matched_count
+
+        class FakeCollection:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+
+            def find_one(self, query: dict[str, object]) -> dict[str, object] | None:
+                assert query == {"cache_key": "mcp/security/oauth/cache"}
+                if self._scenario == 1:
+                    return {"cache_key": "mcp/security/oauth/cache"}
+                if self._scenario == 2:
+                    return None
+                if self._scenario == 3:
+                    raise RuntimeError("preflight-failed")
+                if self._scenario in (4, 5):
+                    return {"cache_key": "mcp/security/oauth/cache"}
+                return None
+
+            def update_one(self, filter_query: dict[str, object], update_doc: dict[str, object]) -> FakeUpdateResult:
+                assert filter_query == {"cache_key": "mcp/security/oauth/cache"}
+                set_doc = update_doc.get("$set")
+                assert isinstance(set_doc, dict)
+                payload_text = set_doc.get("payload_json")
+                assert isinstance(payload_text, str)
+                parsed_payload = json.loads(payload_text)
+                assert parsed_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+                assert isinstance(parsed_payload["entries"], dict)
+                if self._scenario == 4:
+                    return FakeUpdateResult(matched_count=0)
+                if self._scenario == 5:
+                    raise RuntimeError("update-failed")
+                return FakeUpdateResult(matched_count=1)
+
+        class FakeDatabase:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+
+            def __getitem__(self, collection_name: str) -> FakeCollection:
+                assert collection_name == "oauth_cache_store"
+                return FakeCollection(self._scenario)
+
+        class FakeClient:
+            init_count = 0
+
+            def __init__(self) -> None:
+                FakeClient.init_count += 1
+                self._scenario = FakeClient.init_count
+
+            def __getitem__(self, database_name: str) -> FakeDatabase:
+                assert database_name == "mcp_security_scanner"
+                return FakeDatabase(self._scenario)
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module, "_build_mongo_client", lambda *, cache_settings: FakeClient())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mongo-prod",
+            backend="mongo_kv",
+            mongo_cache_key="mcp/security/oauth/cache",
+            mongo_dsn_env="MONGODB_URI",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_mongo(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_mongo(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_mongo(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_mongo(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_mongo(cache_settings=settings, entries={}) is False
+
+    def test_mongo_client_builder_and_close_guards(self, monkeypatch):
+        """Mongo client helpers should fail closed for missing module/dsn and close safely."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mongo-prod",
+            backend="mongo_kv",
+            mongo_cache_key="mcp/security/oauth/cache",
+            mongo_dsn_env="MONGODB_URI",
+        )
+        original_import_module = cli_module.importlib.import_module
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                (_ for _ in ()).throw(ImportError("missing-pymongo"))
+                if module_name == "pymongo"
+                else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_mongo_client(cache_settings=settings) is None
+
+        class FakePyMongoMissingClient:
+            pass
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                FakePyMongoMissingClient if module_name == "pymongo" else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_mongo_client(cache_settings=settings) is None
+
+        monkeypatch.delenv("MONGODB_URI", raising=False)
+        assert cli_module._build_mongo_client(cache_settings=settings) is None
+
+        connect_calls: list[tuple[str, int]] = []
+
+        class FakeMongoClient:
+            def __init__(self, dsn: str, **kwargs: int) -> None:
+                connect_calls.append((dsn, kwargs["serverSelectionTimeoutMS"]))
+
+            def close(self) -> None:
+                return None
+
+        class FakePyMongo:
+            MongoClient = FakeMongoClient
+
+        monkeypatch.setenv("MONGODB_URI", "mongodb://user:pass@db.example.com:27017/mcp")
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: FakePyMongo if module_name == "pymongo" else original_import_module(module_name),
+        )
+        connection = cli_module._build_mongo_client(cache_settings=settings)
+        assert isinstance(connection, FakeMongoClient)
+        assert connect_calls == [("mongodb://user:pass@db.example.com:27017/mcp", 10000)]
+
+        assert cli_module._close_mongo_client(object()) is None
+        assert cli_module._close_mongo_client(connection) is None
+
+    def test_mongo_persist_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Mongo persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_mongo",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_mongo", fake_write)
+
+        cli_module._persist_oauth_cache_entry_mongo(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="mongo-prod",
+                backend="mongo_kv",
+                mongo_cache_key="mcp/security/oauth/cache",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_load_mongo_entries_parses_and_bypasses_payload(self, monkeypatch):
+        """Mongo loader should parse payload entries and bypass cleanly on provider None."""
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_mongo",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = cli_module._load_oauth_persistent_cache_entries_from_mongo(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="mongo-prod",
+                backend="mongo_kv",
+                mongo_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_mongo", lambda *, cache_settings: None)
+        bypass_entries = cli_module._load_oauth_persistent_cache_entries_from_mongo(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="mongo-prod",
+                backend="mongo_kv",
+                mongo_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert bypass_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -12298,6 +12651,7 @@ class TestCLIHelpers:
             "etcd_kv",
             "postgres_kv",
             "mysql_kv",
+            "mongo_kv",
         }
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
@@ -12939,6 +13293,19 @@ class TestCLIHelpers:
                     backend="mysql_kv",
                     mysql_cache_key="mcp/security/oauth/cache",
                     mysql_dsn_env="MYSQL_DSN",
+                ),
+            ),
+            (
+                "_build_mongo_client",
+                None,
+                "_read_oauth_cache_payload_from_mongo",
+                "_write_oauth_cache_payload_to_mongo",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="mongo_kv",
+                    mongo_cache_key="mcp/security/oauth/cache",
+                    mongo_dsn_env="MONGODB_URI",
                 ),
             ),
         ],
