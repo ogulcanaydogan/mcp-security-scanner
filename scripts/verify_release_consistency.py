@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -187,10 +188,24 @@ def _verify_pypi_version_visibility(
     if re.search(r"(a|b|rc)[0-9]+$", expected_version):
         pip_command.append("--pre")
     pip_command.append(package_name)
+    pip_env = dict(os.environ)
+    pip_env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
 
+    last_output = ""
     for attempt in range(1, attempts + 1):
-        result = subprocess.run(pip_command, check=False, capture_output=True, text=True)
+        result = subprocess.run(pip_command, check=False, capture_output=True, text=True, env=pip_env)
         output = (result.stdout or "").strip()
+        error_output = (result.stderr or "").strip()
+        combined_output = output or error_output or f"exit={result.returncode}"
+        last_output = combined_output
+        if result.returncode != 0:
+            print(
+                f"PyPI lookup command failed (attempt {attempt}/{attempts}): {combined_output}. "
+                f"retrying in {sleep_seconds}s."
+            )
+            if attempt < attempts:
+                time.sleep(sleep_seconds)
+            continue
         versions_line = next(
             (line for line in output.splitlines() if line.startswith("Available versions:")),
             "",
@@ -202,13 +217,12 @@ def _verify_pypi_version_visibility(
             f"Version {expected_version} is not visible yet (attempt {attempt}/{attempts}); "
             f"retrying in {sleep_seconds}s."
         )
-        time.sleep(sleep_seconds)
+        if attempt < attempts:
+            time.sleep(sleep_seconds)
 
-    latest_result = subprocess.run(pip_command, check=False, capture_output=True, text=True)
-    latest_output = (latest_result.stdout or latest_result.stderr or "").strip()
     raise ReleaseValidationError(
         f"Version {expected_version} not visible on PyPI for package {package_name} "
-        f"after {attempts} attempts. Last output: {latest_output}"
+        f"after {attempts} attempts. Last output: {last_output}"
     )
 
 

@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9K)
+## Capability Snapshot (Sprint 1-9L)
 
 | Area | Status |
 |---|---|
@@ -86,6 +86,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9I): expanded backend-dispatch contract resolver coverage and consolidated PyPI visibility verification under the shared release-consistency script (runtime behavior unchanged)
 - Post-1.0 provider expansion (Sprint 9J): added `mysql_kv` backend (PyMySQL env-DSN auth, fixed-schema pre-provisioned row model)
 - Post-1.0 stabilization hardening (Sprint 9K): centralized OAuth cache backend-contract checks and tightened deterministic release consistency validation without runtime behavior changes
+- Post-1.0 stabilization hardening (Sprint 9L): strengthened backend-contract mismatch detection (including supported-set drift), improved deterministic PyPI visibility retry logging for transient failures, and kept runtime behavior unchanged
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -969,7 +970,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.11` stabilization patch release (no new backend) with stricter canonical backend-contract verification and deterministic release consistency checks.
+- `1.0.12` stabilization patch release (no new backend) with stricter canonical backend-contract drift detection and deterministic PyPI visibility retry logging in release consistency checks.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9K Implementation State
+# Setup Complete — Sprint 1-9L Implementation State
 
-This file records the actual implementation status after Sprint 9K.
+This file records the actual implementation status after Sprint 9L.
 
 ## Completed Work
 
@@ -1144,6 +1144,19 @@ This file records the actual implementation status after Sprint 9K.
   - release consistency script now enforces deterministic artifact cardinality (single wheel + single sdist)
   - wheel install verification uses no-cache/no-deps reinstall, validates both module CLI and entrypoint CLI version
   - tag-mode consistency checks run in build stage for tag builds and remain enforced again in publish stage
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, and non-fatal provider bypass semantics are preserved
+
+### Sprint 9L (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - canonical remote handler maps are now derived by one shared helper from backend specs
+  - contract checks now also fail on supported-set drift in addition to loader/persister map/source drift
+  - invariants remain unchanged and enforced (`persistent=false` bypass, non-fatal provider bypass, local-only `cache rotate`, compare contract)
+- Release hardening consistency:
+  - PyPI visibility verification now logs transient lookup command failures deterministically per retry attempt
+  - official index + no-cache posture remains unchanged; OIDC publish, Sigstore signing, and idempotent GitHub Release flow are preserved
 - Runtime behavior remains unchanged:
   - lookup order, pre-provisioned-only writes, and non-fatal provider bypass semantics are preserved
 

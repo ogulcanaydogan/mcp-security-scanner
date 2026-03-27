@@ -205,35 +205,55 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
         "_persist_oauth_cache_entry_mysql",
     ),
 }
+
+
+def _derive_oauth_remote_persistent_cache_handler_maps(
+    specs: dict[str, tuple[str, str]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build canonical remote loader/persister handler maps from backend specs."""
+    loaders: dict[str, str] = {}
+    persisters: dict[str, str] = {}
+    for backend, (loader_name, persister_name) in specs.items():
+        loaders[backend] = loader_name
+        persisters[backend] = persister_name
+    return loaders, persisters
+
+
 _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS = frozenset(_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
-_SUPPORTED_OAUTH_CACHE_BACKENDS = {
-    _OAUTH_CACHE_BACKEND_LOCAL,
-    *_OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS,
-}
-_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = {
-    backend: loader_name
-    for backend, (loader_name, _persister_name) in _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
-}
+_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS, _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = (
+    _derive_oauth_remote_persistent_cache_handler_maps(_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
+)
+_SUPPORTED_OAUTH_CACHE_BACKENDS = frozenset(
+    {
+        _OAUTH_CACHE_BACKEND_LOCAL,
+        *_OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS,
+    }
+)
 
 
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
+    remote_supported_backends = set(_SUPPORTED_OAUTH_CACHE_BACKENDS) - {_OAUTH_CACHE_BACKEND_LOCAL}
+    if remote_supported_backends != _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS:
+        return "auth.cache backend contract is inconsistent (supported backend set mismatch)."
+
+    expected_loaders, expected_persisters = _derive_oauth_remote_persistent_cache_handler_maps(
+        _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS
+    )
+
     if set(_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS) != _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS:
         return "auth.cache backend contract is inconsistent (remote loader map mismatch)."
     if set(_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS) != _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS:
         return "auth.cache backend contract is inconsistent (remote persister map mismatch)."
-    for backend, (expected_loader, expected_persister) in _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items():
+    for backend, expected_loader in expected_loaders.items():
         if _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.get(backend) != expected_loader:
             return "auth.cache backend contract is inconsistent (remote loader source mismatch)."
+    for backend, expected_persister in expected_persisters.items():
         if _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.get(backend) != expected_persister:
             return "auth.cache backend contract is inconsistent (remote persister source mismatch)."
     return None
 
 
-_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = {
-    backend: persister_name
-    for backend, (_loader_name, persister_name) in _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
-}
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
 _OAUTH_CACHE_SCHEMA_VERSION_V2 = "v2"
 _OAUTH_PERSISTENT_CACHE_FILE = Path.home() / ".cache" / "mcp-security-scanner" / "oauth-cache-v1.json.enc"

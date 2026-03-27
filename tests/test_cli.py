@@ -12340,6 +12340,31 @@ class TestCLIHelpers:
         assert contract_error is not None
         assert "remote loader source mismatch" in contract_error
 
+    def test_oauth_cache_backend_contract_error_detects_persister_source_mismatch(self, monkeypatch):
+        """Backend contract helper should detect map/source drift for persister mapping."""
+        broken_persisters = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS)
+        backend_name = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        broken_persisters[backend_name] = "_missing_persister_symbol"
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS", broken_persisters)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "remote persister source mismatch" in contract_error
+
+    def test_oauth_cache_backend_contract_error_detects_supported_backend_set_mismatch(self, monkeypatch):
+        """Backend contract helper should fail when supported-set and remote backend specs drift."""
+        monkeypatch.setattr(
+            cli_module,
+            "_SUPPORTED_OAUTH_CACHE_BACKENDS",
+            frozenset({cli_module._OAUTH_CACHE_BACKEND_LOCAL}),
+        )
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "supported backend set mismatch" in contract_error
+
     @pytest.mark.parametrize(
         "backend",
         sorted(set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}),

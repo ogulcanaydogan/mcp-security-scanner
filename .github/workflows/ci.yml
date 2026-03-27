@@ -17,6 +17,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RELEASE_PYPI_VISIBILITY_ATTEMPTS: "12"
+  RELEASE_PYPI_VISIBILITY_SLEEP_SECONDS: "10"
 
 jobs:
   lint:
@@ -125,7 +127,9 @@ jobs:
         run: python -m build
 
       - name: Smoke-check built wheel CLI version
-        run: python scripts/verify_release_consistency.py --mode build --dist-dir dist
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_consistency.py --mode build --dist-dir dist
 
       - name: Pre-validate tag release consistency (tag builds only)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -202,5 +206,5 @@ jobs:
             --mode pypi-visibility \
             --tag-version "${GITHUB_REF#refs/tags/v}" \
             --package-name "ogulcanaydogan-mcp-security-scanner" \
-            --attempts 12 \
-            --sleep-seconds 10
+            --attempts "${RELEASE_PYPI_VISIBILITY_ATTEMPTS}" \
+            --sleep-seconds "${RELEASE_PYPI_VISIBILITY_SLEEP_SECONDS}"
