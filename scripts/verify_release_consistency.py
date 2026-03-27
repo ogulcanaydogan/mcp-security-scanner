@@ -48,12 +48,21 @@ def _read_wheel_version(dist_dir: Path) -> tuple[Path, str]:
     wheel_paths = sorted(dist_dir.glob("*.whl"))
     if not wheel_paths:
         raise ReleaseValidationError(f"Missing wheel artifact in {dist_dir}.")
+    if len(wheel_paths) != 1:
+        raise ReleaseValidationError(
+            f"Expected exactly one wheel artifact in {dist_dir}, found {len(wheel_paths)}: "
+            f"{', '.join(path.name for path in wheel_paths)}"
+        )
     wheel_path = wheel_paths[0]
 
     with zipfile.ZipFile(wheel_path) as wheel:
         metadata_candidates = sorted(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
         if not metadata_candidates:
             raise ReleaseValidationError(f"Missing wheel METADATA entry in {wheel_path.name}.")
+        if len(metadata_candidates) != 1:
+            raise ReleaseValidationError(
+                f"Expected exactly one METADATA entry in {wheel_path.name}, found {len(metadata_candidates)}."
+            )
         metadata = wheel.read(metadata_candidates[0]).decode("utf-8")
 
     for line in metadata.splitlines():
@@ -99,25 +108,63 @@ def _validate_build_and_cli(dist_dir: Path) -> tuple[str, str, str, str]:
             f"pyproject version ({project_version}) does not match wheel metadata version ({wheel_version})."
         )
 
-    _run_command([sys.executable, "-m", "pip", "install", "--force-reinstall", str(wheel_path)])
-    cli_output = _run_command(["mcp-scan", "--version"])
-    cli_version = _extract_cli_version(cli_output)
-    if cli_version != project_version:
+    _run_command(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--force-reinstall",
+            "--no-deps",
+            str(wheel_path),
+        ]
+    )
+
+    module_cli_output = _run_command([sys.executable, "-m", "mcp_security_scanner.cli", "--version"])
+    module_cli_version = _extract_cli_version(module_cli_output)
+    if module_cli_version != project_version:
         raise ReleaseValidationError(
-            f"Installed CLI version ({cli_version}) does not match project version ({project_version})."
+            f"Installed module CLI version ({module_cli_version}) does not match project version ({project_version})."
         )
 
-    return project_version, init_version, wheel_version, cli_version
+    cli_output = _run_command(["mcp-scan", "--version"])
+    entrypoint_cli_version = _extract_cli_version(cli_output)
+    if entrypoint_cli_version != project_version:
+        raise ReleaseValidationError(
+            f"Installed CLI entrypoint version ({entrypoint_cli_version}) does not match project version ({project_version})."
+        )
+    if entrypoint_cli_version != module_cli_version:
+        raise ReleaseValidationError(
+            f"CLI entrypoint version ({entrypoint_cli_version}) does not match module CLI version ({module_cli_version})."
+        )
+
+    return project_version, init_version, wheel_version, entrypoint_cli_version
 
 
 def _validate_publish_artifacts(dist_dir: Path, expected_version: str) -> None:
     """Validate dist artifacts are present and aligned with expected version."""
-    if not list(dist_dir.glob("*.tar.gz")):
+    sdist_paths = sorted(dist_dir.glob("*.tar.gz"))
+    wheel_paths = sorted(dist_dir.glob("*.whl"))
+    if not sdist_paths:
         raise ReleaseValidationError(f"sdist artifact missing in {dist_dir}.")
-    if not list(dist_dir.glob("*.whl")):
+    if not wheel_paths:
         raise ReleaseValidationError(f"wheel artifact missing in {dist_dir}.")
-    if not any(expected_version in path.name for path in dist_dir.iterdir() if path.is_file()):
-        raise ReleaseValidationError(f"Built artifacts do not include version {expected_version}.")
+    if len(sdist_paths) != 1:
+        raise ReleaseValidationError(
+            f"Expected exactly one sdist artifact in {dist_dir}, found {len(sdist_paths)}: "
+            f"{', '.join(path.name for path in sdist_paths)}"
+        )
+    if len(wheel_paths) != 1:
+        raise ReleaseValidationError(
+            f"Expected exactly one wheel artifact in {dist_dir}, found {len(wheel_paths)}: "
+            f"{', '.join(path.name for path in wheel_paths)}"
+        )
+    if expected_version not in sdist_paths[0].name or expected_version not in wheel_paths[0].name:
+        raise ReleaseValidationError(
+            f"Built artifacts do not include expected version {expected_version} "
+            f"(wheel={wheel_paths[0].name}, sdist={sdist_paths[0].name})."
+        )
 
 
 def _verify_pypi_version_visibility(

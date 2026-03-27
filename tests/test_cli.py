@@ -3446,6 +3446,22 @@ class TestCLIHelpers:
         assert settings is not None
         assert settings.mysql_dsn_env == "MYSQL_DSN"
 
+    def test_coerce_oauth_cache_settings_rejects_backend_contract_drift(self, monkeypatch):
+        """OAuth cache settings should fail closed when backend contract maps are inconsistent."""
+        monkeypatch.setattr(
+            cli_module,
+            "_oauth_cache_backend_contract_error",
+            lambda: "auth.cache backend contract is inconsistent (test drift).",
+        )
+
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={"cache": {"backend": "local"}},
+        )
+
+        assert settings is None
+        assert error == "auth.cache backend contract is inconsistent (test drift)."
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -12307,6 +12323,22 @@ class TestCLIHelpers:
 
         for function_name in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.values():
             assert callable(getattr(cli_module, function_name, None))
+
+    def test_oauth_cache_backend_contract_error_returns_none_for_consistent_maps(self):
+        """Backend contract helper should return no error when canonical maps are aligned."""
+        assert cli_module._oauth_cache_backend_contract_error() is None
+
+    def test_oauth_cache_backend_contract_error_detects_loader_source_mismatch(self, monkeypatch):
+        """Backend contract helper should detect map/source drift for loader mapping."""
+        broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
+        backend_name = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        broken_loaders[backend_name] = "_missing_loader_symbol"
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS", broken_loaders)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "remote loader source mismatch" in contract_error
 
     @pytest.mark.parametrize(
         "backend",

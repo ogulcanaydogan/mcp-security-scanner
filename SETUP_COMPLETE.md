@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9J Implementation State
+# Setup Complete — Sprint 1-9K Implementation State
 
-This file records the actual implementation status after Sprint 9J.
+This file records the actual implementation status after Sprint 9K.
 
 ## Completed Work
 
@@ -1132,6 +1132,20 @@ This file records the actual implementation status after Sprint 9J.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 9K (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - backend contract checks are now resolved from one helper (`_oauth_cache_backend_contract_error`) and reused by auth.cache coerce/validation flow
+  - canonical maps (`supported set`, remote spec, loader map, persister map) remain single source of truth and mismatch-safe
+  - invariants remain unchanged and enforced (`persistent=false` bypass, non-fatal provider bypass, local-only `cache rotate`, compare contract)
+- Release hardening consistency:
+  - release consistency script now enforces deterministic artifact cardinality (single wheel + single sdist)
+  - wheel install verification uses no-cache/no-deps reinstall, validates both module CLI and entrypoint CLI version
+  - tag-mode consistency checks run in build stage for tag builds and remain enforced again in publish stage
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, and non-fatal provider bypass semantics are preserved
 
 ## Exit Code Contract (Current)
 

@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9J scope plus `v1.0.10` provider expansion target.
+Current index for the implemented Sprint 1-9K scope plus `v1.0.11` stabilization target.
 
 ## Status Snapshot
 
@@ -63,6 +63,7 @@ Current index for the implemented Sprint 1-9J scope plus `v1.0.10` provider expa
 - Sprint 9H: done (advanced OAuth cache backend v23 with Postgres KV using psycopg3, env-DSN auth, fixed-schema pre-provisioned row model)
 - Sprint 9I: done (post-1.0 stabilization hardening with expanded dispatch resolver coverage and script-driven deterministic PyPI visibility verification)
 - Sprint 9J: done (advanced OAuth cache backend v24 with MySQL KV using PyMySQL, env-DSN auth, fixed-schema pre-provisioned row model)
+- Sprint 9K: done (post-1.0 stabilization hardening with centralized backend-contract validation and stricter deterministic release-consistency checks)
 
 ## Top-Level Docs
 

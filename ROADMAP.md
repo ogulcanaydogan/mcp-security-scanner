@@ -2,18 +2,18 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.10`.
+- Release line is stable at `v1.0.11`.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.10` provider expansion while keeping the GA contract stable:
+- `v1.0.11` stabilization hardening while keeping the GA contract stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - add `mysql_kv` backend using env-DSN auth with fixed-schema pre-provisioned row semantics
+  - no new provider in this sprint; runtime behavior remains unchanged
   - keep pre-provisioned-only and non-fatal bypass behavior unchanged for all existing backends
-  - harden OAuth cache dispatch-contract coverage for supported backend/load/persist resolver completeness
-  - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks)
+  - harden OAuth cache canonical backend-contract checks for supported backend/load/persist resolver completeness
+  - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks) with stricter artifact/CLI consistency checks
 
 ## v1.0 GA Status
 
