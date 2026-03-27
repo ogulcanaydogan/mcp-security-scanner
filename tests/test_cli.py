@@ -2111,6 +2111,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_cloudflare_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_etcd_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_postgres_connection", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_mysql_connection", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -3406,6 +3407,45 @@ class TestCLIHelpers:
         assert settings is not None
         assert settings.postgres_dsn_env == "POSTGRES_DSN"
 
+    def test_coerce_oauth_cache_settings_accepts_mysql_backend(self):
+        """OAuth cache settings should accept mysql_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "mysql_kv",
+                    "mysql_cache_key": "mcp/security/oauth/cache",
+                    "mysql_dsn_env": "MYSQL_DSN_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "mysql_kv"
+        assert settings.mysql_cache_key == "mcp/security/oauth/cache"
+        assert settings.mysql_dsn_env == "MYSQL_DSN_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_mysql_defaults(self):
+        """OAuth cache settings should apply default mysql_kv optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "mysql_kv",
+                    "mysql_cache_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.mysql_dsn_env == "MYSQL_DSN"
+
     @pytest.mark.parametrize(
         ("cache_value", "expected_error"),
         [
@@ -4197,6 +4237,29 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "postgres_cache_key": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='postgres_kv'",
+            ),
+            (
+                {"backend": "mysql_kv"},
+                "auth.cache.mysql_cache_key is required",
+            ),
+            (
+                {
+                    "backend": "mysql_kv",
+                    "mysql_cache_key": "invalid key",
+                },
+                "auth.cache.mysql_cache_key must be a valid MySQL cache key path.",
+            ),
+            (
+                {
+                    "backend": "mysql_kv",
+                    "mysql_cache_key": "mcp/security/oauth/cache",
+                    "mysql_dsn_env": "9INVALID",
+                },
+                "auth.cache.mysql_dsn_env must be a valid environment variable name.",
+            ),
+            (
+                {"backend": "local", "mysql_cache_key": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='mysql_kv'",
             ),
         ],
     )
@@ -10105,6 +10168,316 @@ class TestCLIHelpers:
         )
         assert bypass_entries == {}
 
+    def test_build_mysql_cache_key_normalizes_path(self):
+        """MySQL key builder should normalize leading/trailing slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mysql-prod",
+            backend="mysql_kv",
+            mysql_cache_key="/mcp/security/oauth/cache/",
+        )
+
+        key_name = cli_module._build_mysql_cache_key(cache_settings=settings)
+
+        assert key_name == "mcp/security/oauth/cache"
+
+    def test_read_mysql_payload_parses_and_bypasses_paths(self, monkeypatch):
+        """MySQL reader should parse payload, map missing row to empty envelope, and bypass on errors."""
+
+        class FakeCursor:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+
+            def execute(self, sql: str, params: tuple[object, ...]) -> None:
+                assert "SELECT payload_json FROM mcp_oauth_cache_store" in sql
+                assert params == ("mcp/security/oauth/cache",)
+                if self._scenario == 4:
+                    raise RuntimeError("db-read-failed")
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                if self._scenario == 1:
+                    return (
+                        json.dumps(
+                            {
+                                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                                "entries": {"k": {"access_token": "t"}},
+                            }
+                        ),
+                    )
+                if self._scenario == 2:
+                    return None
+                if self._scenario == 3:
+                    return (b'{"schema_version":"v2","entries":{"k2":{"access_token":"tb"}}}',)
+                if self._scenario == 5:
+                    return ("{invalid-json",)
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                del exc_type, exc, tb
+                return False
+
+        class FakeConnection:
+            call_count = 0
+            close_count = 0
+
+            def __init__(self) -> None:
+                FakeConnection.call_count += 1
+                self._scenario = FakeConnection.call_count
+
+            def cursor(self):
+                return FakeCursor(self._scenario)
+
+            def close(self) -> None:
+                FakeConnection.close_count += 1
+
+        monkeypatch.setattr(cli_module, "_build_mysql_connection", lambda *, cache_settings: FakeConnection())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mysql-prod",
+            backend="mysql_kv",
+            mysql_cache_key="mcp/security/oauth/cache",
+            mysql_dsn_env="MYSQL_DSN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_mysql(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_mysql(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_mysql(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_mysql(cache_settings=settings)
+        fifth = cli_module._read_oauth_cache_payload_from_mysql(cache_settings=settings)
+
+        assert first == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k": {"access_token": "t"}},
+        }
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+        assert third == {
+            "schema_version": "v2",
+            "entries": {"k2": {"access_token": "tb"}},
+        }
+        assert fourth is None
+        assert fifth is None
+        assert FakeConnection.close_count == 5
+
+    def test_mysql_write_success_and_bypass_paths(self, monkeypatch):
+        """MySQL writer should support success flow and fail closed when preflight/update fails."""
+
+        class FakeCursor:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+                self.rowcount = 1
+
+            def execute(self, sql: str, params: tuple[object, ...]) -> None:
+                if sql.startswith("SELECT cache_key FROM mcp_oauth_cache_store"):
+                    assert params == ("mcp/security/oauth/cache",)
+                    if self._scenario == 3:
+                        raise RuntimeError("preflight-failed")
+                    return
+                if sql.startswith("UPDATE mcp_oauth_cache_store SET payload_json = %s"):
+                    payload_text, cache_key = params
+                    assert cache_key == "mcp/security/oauth/cache"
+                    assert isinstance(payload_text, str)
+                    parsed_payload = json.loads(payload_text)
+                    assert parsed_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+                    assert isinstance(parsed_payload["entries"], dict)
+                    if self._scenario == 4:
+                        self.rowcount = 0
+                    if self._scenario == 5:
+                        raise RuntimeError("update-failed")
+                    return
+                raise AssertionError(sql)
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                if self._scenario == 1:
+                    return ("mcp/security/oauth/cache",)
+                if self._scenario == 2:
+                    return None
+                if self._scenario in (4, 5):
+                    return ("mcp/security/oauth/cache",)
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> bool:
+                del exc_type, exc, tb
+                return False
+
+        class FakeConnection:
+            init_count = 0
+
+            def __init__(self) -> None:
+                FakeConnection.init_count += 1
+                self._scenario = FakeConnection.init_count
+
+            def cursor(self):
+                return FakeCursor(self._scenario)
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module, "_build_mysql_connection", lambda *, cache_settings: FakeConnection())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mysql-prod",
+            backend="mysql_kv",
+            mysql_cache_key="mcp/security/oauth/cache",
+            mysql_dsn_env="MYSQL_DSN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_mysql(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_mysql(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_mysql(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_mysql(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_mysql(cache_settings=settings, entries={}) is False
+
+    def test_mysql_connection_builder_and_close_guards(self, monkeypatch):
+        """MySQL connection helpers should fail closed for missing module/dsn and close safely."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="mysql-prod",
+            backend="mysql_kv",
+            mysql_cache_key="mcp/security/oauth/cache",
+            mysql_dsn_env="MYSQL_DSN",
+        )
+        original_import_module = cli_module.importlib.import_module
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                (_ for _ in ()).throw(ImportError("missing-pymysql"))
+                if module_name == "pymysql"
+                else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_mysql_connection(cache_settings=settings) is None
+
+        class FakePyMySQLMissingConnect:
+            pass
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                FakePyMySQLMissingConnect if module_name == "pymysql" else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_mysql_connection(cache_settings=settings) is None
+
+        monkeypatch.delenv("MYSQL_DSN", raising=False)
+        assert cli_module._build_mysql_connection(cache_settings=settings) is None
+
+        monkeypatch.setenv("MYSQL_DSN", "postgresql://user:pass@db.example.com:3306/mcp")
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                FakePyMySQLMissingConnect if module_name == "pymysql" else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_mysql_connection(cache_settings=settings) is None
+
+        connect_calls: list[dict[str, object]] = []
+
+        class FakeMySQLConnection:
+            def close(self) -> None:
+                return None
+
+        class FakePyMySQL:
+            @staticmethod
+            def connect(**kwargs: object) -> FakeMySQLConnection:
+                connect_calls.append(dict(kwargs))
+                return FakeMySQLConnection()
+
+        monkeypatch.setenv("MYSQL_DSN", "mysql://user%40name:pass%2Bword@db.example.com:3307/mcp")
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: FakePyMySQL if module_name == "pymysql" else original_import_module(module_name),
+        )
+        connection = cli_module._build_mysql_connection(cache_settings=settings)
+        assert isinstance(connection, FakeMySQLConnection)
+        assert connect_calls == [
+            {
+                "host": "db.example.com",
+                "port": 3307,
+                "database": "mcp",
+                "connect_timeout": 10,
+                "autocommit": True,
+                "charset": "utf8mb4",
+                "user": "user@name",
+                "password": "pass+word",
+            }
+        ]
+
+        assert cli_module._close_mysql_connection(object()) is None
+        assert cli_module._close_mysql_connection(connection) is None
+
+    def test_mysql_persist_removes_deleted_in_memory_entry(self, monkeypatch):
+        """MySQL persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_mysql",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_mysql", fake_write)
+
+        cli_module._persist_oauth_cache_entry_mysql(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="mysql-prod",
+                backend="mysql_kv",
+                mysql_cache_key="mcp/security/oauth/cache",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_load_mysql_entries_parses_and_bypasses_payload(self, monkeypatch):
+        """MySQL loader should parse payload entries and bypass cleanly on provider None."""
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_mysql",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = cli_module._load_oauth_persistent_cache_entries_from_mysql(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="mysql-prod",
+                backend="mysql_kv",
+                mysql_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_mysql", lambda *, cache_settings: None)
+        bypass_entries = cli_module._load_oauth_persistent_cache_entries_from_mysql(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="mysql-prod",
+                backend="mysql_kv",
+                mysql_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert bypass_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -11908,6 +12281,7 @@ class TestCLIHelpers:
             "cloudflare_kv",
             "etcd_kv",
             "postgres_kv",
+            "mysql_kv",
         }
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
@@ -12495,6 +12869,19 @@ class TestCLIHelpers:
                     backend="postgres_kv",
                     postgres_cache_key="mcp/security/oauth/cache",
                     postgres_dsn_env="POSTGRES_DSN",
+                ),
+            ),
+            (
+                "_build_mysql_connection",
+                None,
+                "_read_oauth_cache_payload_from_mysql",
+                "_write_oauth_cache_payload_to_mysql",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="mysql_kv",
+                    mysql_cache_key="mcp/security/oauth/cache",
+                    mysql_dsn_env="MYSQL_DSN",
                 ),
             ),
         ],

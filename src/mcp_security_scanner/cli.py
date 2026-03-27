@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlencode, urlparse, urlunparse
 
 import click
 import httpx
@@ -76,6 +76,7 @@ _OAUTH_CACHE_BACKEND_REDIS_KV = "redis_kv"
 _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV = "cloudflare_kv"
 _OAUTH_CACHE_BACKEND_ETCD_KV = "etcd_kv"
 _OAUTH_CACHE_BACKEND_POSTGRES_KV = "postgres_kv"
+_OAUTH_CACHE_BACKEND_MYSQL_KV = "mysql_kv"
 
 
 @dataclass(frozen=True)
@@ -199,6 +200,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
         "_load_oauth_persistent_cache_entries_from_postgres",
         "_persist_oauth_cache_entry_postgres",
     ),
+    _OAUTH_CACHE_BACKEND_MYSQL_KV: (
+        "_load_oauth_persistent_cache_entries_from_mysql",
+        "_persist_oauth_cache_entry_mysql",
+    ),
 }
 _SUPPORTED_OAUTH_CACHE_BACKENDS = {
     _OAUTH_CACHE_BACKEND_LOCAL,
@@ -239,6 +244,10 @@ _POSTGRES_DEFAULT_DSN_ENV = "POSTGRES_DSN"
 _POSTGRES_OAUTH_CACHE_TABLE = "mcp_oauth_cache_store"
 _POSTGRES_OAUTH_CACHE_KEY_COLUMN = "cache_key"
 _POSTGRES_OAUTH_CACHE_PAYLOAD_COLUMN = "payload_json"
+_MYSQL_DEFAULT_DSN_ENV = "MYSQL_DSN"
+_MYSQL_OAUTH_CACHE_TABLE = "mcp_oauth_cache_store"
+_MYSQL_OAUTH_CACHE_KEY_COLUMN = "cache_key"
+_MYSQL_OAUTH_CACHE_PAYLOAD_COLUMN = "payload_json"
 
 
 @dataclass(frozen=True)
@@ -316,6 +325,8 @@ class OAuthCacheSettings:
     etcd_token_env: str | None = None
     postgres_cache_key: str | None = None
     postgres_dsn_env: str | None = None
+    mysql_cache_key: str | None = None
+    mysql_dsn_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2494,6 +2505,8 @@ def _coerce_oauth_cache_settings(
             "etcd_token_env",
             "postgres_cache_key",
             "postgres_dsn_env",
+            "mysql_cache_key",
+            "mysql_dsn_env",
         }
     ]
     if unknown_fields:
@@ -2516,7 +2529,7 @@ def _coerce_oauth_cache_settings(
             "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url, "
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
             "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env, "
-            "postgres_cache_key, postgres_dsn_env.",
+            "postgres_cache_key, postgres_dsn_env, mysql_cache_key, mysql_dsn_env.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -3155,6 +3168,24 @@ def _coerce_oauth_cache_settings(
     if postgres_dsn_env is not None and not _is_valid_env_var_name(postgres_dsn_env):
         return None, "auth.cache.postgres_dsn_env must be a valid environment variable name."
 
+    mysql_cache_key_value = cache_value.get("mysql_cache_key")
+    if mysql_cache_key_value is not None and (
+        not isinstance(mysql_cache_key_value, str) or not mysql_cache_key_value.strip()
+    ):
+        return None, "auth.cache.mysql_cache_key must be a non-empty string when provided."
+    mysql_cache_key = mysql_cache_key_value.strip() if isinstance(mysql_cache_key_value, str) else None
+    if mysql_cache_key is not None and not _is_valid_mysql_cache_key(mysql_cache_key):
+        return None, "auth.cache.mysql_cache_key must be a valid MySQL cache key path."
+
+    mysql_dsn_env_value = cache_value.get("mysql_dsn_env")
+    if mysql_dsn_env_value is not None and (
+        not isinstance(mysql_dsn_env_value, str) or not mysql_dsn_env_value.strip()
+    ):
+        return None, "auth.cache.mysql_dsn_env must be a non-empty string when provided."
+    mysql_dsn_env = mysql_dsn_env_value.strip() if isinstance(mysql_dsn_env_value, str) else None
+    if mysql_dsn_env is not None and not _is_valid_env_var_name(mysql_dsn_env):
+        return None, "auth.cache.mysql_dsn_env must be a valid environment variable name."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3462,6 +3493,18 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.postgres_cache_key is required when auth.cache.backend='postgres_kv'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_MYSQL_KV and (mysql_cache_key is not None or mysql_dsn_env is not None):
+        return (
+            None,
+            "auth.cache.mysql_cache_key and auth.cache.mysql_dsn_env are only supported when "
+            "auth.cache.backend='mysql_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_MYSQL_KV and mysql_cache_key is None:
+        return (
+            None,
+            "auth.cache.mysql_cache_key is required when auth.cache.backend='mysql_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -4452,6 +4495,12 @@ def _coerce_oauth_cache_settings(
                 if postgres_dsn_env is not None
                 else (_POSTGRES_DEFAULT_DSN_ENV if backend == _OAUTH_CACHE_BACKEND_POSTGRES_KV else None)
             ),
+            mysql_cache_key=mysql_cache_key,
+            mysql_dsn_env=(
+                mysql_dsn_env
+                if mysql_dsn_env is not None
+                else (_MYSQL_DEFAULT_DSN_ENV if backend == _OAUTH_CACHE_BACKEND_MYSQL_KV else None)
+            ),
         ),
         None,
     )
@@ -4577,6 +4626,14 @@ def _is_valid_etcd_key(value: str) -> bool:
 
 def _is_valid_postgres_cache_key(value: str) -> bool:
     """Validate Postgres cache row key shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_mysql_cache_key(value: str) -> bool:
+    """Validate MySQL cache row key shape."""
     normalized = value.strip().strip("/")
     if not normalized:
         return False
@@ -9659,6 +9716,193 @@ def _write_oauth_cache_payload_to_postgres(
         return True
     finally:
         _close_postgres_connection(connection)
+
+
+def _load_oauth_persistent_cache_entries_from_mysql(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from MySQL row value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_mysql(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_mysql(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to MySQL row value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_mysql(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_mysql(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_mysql_connection(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create PyMySQL connection for OAuth cache backend."""
+    try:
+        pymysql_module = importlib.import_module("pymysql")
+    except Exception:
+        return None
+
+    dsn_env_name = cache_settings.mysql_dsn_env or _MYSQL_DEFAULT_DSN_ENV
+    dsn_value = os.getenv(dsn_env_name, "").strip()
+    if not dsn_value:
+        return None
+
+    parsed_dsn = urlparse(dsn_value)
+    if parsed_dsn.scheme not in {"mysql", "mysql+pymysql"}:
+        return None
+    host = parsed_dsn.hostname
+    database = parsed_dsn.path.lstrip("/")
+    if not host or not database:
+        return None
+
+    connect_fn = getattr(pymysql_module, "connect", None)
+    if not callable(connect_fn):
+        return None
+
+    connect_kwargs: dict[str, Any] = {
+        "host": host,
+        "port": parsed_dsn.port or 3306,
+        "database": database,
+        "connect_timeout": 10,
+        "autocommit": True,
+        "charset": "utf8mb4",
+    }
+    if parsed_dsn.username is not None:
+        connect_kwargs["user"] = unquote(parsed_dsn.username)
+    if parsed_dsn.password is not None:
+        connect_kwargs["password"] = unquote(parsed_dsn.password)
+
+    try:
+        return connect_fn(**connect_kwargs)
+    except Exception:
+        return None
+
+
+def _close_mysql_connection(connection: Any) -> None:
+    """Close PyMySQL connection safely when close method exists."""
+    close_method = getattr(connection, "close", None)
+    if callable(close_method):
+        try:
+            close_method()
+        except Exception:
+            pass
+
+
+def _build_mysql_cache_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build MySQL row key from validated cache settings."""
+    if cache_settings.mysql_cache_key is None:
+        return None
+    normalized_key = cache_settings.mysql_cache_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _read_oauth_cache_payload_from_mysql(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned MySQL row."""
+    cache_key = _build_mysql_cache_key(cache_settings=cache_settings)
+    if cache_key is None:
+        return None
+
+    connection = _build_mysql_connection(cache_settings=cache_settings)
+    if connection is None:
+        return None
+
+    select_sql = (
+        f"SELECT {_MYSQL_OAUTH_CACHE_PAYLOAD_COLUMN} FROM {_MYSQL_OAUTH_CACHE_TABLE} "
+        f"WHERE {_MYSQL_OAUTH_CACHE_KEY_COLUMN} = %s"
+    )
+    try:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(select_sql, (cache_key,))
+                row = cursor.fetchone()
+        except Exception:
+            return None
+
+        if row is None:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        if not isinstance(row, tuple) or not row:
+            return None
+
+        payload_value = row[0]
+        if payload_value is None:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        if isinstance(payload_value, bytes):
+            payload_text = payload_value.decode("utf-8", errors="ignore")
+        elif isinstance(payload_value, str):
+            payload_text = payload_value
+        else:
+            return None
+
+        if not payload_text.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            envelope = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        _close_mysql_connection(connection)
+
+
+def _write_oauth_cache_payload_to_mysql(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to existing MySQL row value."""
+    cache_key = _build_mysql_cache_key(cache_settings=cache_settings)
+    if cache_key is None:
+        return False
+
+    connection = _build_mysql_connection(cache_settings=cache_settings)
+    if connection is None:
+        return False
+
+    preflight_sql = (
+        f"SELECT {_MYSQL_OAUTH_CACHE_KEY_COLUMN} FROM {_MYSQL_OAUTH_CACHE_TABLE} "
+        f"WHERE {_MYSQL_OAUTH_CACHE_KEY_COLUMN} = %s"
+    )
+    update_sql = (
+        f"UPDATE {_MYSQL_OAUTH_CACHE_TABLE} "
+        f"SET {_MYSQL_OAUTH_CACHE_PAYLOAD_COLUMN} = %s "
+        f"WHERE {_MYSQL_OAUTH_CACHE_KEY_COLUMN} = %s"
+    )
+    try:
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(preflight_sql, (cache_key,))
+                preflight_row = cursor.fetchone()
+                if preflight_row is None:
+                    return False
+
+                cursor.execute(update_sql, (serialized_payload, cache_key))
+                affected_rows = getattr(cursor, "rowcount", None)
+                if isinstance(affected_rows, int) and affected_rows <= 0:
+                    return False
+        except Exception:
+            return False
+        return True
+    finally:
+        _close_mysql_connection(connection)
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
