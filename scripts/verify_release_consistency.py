@@ -116,7 +116,6 @@ def _validate_build_and_cli(dist_dir: Path) -> tuple[str, str, str, str]:
             "install",
             "--no-cache-dir",
             "--force-reinstall",
-            "--no-deps",
             str(wheel_path),
         ]
     )
