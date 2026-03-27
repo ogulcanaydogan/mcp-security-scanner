@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9H scope plus `v1.0.8` provider-expansion target.
+Current index for the implemented Sprint 1-9I scope plus `v1.0.9` stabilization target.
 
 ## Status Snapshot
 
@@ -61,6 +61,7 @@ Current index for the implemented Sprint 1-9H scope plus `v1.0.8` provider-expan
 - Sprint 9F: done (advanced OAuth cache backend v22 with GitLab instance variables API, env-token auth, pre-provisioned instance variable model without environment scope)
 - Sprint 9G: done (post-1.0 stabilization hardening with canonical GitLab capability matrix reuse and single-script release version guard reuse across build/publish jobs)
 - Sprint 9H: done (advanced OAuth cache backend v23 with Postgres KV using psycopg3, env-DSN auth, fixed-schema pre-provisioned row model)
+- Sprint 9I: done (post-1.0 stabilization hardening with expanded dispatch resolver coverage and script-driven deterministic PyPI visibility verification)
 
 ## Top-Level Docs
 

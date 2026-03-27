@@ -11935,6 +11935,26 @@ class TestCLIHelpers:
             assert callable(getattr(cli_module, function_name, None))
 
     @pytest.mark.parametrize(
+        "backend",
+        sorted(set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}),
+    )
+    def test_oauth_cache_remote_dispatch_resolvers_cover_all_remote_backends(self, backend: str):
+        """Remote backend contract must resolve callable loader/persister handlers for every remote backend."""
+        loader = cli_module._resolve_oauth_remote_persistent_cache_loader(backend)
+        persister = cli_module._resolve_oauth_remote_persistent_cache_persister(backend)
+        assert callable(loader)
+        assert callable(persister)
+
+    def test_oauth_cache_remote_dispatch_resolvers_return_none_for_non_remote_backend(self):
+        """Resolver helpers should not resolve handlers for local/unknown backends."""
+        assert cli_module._resolve_oauth_remote_persistent_cache_loader(cli_module._OAUTH_CACHE_BACKEND_LOCAL) is None
+        assert (
+            cli_module._resolve_oauth_remote_persistent_cache_persister(cli_module._OAUTH_CACHE_BACKEND_LOCAL) is None
+        )
+        assert cli_module._resolve_oauth_remote_persistent_cache_loader("unknown_backend") is None
+        assert cli_module._resolve_oauth_remote_persistent_cache_persister("unknown_backend") is None
+
+    @pytest.mark.parametrize(
         ("backend", "loader_name"),
         [
             ("local", "_load_oauth_persistent_cache_entries_local"),

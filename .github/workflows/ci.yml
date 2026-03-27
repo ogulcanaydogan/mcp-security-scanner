@@ -189,28 +189,9 @@ jobs:
       - name: Verify PyPI version visibility
         run: |
           set -euo pipefail
-          PACKAGE_NAME="ogulcanaydogan-mcp-security-scanner"
-          TAG_VERSION_RAW="${GITHUB_REF#refs/tags/v}"
-          TAG_VERSION="$(printf '%s' "$TAG_VERSION_RAW" | sed -E 's/-([ab]|rc)/\1/g')"
-          ATTEMPTS=12
-          SLEEP_SECONDS=10
-          PIP_INDEX_ARGS=()
-          PIP_INDEX_BASE_ARGS=(--no-cache-dir --index-url https://pypi.org/simple)
-          if printf '%s' "$TAG_VERSION" | grep -Eq '(a|b|rc)[0-9]+$'; then
-            PIP_INDEX_ARGS=(--pre)
-          fi
-
-          for attempt in $(seq 1 "$ATTEMPTS"); do
-            OUTPUT="$(python -m pip index versions "${PIP_INDEX_BASE_ARGS[@]}" "${PIP_INDEX_ARGS[@]}" "$PACKAGE_NAME" 2>/dev/null || true)"
-            VERSIONS_LINE="$(printf '%s\n' "$OUTPUT" | grep '^Available versions:' || true)"
-            if printf '%s' "$VERSIONS_LINE" | grep -Eq "(^|[, ])${TAG_VERSION}([, ]|$)"; then
-              echo "Version ${TAG_VERSION} is visible on PyPI (attempt ${attempt}/${ATTEMPTS})."
-              exit 0
-            fi
-            echo "Version ${TAG_VERSION} not visible yet (attempt ${attempt}/${ATTEMPTS}); waiting ${SLEEP_SECONDS}s."
-            sleep "$SLEEP_SECONDS"
-          done
-
-          echo "::error::Version ${TAG_VERSION} not visible on PyPI after ${ATTEMPTS} attempts."
-          python -m pip index versions "${PIP_INDEX_BASE_ARGS[@]}" "${PIP_INDEX_ARGS[@]}" "$PACKAGE_NAME" || true
-          exit 1
+          python scripts/verify_release_consistency.py \
+            --mode pypi-visibility \
+            --tag-version "${GITHUB_REF#refs/tags/v}" \
+            --package-name "ogulcanaydogan-mcp-security-scanner" \
+            --attempts 12 \
+            --sleep-seconds 10

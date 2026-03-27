@@ -7,6 +7,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import zipfile
 from pathlib import Path
@@ -119,10 +120,61 @@ def _validate_publish_artifacts(dist_dir: Path, expected_version: str) -> None:
         raise ReleaseValidationError(f"Built artifacts do not include version {expected_version}.")
 
 
+def _verify_pypi_version_visibility(
+    *,
+    package_name: str,
+    expected_version: str,
+    attempts: int,
+    sleep_seconds: int,
+) -> None:
+    """Verify that the expected version is visible in the public PyPI index."""
+    pip_command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "index",
+        "versions",
+        "--no-cache-dir",
+        "--index-url",
+        "https://pypi.org/simple",
+    ]
+    if re.search(r"(a|b|rc)[0-9]+$", expected_version):
+        pip_command.append("--pre")
+    pip_command.append(package_name)
+
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(pip_command, check=False, capture_output=True, text=True)
+        output = (result.stdout or "").strip()
+        versions_line = next(
+            (line for line in output.splitlines() if line.startswith("Available versions:")),
+            "",
+        )
+        if re.search(rf"(^|[, ]){re.escape(expected_version)}([, ]|$)", versions_line):
+            print(f"PyPI visibility verified: {package_name}=={expected_version} (attempt {attempt}/{attempts})")
+            return
+        print(
+            f"Version {expected_version} is not visible yet (attempt {attempt}/{attempts}); "
+            f"retrying in {sleep_seconds}s."
+        )
+        time.sleep(sleep_seconds)
+
+    latest_result = subprocess.run(pip_command, check=False, capture_output=True, text=True)
+    latest_output = (latest_result.stdout or latest_result.stderr or "").strip()
+    raise ReleaseValidationError(
+        f"Version {expected_version} not visible on PyPI for package {package_name} "
+        f"after {attempts} attempts. Last output: {latest_output}"
+    )
+
+
 def main() -> int:
     """CLI entrypoint."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("build", "publish"), required=True, help="Validation mode.")
+    parser.add_argument(
+        "--mode",
+        choices=("build", "publish", "pypi-visibility"),
+        required=True,
+        help="Validation mode.",
+    )
     parser.add_argument(
         "--dist-dir",
         default="dist",
@@ -133,7 +185,40 @@ def main() -> int:
         default=None,
         help="Raw tag version without refs/tags/v prefix (required for publish mode).",
     )
+    parser.add_argument(
+        "--package-name",
+        default="ogulcanaydogan-mcp-security-scanner",
+        help="Package name to check for PyPI visibility in pypi-visibility mode.",
+    )
+    parser.add_argument(
+        "--attempts",
+        type=int,
+        default=12,
+        help="Number of attempts for PyPI visibility checks in pypi-visibility mode.",
+    )
+    parser.add_argument(
+        "--sleep-seconds",
+        type=int,
+        default=10,
+        help="Seconds to sleep between PyPI visibility retries in pypi-visibility mode.",
+    )
     args = parser.parse_args()
+
+    if args.mode == "pypi-visibility":
+        if not isinstance(args.tag_version, str) or not args.tag_version.strip():
+            raise ReleaseValidationError("--tag-version is required in pypi-visibility mode.")
+        if args.attempts < 1:
+            raise ReleaseValidationError("--attempts must be >= 1.")
+        if args.sleep_seconds < 0:
+            raise ReleaseValidationError("--sleep-seconds must be >= 0.")
+        expected_version = _normalize_tag_version(args.tag_version.strip())
+        _verify_pypi_version_visibility(
+            package_name=args.package_name.strip(),
+            expected_version=expected_version,
+            attempts=args.attempts,
+            sleep_seconds=args.sleep_seconds,
+        )
+        return 0
 
     dist_dir = Path(args.dist_dir)
     if not dist_dir.exists() or not dist_dir.is_dir():

@@ -2,18 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.8`.
+- Release line is stable at `v1.0.9`.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.8` provider expansion while keeping the GA contract stable:
+- `v1.0.9` stabilization hardening while keeping the GA contract stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - add `postgres_kv` backend with fixed-schema pre-provisioned row model (`mcp_oauth_cache_store`)
-  - keep pre-provisioned-only and non-fatal bypass behavior unchanged
-  - keep psycopg3 DSN resolution env-only (`POSTGRES_DSN` default)
-  - keep v1 behavior pre-provisioned-only (no variable create) and non-fatal bypass on provider errors
+  - no new provider in this sprint; runtime behavior remains unchanged
+  - keep pre-provisioned-only and non-fatal bypass behavior unchanged for all existing backends
+  - harden OAuth cache dispatch-contract coverage for supported backend/load/persist resolver completeness
   - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks)
 
 ## v1.0 GA Status

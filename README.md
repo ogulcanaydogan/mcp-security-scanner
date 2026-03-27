@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9H)
+## Capability Snapshot (Sprint 1-9I)
 
 | Area | Status |
 |---|---|
@@ -83,6 +83,7 @@ flowchart LR
 - Post-1.0 provider expansion (Sprint 9F): added `gitlab_instance_variables` backend (GitLab admin instance variable API, env-token auth, pre-provisioned variable model without environment scope)
 - Post-1.0 stabilization hardening (Sprint 9G): centralized GitLab backend capability matrix reused across validation and API path/query/body builders, plus single-script version consistency checks reused in build/publish CI stages
 - Post-1.0 provider expansion (Sprint 9H): added `postgres_kv` backend (psycopg3 env-DSN auth, fixed-schema pre-provisioned row model)
+- Post-1.0 stabilization hardening (Sprint 9I): expanded backend-dispatch contract resolver coverage and consolidated PyPI visibility verification under the shared release-consistency script (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -958,7 +959,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.8` provider expansion patch release with `postgres_kv` under the existing post-1.0 contract baseline.
+- `1.0.9` stabilization patch release (no new backend) with strengthened OAuth cache dispatch-contract coverage and deterministic script-driven release verification.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

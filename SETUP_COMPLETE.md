@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9H Implementation State
+# Setup Complete — Sprint 1-9I Implementation State
 
-This file records the actual implementation status after Sprint 9H.
+This file records the actual implementation status after Sprint 9I.
 
 ## Completed Work
 
@@ -1100,6 +1100,19 @@ This file records the actual implementation status after Sprint 9H.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 9I (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - backend canonical maps (`_SUPPORTED_OAUTH_CACHE_BACKENDS`, remote spec map, loader map, persister map) remain the single dispatch contract source
+  - dispatch resolver coverage is explicitly enforced for every non-local backend
+  - invariants remain unchanged and enforced (`persistent=false` bypass, non-fatal provider bypass, local-only `cache rotate`, compare contract)
+- Release hardening consistency:
+  - publish-time PyPI visibility verification now reuses the shared `scripts/verify_release_consistency.py` script (`--mode pypi-visibility`)
+  - deterministic index flags remain enforced (`--no-cache-dir --index-url https://pypi.org/simple`)
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, and non-fatal provider bypass semantics are preserved
 
 ## Exit Code Contract (Current)
 
