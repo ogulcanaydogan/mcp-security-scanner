@@ -171,25 +171,31 @@ def _verify_pypi_version_visibility(
     *,
     package_name: str,
     expected_version: str,
+    index_url: str,
     attempts: int,
     sleep_seconds: int,
+    pip_timeout_seconds: int,
 ) -> None:
     """Verify that the expected version is visible in the public PyPI index."""
     pip_command = [
         sys.executable,
         "-m",
         "pip",
+        "--timeout",
+        str(pip_timeout_seconds),
         "index",
         "versions",
         "--no-cache-dir",
         "--index-url",
-        "https://pypi.org/simple",
+        index_url,
     ]
     if re.search(r"(a|b|rc)[0-9]+$", expected_version):
         pip_command.append("--pre")
     pip_command.append(package_name)
     pip_env = dict(os.environ)
-    pip_env.setdefault("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    pip_env["PIP_NO_CACHE_DIR"] = "1"
+    pip_env["PIP_INDEX_URL"] = index_url
 
     last_output = ""
     for attempt in range(1, attempts + 1):
@@ -213,8 +219,10 @@ def _verify_pypi_version_visibility(
         if re.search(rf"(^|[, ]){re.escape(expected_version)}([, ]|$)", versions_line):
             print(f"PyPI visibility verified: {package_name}=={expected_version} (attempt {attempt}/{attempts})")
             return
+        available_versions_display = versions_line or "<missing versions line>"
         print(
             f"Version {expected_version} is not visible yet (attempt {attempt}/{attempts}); "
+            f"available={available_versions_display}; "
             f"retrying in {sleep_seconds}s."
         )
         if attempt < attempts:
@@ -251,6 +259,11 @@ def main() -> int:
         help="Package name to check for PyPI visibility in pypi-visibility mode.",
     )
     parser.add_argument(
+        "--index-url",
+        default="https://pypi.org/simple",
+        help="Package index URL for PyPI visibility checks in pypi-visibility mode.",
+    )
+    parser.add_argument(
         "--attempts",
         type=int,
         default=12,
@@ -262,6 +275,12 @@ def main() -> int:
         default=10,
         help="Seconds to sleep between PyPI visibility retries in pypi-visibility mode.",
     )
+    parser.add_argument(
+        "--pip-timeout-seconds",
+        type=int,
+        default=15,
+        help="pip network timeout in seconds for each visibility lookup attempt.",
+    )
     args = parser.parse_args()
 
     if args.mode == "pypi-visibility":
@@ -271,12 +290,16 @@ def main() -> int:
             raise ReleaseValidationError("--attempts must be >= 1.")
         if args.sleep_seconds < 0:
             raise ReleaseValidationError("--sleep-seconds must be >= 0.")
+        if args.pip_timeout_seconds < 1:
+            raise ReleaseValidationError("--pip-timeout-seconds must be >= 1.")
         expected_version = _normalize_tag_version(args.tag_version.strip())
         _verify_pypi_version_visibility(
             package_name=args.package_name.strip(),
             expected_version=expected_version,
+            index_url=args.index_url.strip(),
             attempts=args.attempts,
             sleep_seconds=args.sleep_seconds,
+            pip_timeout_seconds=args.pip_timeout_seconds,
         )
         return 0
 

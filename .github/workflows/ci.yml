@@ -17,8 +17,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RELEASE_PYPI_INDEX_URL: "https://pypi.org/simple"
   RELEASE_PYPI_VISIBILITY_ATTEMPTS: "12"
   RELEASE_PYPI_VISIBILITY_SLEEP_SECONDS: "10"
+  RELEASE_PYPI_VISIBILITY_TIMEOUT_SECONDS: "15"
 
 jobs:
   lint:
@@ -206,5 +208,7 @@ jobs:
             --mode pypi-visibility \
             --tag-version "${GITHUB_REF#refs/tags/v}" \
             --package-name "ogulcanaydogan-mcp-security-scanner" \
+            --index-url "${RELEASE_PYPI_INDEX_URL}" \
             --attempts "${RELEASE_PYPI_VISIBILITY_ATTEMPTS}" \
-            --sleep-seconds "${RELEASE_PYPI_VISIBILITY_SLEEP_SECONDS}"
+            --sleep-seconds "${RELEASE_PYPI_VISIBILITY_SLEEP_SECONDS}" \
+            --pip-timeout-seconds "${RELEASE_PYPI_VISIBILITY_TIMEOUT_SECONDS}"

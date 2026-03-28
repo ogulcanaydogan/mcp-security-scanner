@@ -88,6 +88,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9K): centralized OAuth cache backend-contract checks and tightened deterministic release consistency validation without runtime behavior changes
 - Post-1.0 stabilization hardening (Sprint 9L): strengthened backend-contract mismatch detection (including supported-set drift), improved deterministic PyPI visibility retry logging for transient failures, and kept runtime behavior unchanged
 - Post-1.0 provider expansion (Sprint 9M): added `mongo_kv` backend (PyMongo env-DSN auth, fixed-schema pre-provisioned document model)
+- Post-1.0 stabilization hardening (Sprint 9N): centralized OAuth cache contract snapshot checks (including callable-map drift guards) and tightened deterministic PyPI visibility diagnostics with explicit index/timeout inputs in the shared release-consistency script
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -979,7 +980,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.13` provider patch release with `mongo_kv` onboarding (pre-provisioned document model) while preserving runtime/CLI/report contracts.
+- `1.0.14` stabilization-only patch release (no new backend) with stricter contract drift detection and deterministic release visibility diagnostics while preserving runtime/CLI/report contracts.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

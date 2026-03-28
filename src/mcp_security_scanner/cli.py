@@ -17,7 +17,7 @@ import shlex
 import sys
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -238,25 +238,50 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = frozenset(
 
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
-    remote_supported_backends = set(_SUPPORTED_OAUTH_CACHE_BACKENDS) - {_OAUTH_CACHE_BACKEND_LOCAL}
-    if remote_supported_backends != _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS:
+    contract = _oauth_cache_backend_contract_snapshot()
+    remote_supported_backends = contract["remote_supported_backends"]
+    remote_backends = contract["remote_backends"]
+    loader_map = contract["loader_map"]
+    persister_map = contract["persister_map"]
+    expected_loaders = contract["expected_loaders"]
+    expected_persisters = contract["expected_persisters"]
+
+    if remote_supported_backends != remote_backends:
         return "auth.cache backend contract is inconsistent (supported backend set mismatch)."
 
+    if set(loader_map) != remote_backends:
+        return "auth.cache backend contract is inconsistent (remote loader map mismatch)."
+    if set(persister_map) != remote_backends:
+        return "auth.cache backend contract is inconsistent (remote persister map mismatch)."
+    for backend, expected_loader in expected_loaders.items():
+        if loader_map.get(backend) != expected_loader:
+            return "auth.cache backend contract is inconsistent (remote loader source mismatch)."
+    for backend, expected_persister in expected_persisters.items():
+        if persister_map.get(backend) != expected_persister:
+            return "auth.cache backend contract is inconsistent (remote persister source mismatch)."
+    for function_name in loader_map.values():
+        if not callable(globals().get(function_name)):
+            return "auth.cache backend contract is inconsistent (remote loader callable mismatch)."
+    for function_name in persister_map.values():
+        if not callable(globals().get(function_name)):
+            return "auth.cache backend contract is inconsistent (remote persister callable mismatch)."
+    return None
+
+
+def _oauth_cache_backend_contract_snapshot() -> dict[str, Any]:
+    """Build canonical backend-contract snapshot used by drift checks and tests."""
+    remote_supported_backends = frozenset(set(_SUPPORTED_OAUTH_CACHE_BACKENDS) - {_OAUTH_CACHE_BACKEND_LOCAL})
     expected_loaders, expected_persisters = _derive_oauth_remote_persistent_cache_handler_maps(
         _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS
     )
-
-    if set(_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS) != _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS:
-        return "auth.cache backend contract is inconsistent (remote loader map mismatch)."
-    if set(_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS) != _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS:
-        return "auth.cache backend contract is inconsistent (remote persister map mismatch)."
-    for backend, expected_loader in expected_loaders.items():
-        if _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.get(backend) != expected_loader:
-            return "auth.cache backend contract is inconsistent (remote loader source mismatch)."
-    for backend, expected_persister in expected_persisters.items():
-        if _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.get(backend) != expected_persister:
-            return "auth.cache backend contract is inconsistent (remote persister source mismatch)."
-    return None
+    return {
+        "remote_supported_backends": remote_supported_backends,
+        "remote_backends": _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS,
+        "loader_map": _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS,
+        "persister_map": _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS,
+        "expected_loaders": expected_loaders,
+        "expected_persisters": expected_persisters,
+    }
 
 
 _OAUTH_CACHE_SCHEMA_VERSION_V1 = "v1"
@@ -6441,24 +6466,28 @@ def _resolve_oauth_remote_persistent_cache_loader(
     backend: str,
 ) -> Callable[..., dict[str, dict[str, Any]]] | None:
     """Resolve remote persistent-cache loader handler for backend."""
-    function_name = _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS.get(backend)
-    if function_name is None:
-        return None
-    resolved = globals().get(function_name)
-    if not callable(resolved):
-        return None
-    return cast(Callable[..., dict[str, dict[str, Any]]], resolved)
+    resolved = _resolve_oauth_remote_persistent_cache_handler(backend, _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
+    return cast(Callable[..., dict[str, dict[str, Any]]] | None, resolved)
 
 
 def _resolve_oauth_remote_persistent_cache_persister(backend: str) -> Callable[..., None] | None:
     """Resolve remote persistent-cache persister handler for backend."""
-    function_name = _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.get(backend)
+    resolved = _resolve_oauth_remote_persistent_cache_handler(backend, _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS)
+    return cast(Callable[..., None] | None, resolved)
+
+
+def _resolve_oauth_remote_persistent_cache_handler(
+    backend: str,
+    handler_map: Mapping[str, str],
+) -> Callable[..., Any] | None:
+    """Resolve remote persistent-cache handler from canonical handler map."""
+    function_name = handler_map.get(backend)
     if function_name is None:
         return None
     resolved = globals().get(function_name)
     if not callable(resolved):
         return None
-    return cast(Callable[..., None], resolved)
+    return cast(Callable[..., Any], resolved)
 
 
 def _load_oauth_persistent_cache_entries(

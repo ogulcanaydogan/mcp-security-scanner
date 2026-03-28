@@ -12678,6 +12678,25 @@ class TestCLIHelpers:
         for function_name in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS.values():
             assert callable(getattr(cli_module, function_name, None))
 
+    def test_oauth_cache_backend_contract_snapshot_matches_canonical_maps(self):
+        """Contract snapshot helper should expose canonical backend maps without drift."""
+        snapshot = cli_module._oauth_cache_backend_contract_snapshot()
+
+        assert snapshot["remote_supported_backends"] == (
+            set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}
+        )
+        assert snapshot["remote_backends"] == cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS
+        assert snapshot["loader_map"] == cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS
+        assert snapshot["persister_map"] == cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS
+        assert snapshot["expected_loaders"] == {
+            backend: loader
+            for backend, (loader, _persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
+        }
+        assert snapshot["expected_persisters"] == {
+            backend: persister
+            for backend, (_loader, persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
+        }
+
     def test_oauth_cache_backend_contract_error_returns_none_for_consistent_maps(self):
         """Backend contract helper should return no error when canonical maps are aligned."""
         assert cli_module._oauth_cache_backend_contract_error() is None
@@ -12694,6 +12713,25 @@ class TestCLIHelpers:
         assert contract_error is not None
         assert "remote loader source mismatch" in contract_error
 
+    def test_oauth_cache_backend_contract_error_detects_loader_callable_mismatch(self, monkeypatch):
+        """Backend contract helper should fail when loader map points to a non-callable symbol."""
+        broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
+        broken_specs = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
+        backend_name = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        loader_symbol = "_oauth_contract_non_callable_loader"
+        broken_loaders[backend_name] = loader_symbol
+        current_loader, current_persister = broken_specs[backend_name]
+        assert isinstance(current_loader, str)
+        broken_specs[backend_name] = (loader_symbol, current_persister)
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS", broken_loaders)
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS", broken_specs)
+        monkeypatch.setattr(cli_module, loader_symbol, object(), raising=False)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "remote loader callable mismatch" in contract_error
+
     def test_oauth_cache_backend_contract_error_detects_persister_source_mismatch(self, monkeypatch):
         """Backend contract helper should detect map/source drift for persister mapping."""
         broken_persisters = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS)
@@ -12705,6 +12743,25 @@ class TestCLIHelpers:
 
         assert contract_error is not None
         assert "remote persister source mismatch" in contract_error
+
+    def test_oauth_cache_backend_contract_error_detects_persister_callable_mismatch(self, monkeypatch):
+        """Backend contract helper should fail when persister map points to a non-callable symbol."""
+        broken_persisters = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS)
+        broken_specs = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
+        backend_name = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        persister_symbol = "_oauth_contract_non_callable_persister"
+        broken_persisters[backend_name] = persister_symbol
+        current_loader, current_persister = broken_specs[backend_name]
+        assert isinstance(current_persister, str)
+        broken_specs[backend_name] = (current_loader, persister_symbol)
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS", broken_persisters)
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS", broken_specs)
+        monkeypatch.setattr(cli_module, persister_symbol, object(), raising=False)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "remote persister callable mismatch" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_supported_backend_set_mismatch(self, monkeypatch):
         """Backend contract helper should fail when supported-set and remote backend specs drift."""
@@ -12738,6 +12795,25 @@ class TestCLIHelpers:
         )
         assert cli_module._resolve_oauth_remote_persistent_cache_loader("unknown_backend") is None
         assert cli_module._resolve_oauth_remote_persistent_cache_persister("unknown_backend") is None
+
+    def test_oauth_cache_remote_dispatch_generic_resolver_validates_callables(self, monkeypatch):
+        """Generic remote resolver should only resolve callable symbols."""
+        handler_symbol = "_oauth_contract_dummy_handler"
+        non_callable_symbol = "_oauth_contract_non_callable_handler"
+        monkeypatch.setattr(cli_module, handler_symbol, lambda **_: None, raising=False)
+        monkeypatch.setattr(cli_module, non_callable_symbol, object(), raising=False)
+        handler_map = {
+            "ok": handler_symbol,
+            "bad": non_callable_symbol,
+        }
+
+        resolved_ok = cli_module._resolve_oauth_remote_persistent_cache_handler("ok", handler_map)
+        resolved_bad = cli_module._resolve_oauth_remote_persistent_cache_handler("bad", handler_map)
+        resolved_missing = cli_module._resolve_oauth_remote_persistent_cache_handler("missing", handler_map)
+
+        assert callable(resolved_ok)
+        assert resolved_bad is None
+        assert resolved_missing is None
 
     @pytest.mark.parametrize(
         ("backend", "loader_name"),

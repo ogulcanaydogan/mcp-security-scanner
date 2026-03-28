@@ -2,17 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.13`.
+- Release line is stable at `v1.0.13` and advancing under stabilization-first post-1.0 policy.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.13` provider onboarding while keeping the GA contract stable:
+- `v1.0.14` stabilization-only hardening while keeping the GA contract stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - add `mongo_kv` backend with fixed-schema pre-provisioned document model (`cache_key` / `payload_json`)
+  - no new backend in this sprint; focus on contract drift detection and release determinism hardening
   - keep pre-provisioned-only and non-fatal bypass behavior unchanged for all existing backends
-  - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks)
+  - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks with explicit index/timeout inputs)
 
 ## v1.0 GA Status
 
