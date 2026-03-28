@@ -2,17 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.14` and advancing under stabilization-first post-1.0 policy.
+- Release line is stable at `v1.0.15` and advancing under stabilization-first post-1.0 policy.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.15` provider onboarding for `dynamodb_kv` while keeping GA contracts stable:
+- `v1.0.16` stabilization hardening (no new backend) while keeping GA contracts stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
-  - add `dynamodb_kv` with fixed-schema pre-provisioned item model (`mcp_oauth_cache_store.cache_key/payload_json`)
-  - keep lookup order and non-fatal bypass behavior unchanged
-  - preserve release hardening (tag/version/wheel/CLI guard + deterministic PyPI visibility checks with explicit index/timeout inputs)
+  - keep OAuth cache lookup order and non-fatal bypass behavior unchanged
+  - tighten deterministic backend-contract drift diagnostics (supported/spec/load/persist mismatch details)
+  - preserve release hardening and improve deterministic PyPI visibility retry diagnostics under official-index no-cache checks
 
 ## v1.0 GA Status
 

@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9O)
+## Capability Snapshot (Sprint 1-9P)
 
 | Area | Status |
 |---|---|
@@ -90,6 +90,7 @@ flowchart LR
 - Post-1.0 provider expansion (Sprint 9M): added `mongo_kv` backend (PyMongo env-DSN auth, fixed-schema pre-provisioned document model)
 - Post-1.0 stabilization hardening (Sprint 9N): centralized OAuth cache contract snapshot checks (including callable-map drift guards) and tightened deterministic PyPI visibility diagnostics with explicit index/timeout inputs in the shared release-consistency script
 - Post-1.0 provider expansion (Sprint 9O): added `dynamodb_kv` backend (boto3 DynamoDB client with existing AWS region/endpoint settings, fixed-schema pre-provisioned item model)
+- Post-1.0 stabilization hardening (Sprint 9P): canonical OAuth cache contract mismatch diagnostics now emit deterministic missing/extra backend details, and PyPI visibility retries log deterministic attempt-scoped diagnostics in the shared release-consistency script
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -988,7 +989,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.15` provider onboarding patch release with `dynamodb_kv` (fixed-schema pre-provisioned DynamoDB item model) while preserving runtime/CLI/report contracts.
+- `1.0.16` stabilization patch release (no new backend) with deterministic OAuth cache contract mismatch diagnostics and clearer PyPI visibility retry logging while preserving runtime/CLI/report contracts.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

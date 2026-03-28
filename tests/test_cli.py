@@ -13024,6 +13024,7 @@ class TestCLIHelpers:
         """Backend contract helper should detect map/source drift for loader mapping."""
         broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
         backend_name = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        expected_loader, _expected_persister = cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS[backend_name]
         broken_loaders[backend_name] = "_missing_loader_symbol"
         monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS", broken_loaders)
 
@@ -13031,6 +13032,9 @@ class TestCLIHelpers:
 
         assert contract_error is not None
         assert "remote loader source mismatch" in contract_error
+        assert f"backend={backend_name}" in contract_error
+        assert f"expected={expected_loader}" in contract_error
+        assert "actual=_missing_loader_symbol" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_loader_callable_mismatch(self, monkeypatch):
         """Backend contract helper should fail when loader map points to a non-callable symbol."""
@@ -13050,11 +13054,14 @@ class TestCLIHelpers:
 
         assert contract_error is not None
         assert "remote loader callable mismatch" in contract_error
+        assert f"backend={backend_name}" in contract_error
+        assert f"symbol={loader_symbol}" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_persister_source_mismatch(self, monkeypatch):
         """Backend contract helper should detect map/source drift for persister mapping."""
         broken_persisters = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS)
         backend_name = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        _expected_loader, expected_persister = cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS[backend_name]
         broken_persisters[backend_name] = "_missing_persister_symbol"
         monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS", broken_persisters)
 
@@ -13062,6 +13069,9 @@ class TestCLIHelpers:
 
         assert contract_error is not None
         assert "remote persister source mismatch" in contract_error
+        assert f"backend={backend_name}" in contract_error
+        assert f"expected={expected_persister}" in contract_error
+        assert "actual=_missing_persister_symbol" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_persister_callable_mismatch(self, monkeypatch):
         """Backend contract helper should fail when persister map points to a non-callable symbol."""
@@ -13081,6 +13091,8 @@ class TestCLIHelpers:
 
         assert contract_error is not None
         assert "remote persister callable mismatch" in contract_error
+        assert f"backend={backend_name}" in contract_error
+        assert f"symbol={persister_symbol}" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_supported_backend_set_mismatch(self, monkeypatch):
         """Backend contract helper should fail when supported-set and remote backend specs drift."""
@@ -13094,6 +13106,39 @@ class TestCLIHelpers:
 
         assert contract_error is not None
         assert "supported backend set mismatch" in contract_error
+        assert "missing=[" in contract_error
+        assert "extra=[]" in contract_error
+        assert "aws_secrets_manager" in contract_error
+
+    def test_oauth_cache_backend_contract_error_detects_loader_map_key_mismatch(self, monkeypatch):
+        """Backend contract helper should report deterministic missing/extra detail for loader map drift."""
+        broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
+        removed_backend = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        broken_loaders.pop(removed_backend)
+        broken_loaders["oauth_contract_extra_loader_backend"] = "_oauth_contract_extra_loader_symbol"
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS", broken_loaders)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "remote loader map mismatch" in contract_error
+        assert f"missing=['{removed_backend}']" in contract_error
+        assert "extra=['oauth_contract_extra_loader_backend']" in contract_error
+
+    def test_oauth_cache_backend_contract_error_detects_persister_map_key_mismatch(self, monkeypatch):
+        """Backend contract helper should report deterministic missing/extra detail for persister map drift."""
+        broken_persisters = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS)
+        removed_backend = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        broken_persisters.pop(removed_backend)
+        broken_persisters["oauth_contract_extra_persister_backend"] = "_oauth_contract_extra_persister_symbol"
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS", broken_persisters)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "remote persister map mismatch" in contract_error
+        assert f"missing=['{removed_backend}']" in contract_error
+        assert "extra=['oauth_contract_extra_persister_backend']" in contract_error
 
     @pytest.mark.parametrize(
         "backend",

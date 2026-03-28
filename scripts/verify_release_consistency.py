@@ -197,19 +197,27 @@ def _verify_pypi_version_visibility(
     pip_env["PIP_NO_CACHE_DIR"] = "1"
     pip_env["PIP_INDEX_URL"] = index_url
 
+    def _normalize_retry_output(raw_text: str, *, limit: int = 500) -> str:
+        """Normalize retry diagnostics to single-line deterministic output."""
+        normalized = " ".join(raw_text.split())
+        if not normalized:
+            return "<empty>"
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit]}...<truncated>"
+
     last_output = ""
     for attempt in range(1, attempts + 1):
+        attempt_label = f"[pypi-visibility attempt {attempt}/{attempts}]"
         result = subprocess.run(pip_command, check=False, capture_output=True, text=True, env=pip_env)
         output = (result.stdout or "").strip()
         error_output = (result.stderr or "").strip()
-        combined_output = output or error_output or f"exit={result.returncode}"
+        combined_output = _normalize_retry_output(output or error_output or f"exit={result.returncode}")
         last_output = combined_output
         if result.returncode != 0:
-            print(
-                f"PyPI lookup command failed (attempt {attempt}/{attempts}): {combined_output}. "
-                f"retrying in {sleep_seconds}s."
-            )
+            print(f"{attempt_label} lookup_failed rc={result.returncode} output={combined_output}")
             if attempt < attempts:
+                print(f"{attempt_label} retry_in={sleep_seconds}s")
                 time.sleep(sleep_seconds)
             continue
         versions_line = next(
@@ -217,15 +225,15 @@ def _verify_pypi_version_visibility(
             "",
         )
         if re.search(rf"(^|[, ]){re.escape(expected_version)}([, ]|$)", versions_line):
-            print(f"PyPI visibility verified: {package_name}=={expected_version} (attempt {attempt}/{attempts})")
+            print(f"{attempt_label} visibility_verified package={package_name} version={expected_version}")
             return
-        available_versions_display = versions_line or "<missing versions line>"
+        available_versions_display = _normalize_retry_output(versions_line or "<missing versions line>")
         print(
-            f"Version {expected_version} is not visible yet (attempt {attempt}/{attempts}); "
-            f"available={available_versions_display}; "
-            f"retrying in {sleep_seconds}s."
+            f"{attempt_label} version_not_visible expected={expected_version} "
+            f"available={available_versions_display}"
         )
         if attempt < attempts:
+            print(f"{attempt_label} retry_in={sleep_seconds}s")
             time.sleep(sleep_seconds)
 
     raise ReleaseValidationError(

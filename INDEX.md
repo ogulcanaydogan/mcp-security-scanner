@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9O scope plus `v1.0.15` provider-onboarding target.
+Current index for the implemented Sprint 1-9P scope plus `v1.0.16` stabilization target.
 
 ## Status Snapshot
 
@@ -68,6 +68,7 @@ Current index for the implemented Sprint 1-9O scope plus `v1.0.15` provider-onbo
 - Sprint 9M: done (advanced OAuth cache backend v25 with MongoDB KV using PyMongo, env-DSN auth, fixed-schema pre-provisioned document model)
 - Sprint 9N: done (post-1.0 stabilization hardening with canonical contract snapshot reuse, callable-map drift guards, and deterministic PyPI visibility diagnostics without runtime behavior changes)
 - Sprint 9O: done (advanced OAuth cache backend v26 with DynamoDB KV using boto3, existing AWS region/endpoint routing, fixed-schema pre-provisioned item model)
+- Sprint 9P: done (post-1.0 stabilization hardening with deterministic contract mismatch delta diagnostics and clearer attempt-scoped PyPI visibility retry logs in the shared release script)
 
 ## Top-Level Docs
 

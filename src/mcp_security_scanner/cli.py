@@ -17,7 +17,7 @@ import shlex
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -241,6 +241,19 @@ _SUPPORTED_OAUTH_CACHE_BACKENDS = frozenset(
 )
 
 
+def _format_oauth_backend_set_delta(
+    *,
+    expected: Collection[str],
+    actual: Collection[str],
+) -> str:
+    """Return deterministic missing/extra backend delta string for contract mismatches."""
+    expected_set = set(expected)
+    actual_set = set(actual)
+    missing = sorted(expected_set - actual_set)
+    extra = sorted(actual_set - expected_set)
+    return f"missing={missing}, extra={extra}"
+
+
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
     contract = _oauth_cache_backend_contract_snapshot()
@@ -252,24 +265,41 @@ def _oauth_cache_backend_contract_error() -> str | None:
     expected_persisters = contract["expected_persisters"]
 
     if remote_supported_backends != remote_backends:
-        return "auth.cache backend contract is inconsistent (supported backend set mismatch)."
+        delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=remote_supported_backends)
+        return f"auth.cache backend contract is inconsistent (supported backend set mismatch: {delta})."
 
     if set(loader_map) != remote_backends:
-        return "auth.cache backend contract is inconsistent (remote loader map mismatch)."
+        delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=loader_map)
+        return f"auth.cache backend contract is inconsistent (remote loader map mismatch: {delta})."
     if set(persister_map) != remote_backends:
-        return "auth.cache backend contract is inconsistent (remote persister map mismatch)."
+        delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=persister_map)
+        return f"auth.cache backend contract is inconsistent (remote persister map mismatch: {delta})."
     for backend, expected_loader in expected_loaders.items():
-        if loader_map.get(backend) != expected_loader:
-            return "auth.cache backend contract is inconsistent (remote loader source mismatch)."
+        actual_loader = loader_map.get(backend)
+        if actual_loader != expected_loader:
+            return (
+                "auth.cache backend contract is inconsistent (remote loader source mismatch: "
+                f"backend={backend}, expected={expected_loader}, actual={actual_loader})."
+            )
     for backend, expected_persister in expected_persisters.items():
-        if persister_map.get(backend) != expected_persister:
-            return "auth.cache backend contract is inconsistent (remote persister source mismatch)."
-    for function_name in loader_map.values():
+        actual_persister = persister_map.get(backend)
+        if actual_persister != expected_persister:
+            return (
+                "auth.cache backend contract is inconsistent (remote persister source mismatch: "
+                f"backend={backend}, expected={expected_persister}, actual={actual_persister})."
+            )
+    for backend, function_name in loader_map.items():
         if not callable(globals().get(function_name)):
-            return "auth.cache backend contract is inconsistent (remote loader callable mismatch)."
-    for function_name in persister_map.values():
+            return (
+                "auth.cache backend contract is inconsistent (remote loader callable mismatch: "
+                f"backend={backend}, symbol={function_name})."
+            )
+    for backend, function_name in persister_map.items():
         if not callable(globals().get(function_name)):
-            return "auth.cache backend contract is inconsistent (remote persister callable mismatch)."
+            return (
+                "auth.cache backend contract is inconsistent (remote persister callable mismatch: "
+                f"backend={backend}, symbol={function_name})."
+            )
     return None
 
 

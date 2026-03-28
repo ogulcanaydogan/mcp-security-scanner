@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9O Implementation State
+# Setup Complete — Sprint 1-9P Implementation State
 
-This file records the actual implementation status after Sprint 9O.
+This file records the actual implementation status after Sprint 9P.
 
 ## Completed Work
 
@@ -1206,6 +1206,19 @@ This file records the actual implementation status after Sprint 9O.
 - lookup/write order remains unchanged:
   - in-memory -> persistent backend -> refresh grant -> primary grant
 - `cache rotate` remains local-backend only
+
+### Sprint 9P (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract diagnostics are now more deterministic:
+  - backend-set and handler-map mismatches now report explicit missing/extra backend deltas
+  - loader/persister source/callable mismatches now include backend + expected/actual symbol context
+  - runtime behavior is unchanged (fail-closed persistence contract, non-fatal bypass)
+- Release consistency script diagnostics are clearer and deterministic per attempt:
+  - PyPI visibility retries now log standardized attempt-scoped status lines
+  - official-index + no-cache posture remains unchanged
+- Runtime invariants remain unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass semantics, and local-only `cache rotate`
 
 ## Exit Code Contract (Current)
 
