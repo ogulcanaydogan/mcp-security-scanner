@@ -3485,6 +3485,48 @@ class TestCLIHelpers:
         assert settings is not None
         assert settings.mongo_dsn_env == "MONGODB_URI"
 
+    def test_coerce_oauth_cache_settings_accepts_dynamodb_backend(self):
+        """OAuth cache settings should accept dynamodb_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "dynamodb_kv",
+                    "dynamodb_cache_key": "mcp/security/oauth/cache",
+                    "aws_region": "eu-west-2",
+                    "aws_endpoint_url": "https://dynamodb.eu-west-2.amazonaws.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "dynamodb_kv"
+        assert settings.dynamodb_cache_key == "mcp/security/oauth/cache"
+        assert settings.aws_region == "eu-west-2"
+        assert settings.aws_endpoint_url == "https://dynamodb.eu-west-2.amazonaws.com"
+
+    def test_coerce_oauth_cache_settings_sets_dynamodb_defaults(self):
+        """OAuth cache settings should apply dynamodb_kv optional defaults."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "dynamodb_kv",
+                    "dynamodb_cache_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.aws_region is None
+        assert settings.aws_endpoint_url is None
+
     def test_coerce_oauth_cache_settings_rejects_backend_contract_drift(self, monkeypatch):
         """OAuth cache settings should fail closed when backend contract maps are inconsistent."""
         monkeypatch.setattr(
@@ -4338,6 +4380,29 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "mongo_cache_key": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='mongo_kv'",
+            ),
+            (
+                {"backend": "dynamodb_kv"},
+                "auth.cache.dynamodb_cache_key is required",
+            ),
+            (
+                {
+                    "backend": "dynamodb_kv",
+                    "dynamodb_cache_key": "invalid key",
+                },
+                "auth.cache.dynamodb_cache_key must be a valid DynamoDB cache key path.",
+            ),
+            (
+                {
+                    "backend": "dynamodb_kv",
+                    "dynamodb_cache_key": "mcp/security/oauth/cache",
+                    "aws_secret_id": "mcp-security/oauth-cache",
+                },
+                "auth.cache.aws_secret_id and auth.cache.aws_ssm_parameter_name are only supported when",
+            ),
+            (
+                {"backend": "local", "dynamodb_cache_key": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='dynamodb_kv'",
             ),
         ],
     )
@@ -10847,6 +10912,259 @@ class TestCLIHelpers:
         )
         assert bypass_entries == {}
 
+    def test_build_dynamodb_cache_key_normalizes_path(self):
+        """DynamoDB key builder should normalize leading/trailing slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="dynamodb-prod",
+            backend="dynamodb_kv",
+            dynamodb_cache_key="/mcp/security/oauth/cache/",
+        )
+
+        key_name = cli_module._build_dynamodb_cache_key(cache_settings=settings)
+
+        assert key_name == "mcp/security/oauth/cache"
+
+    def test_read_dynamodb_payload_parses_and_bypasses_paths(self, monkeypatch):
+        """DynamoDB reader should parse payload and map missing item/payload to empty envelope."""
+
+        class FakeDynamoClient:
+            call_count = 0
+
+            def get_item(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs.get("TableName") == "mcp_oauth_cache_store"
+                assert kwargs.get("Key") == {"cache_key": {"S": "mcp/security/oauth/cache"}}
+                FakeDynamoClient.call_count += 1
+                if FakeDynamoClient.call_count == 1:
+                    return {
+                        "Item": {
+                            "payload_json": {
+                                "S": json.dumps(
+                                    {
+                                        "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                                        "entries": {"k": {"access_token": "t"}},
+                                    }
+                                )
+                            }
+                        }
+                    }
+                if FakeDynamoClient.call_count == 2:
+                    return {}
+                if FakeDynamoClient.call_count == 3:
+                    return {"Item": {"payload_json": {"S": ""}}}
+                if FakeDynamoClient.call_count == 4:
+                    return {"Item": {"payload_json": {"S": "{invalid-json"}}}
+                raise RuntimeError("dynamodb-read-failed")
+
+        monkeypatch.setattr(cli_module, "_build_dynamodb_client", lambda *, cache_settings: FakeDynamoClient())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="dynamodb-prod",
+            backend="dynamodb_kv",
+            dynamodb_cache_key="mcp/security/oauth/cache",
+            aws_region="eu-west-2",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_dynamodb(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_dynamodb(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_dynamodb(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_dynamodb(cache_settings=settings)
+        fifth = cli_module._read_oauth_cache_payload_from_dynamodb(cache_settings=settings)
+
+        assert first == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k": {"access_token": "t"}},
+        }
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+        assert isinstance(third, dict)
+        assert third.get("entries") == {}
+        assert fourth is None
+        assert fifth is None
+
+    def test_dynamodb_write_success_and_bypass_paths(self, monkeypatch):
+        """DynamoDB writer should support success flow and fail closed when preflight/update fails."""
+
+        class FakeDynamoClient:
+            call_count = 0
+
+            def __init__(self) -> None:
+                FakeDynamoClient.call_count += 1
+                self._scenario = FakeDynamoClient.call_count
+
+            def get_item(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs.get("TableName") == "mcp_oauth_cache_store"
+                assert kwargs.get("Key") == {"cache_key": {"S": "mcp/security/oauth/cache"}}
+                if self._scenario == 1:
+                    return {"Item": {"cache_key": {"S": "mcp/security/oauth/cache"}}}
+                if self._scenario == 2:
+                    return {}
+                if self._scenario == 3:
+                    raise RuntimeError("preflight-failed")
+                return {"Item": {"cache_key": {"S": "mcp/security/oauth/cache"}}}
+
+            def update_item(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs.get("TableName") == "mcp_oauth_cache_store"
+                assert kwargs.get("Key") == {"cache_key": {"S": "mcp/security/oauth/cache"}}
+                assert kwargs.get("ConditionExpression") == "attribute_exists(#cache_key)"
+                names = kwargs.get("ExpressionAttributeNames")
+                assert names == {"#payload_json": "payload_json", "#cache_key": "cache_key"}
+                values = kwargs.get("ExpressionAttributeValues")
+                assert isinstance(values, dict)
+                payload_attr = values.get(":payload_json")
+                assert isinstance(payload_attr, dict)
+                payload_value = payload_attr.get("S")
+                assert isinstance(payload_value, str)
+                parsed_payload = json.loads(payload_value)
+                assert parsed_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+                if self._scenario == 4:
+                    raise RuntimeError("update-failed")
+                return {}
+
+        monkeypatch.setattr(cli_module, "_build_dynamodb_client", lambda *, cache_settings: FakeDynamoClient())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="dynamodb-prod",
+            backend="dynamodb_kv",
+            dynamodb_cache_key="mcp/security/oauth/cache",
+            aws_region="eu-west-2",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_dynamodb(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_dynamodb(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_dynamodb(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_dynamodb(cache_settings=settings, entries={}) is False
+
+    def test_dynamodb_client_builder_and_required_guards(self, monkeypatch):
+        """DynamoDB helpers should fail closed when module/client/key identity is missing."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="dynamodb-prod",
+            backend="dynamodb_kv",
+            dynamodb_cache_key="mcp/security/oauth/cache",
+            aws_region="eu-west-2",
+            aws_endpoint_url="https://dynamodb.eu-west-2.amazonaws.com",
+        )
+        original_import_module = cli_module.importlib.import_module
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                (_ for _ in ()).throw(ImportError("missing-boto3"))
+                if module_name == "boto3"
+                else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_dynamodb_client(cache_settings=settings) is None
+
+        class FakeBoto3MissingClient:
+            pass
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                FakeBoto3MissingClient if module_name == "boto3" else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_dynamodb_client(cache_settings=settings) is None
+
+        client_calls: list[dict[str, object]] = []
+
+        class FakeBoto3:
+            @staticmethod
+            def client(service_name: str, **kwargs: object) -> object:
+                client_calls.append({"service_name": service_name, **kwargs})
+                return object()
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: FakeBoto3 if module_name == "boto3" else original_import_module(module_name),
+        )
+        assert cli_module._build_dynamodb_client(cache_settings=settings) is not None
+        assert client_calls == [
+            {
+                "service_name": "dynamodb",
+                "region_name": "eu-west-2",
+                "endpoint_url": "https://dynamodb.eu-west-2.amazonaws.com",
+            }
+        ]
+
+        missing_key_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="dynamodb-prod",
+            backend="dynamodb_kv",
+            dynamodb_cache_key=None,
+            aws_region="eu-west-2",
+        )
+        assert cli_module._read_oauth_cache_payload_from_dynamodb(cache_settings=missing_key_settings) is None
+        assert (
+            cli_module._write_oauth_cache_payload_to_dynamodb(cache_settings=missing_key_settings, entries={}) is False
+        )
+
+    def test_dynamodb_persist_removes_deleted_in_memory_entry(self, monkeypatch):
+        """DynamoDB persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_dynamodb",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_dynamodb", fake_write)
+
+        cli_module._persist_oauth_cache_entry_dynamodb(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="dynamodb-prod",
+                backend="dynamodb_kv",
+                dynamodb_cache_key="mcp/security/oauth/cache",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_load_dynamodb_entries_parses_and_bypasses_payload(self, monkeypatch):
+        """DynamoDB loader should parse payload entries and bypass cleanly on provider None."""
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_dynamodb",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = cli_module._load_oauth_persistent_cache_entries_from_dynamodb(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="dynamodb-prod",
+                backend="dynamodb_kv",
+                dynamodb_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_dynamodb", lambda *, cache_settings: None)
+        bypass_entries = cli_module._load_oauth_persistent_cache_entries_from_dynamodb(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="dynamodb-prod",
+                backend="dynamodb_kv",
+                dynamodb_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert bypass_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -12652,6 +12970,7 @@ class TestCLIHelpers:
             "postgres_kv",
             "mysql_kv",
             "mongo_kv",
+            "dynamodb_kv",
         }
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
@@ -13382,6 +13701,19 @@ class TestCLIHelpers:
                     backend="mongo_kv",
                     mongo_cache_key="mcp/security/oauth/cache",
                     mongo_dsn_env="MONGODB_URI",
+                ),
+            ),
+            (
+                "_build_dynamodb_client",
+                None,
+                "_read_oauth_cache_payload_from_dynamodb",
+                "_write_oauth_cache_payload_to_dynamodb",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="dynamodb_kv",
+                    dynamodb_cache_key="mcp/security/oauth/cache",
+                    aws_region="eu-west-2",
                 ),
             ),
         ],

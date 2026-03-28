@@ -78,6 +78,7 @@ _OAUTH_CACHE_BACKEND_ETCD_KV = "etcd_kv"
 _OAUTH_CACHE_BACKEND_POSTGRES_KV = "postgres_kv"
 _OAUTH_CACHE_BACKEND_MYSQL_KV = "mysql_kv"
 _OAUTH_CACHE_BACKEND_MONGO_KV = "mongo_kv"
+_OAUTH_CACHE_BACKEND_DYNAMODB_KV = "dynamodb_kv"
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
         "_load_oauth_persistent_cache_entries_from_mongo",
         "_persist_oauth_cache_entry_mongo",
     ),
+    _OAUTH_CACHE_BACKEND_DYNAMODB_KV: (
+        "_load_oauth_persistent_cache_entries_from_dynamodb",
+        "_persist_oauth_cache_entry_dynamodb",
+    ),
 }
 
 
@@ -320,6 +325,9 @@ _MONGO_OAUTH_CACHE_DATABASE = "mcp_security_scanner"
 _MONGO_OAUTH_CACHE_COLLECTION = "oauth_cache_store"
 _MONGO_OAUTH_CACHE_KEY_FIELD = "cache_key"
 _MONGO_OAUTH_CACHE_PAYLOAD_FIELD = "payload_json"
+_DYNAMODB_OAUTH_CACHE_TABLE = "mcp_oauth_cache_store"
+_DYNAMODB_OAUTH_CACHE_KEY_ATTRIBUTE = "cache_key"
+_DYNAMODB_OAUTH_CACHE_PAYLOAD_ATTRIBUTE = "payload_json"
 
 
 @dataclass(frozen=True)
@@ -401,6 +409,7 @@ class OAuthCacheSettings:
     mysql_dsn_env: str | None = None
     mongo_cache_key: str | None = None
     mongo_dsn_env: str | None = None
+    dynamodb_cache_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2583,6 +2592,7 @@ def _coerce_oauth_cache_settings(
             "mysql_dsn_env",
             "mongo_cache_key",
             "mongo_dsn_env",
+            "dynamodb_cache_key",
         }
     ]
     if unknown_fields:
@@ -2606,7 +2616,7 @@ def _coerce_oauth_cache_settings(
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
             "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env, "
             "postgres_cache_key, postgres_dsn_env, mysql_cache_key, mysql_dsn_env, "
-            "mongo_cache_key, mongo_dsn_env.",
+            "mongo_cache_key, mongo_dsn_env, dynamodb_cache_key.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -3279,6 +3289,15 @@ def _coerce_oauth_cache_settings(
     if mongo_dsn_env is not None and not _is_valid_env_var_name(mongo_dsn_env):
         return None, "auth.cache.mongo_dsn_env must be a valid environment variable name."
 
+    dynamodb_cache_key_value = cache_value.get("dynamodb_cache_key")
+    if dynamodb_cache_key_value is not None and (
+        not isinstance(dynamodb_cache_key_value, str) or not dynamodb_cache_key_value.strip()
+    ):
+        return None, "auth.cache.dynamodb_cache_key must be a non-empty string when provided."
+    dynamodb_cache_key = dynamodb_cache_key_value.strip() if isinstance(dynamodb_cache_key_value, str) else None
+    if dynamodb_cache_key is not None and not _is_valid_dynamodb_cache_key(dynamodb_cache_key):
+        return None, "auth.cache.dynamodb_cache_key must be a valid DynamoDB cache key path."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3610,6 +3629,17 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.mongo_cache_key is required when auth.cache.backend='mongo_kv'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_DYNAMODB_KV and dynamodb_cache_key is not None:
+        return (
+            None,
+            "auth.cache.dynamodb_cache_key is only supported when auth.cache.backend='dynamodb_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_DYNAMODB_KV and dynamodb_cache_key is None:
+        return (
+            None,
+            "auth.cache.dynamodb_cache_key is required when auth.cache.backend='dynamodb_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -4402,7 +4432,19 @@ def _coerce_oauth_cache_settings(
                 "supported when auth.cache.backend='oci_vault'.",
             )
     else:
-        if (
+        if backend == _OAUTH_CACHE_BACKEND_DYNAMODB_KV and (
+            aws_secret_id is not None or aws_ssm_parameter_name is not None
+        ):
+            return (
+                None,
+                "auth.cache.aws_secret_id and auth.cache.aws_ssm_parameter_name are only supported when "
+                "auth.cache.backend is 'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+            )
+        if backend not in {
+            _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
+            _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE,
+            _OAUTH_CACHE_BACKEND_DYNAMODB_KV,
+        } and (
             aws_secret_id is not None
             or aws_ssm_parameter_name is not None
             or aws_region is not None
@@ -4412,7 +4454,7 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
                 "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
-                "'aws_secrets_manager' or 'aws_ssm_parameter_store'.",
+                "'aws_secrets_manager', 'aws_ssm_parameter_store', or 'dynamodb_kv'.",
             )
         if gcp_secret_name is not None or gcp_endpoint_url is not None:
             return (
@@ -4612,6 +4654,7 @@ def _coerce_oauth_cache_settings(
                 if mongo_dsn_env is not None
                 else (_MONGO_DEFAULT_DSN_ENV if backend == _OAUTH_CACHE_BACKEND_MONGO_KV else None)
             ),
+            dynamodb_cache_key=dynamodb_cache_key,
         ),
         None,
     )
@@ -4753,6 +4796,14 @@ def _is_valid_mysql_cache_key(value: str) -> bool:
 
 def _is_valid_mongo_cache_key(value: str) -> bool:
     """Validate MongoDB cache document key shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_dynamodb_cache_key(value: str) -> bool:
+    """Validate DynamoDB cache item key shape."""
     normalized = value.strip().strip("/")
     if not normalized:
         return False
@@ -10179,6 +10230,162 @@ def _write_oauth_cache_payload_to_mongo(cache_settings: OAuthCacheSettings, entr
         return True
     finally:
         _close_mongo_client(client)
+
+
+def _load_oauth_persistent_cache_entries_from_dynamodb(cache_settings: OAuthCacheSettings) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from DynamoDB item value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_dynamodb(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_dynamodb(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to DynamoDB item value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_dynamodb(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_dynamodb(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_dynamodb_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create AWS DynamoDB client for OAuth cache backend."""
+    try:
+        boto3_module = importlib.import_module("boto3")
+    except Exception:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if cache_settings.aws_region is not None:
+        client_kwargs["region_name"] = cache_settings.aws_region
+    if cache_settings.aws_endpoint_url is not None:
+        client_kwargs["endpoint_url"] = cache_settings.aws_endpoint_url
+
+    try:
+        return boto3_module.client("dynamodb", **client_kwargs)
+    except Exception:
+        return None
+
+
+def _build_dynamodb_cache_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build DynamoDB item key from validated cache settings."""
+    if cache_settings.dynamodb_cache_key is None:
+        return None
+    normalized_key = cache_settings.dynamodb_cache_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _read_oauth_cache_payload_from_dynamodb(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned DynamoDB item."""
+    cache_key = _build_dynamodb_cache_key(cache_settings=cache_settings)
+    if cache_key is None:
+        return None
+
+    client = _build_dynamodb_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        response = client.get_item(
+            TableName=_DYNAMODB_OAUTH_CACHE_TABLE,
+            Key={_DYNAMODB_OAUTH_CACHE_KEY_ATTRIBUTE: {"S": cache_key}},
+            ConsistentRead=True,
+        )
+    except Exception:
+        return None
+
+    item = response.get("Item")
+    if not isinstance(item, dict):
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    payload_attribute = item.get(_DYNAMODB_OAUTH_CACHE_PAYLOAD_ATTRIBUTE)
+    if payload_attribute is None:
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+    if not isinstance(payload_attribute, dict):
+        return None
+
+    payload_text = payload_attribute.get("S")
+    if not isinstance(payload_text, str):
+        return None
+    if not payload_text.strip():
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    try:
+        envelope = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    return envelope
+
+
+def _write_oauth_cache_payload_to_dynamodb(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing DynamoDB item value."""
+    cache_key = _build_dynamodb_cache_key(cache_settings=cache_settings)
+    if cache_key is None:
+        return False
+
+    client = _build_dynamodb_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        preflight_response = client.get_item(
+            TableName=_DYNAMODB_OAUTH_CACHE_TABLE,
+            Key={_DYNAMODB_OAUTH_CACHE_KEY_ATTRIBUTE: {"S": cache_key}},
+            ConsistentRead=True,
+        )
+    except Exception:
+        return False
+
+    preflight_item = preflight_response.get("Item")
+    if not isinstance(preflight_item, dict):
+        return False
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    try:
+        client.update_item(
+            TableName=_DYNAMODB_OAUTH_CACHE_TABLE,
+            Key={_DYNAMODB_OAUTH_CACHE_KEY_ATTRIBUTE: {"S": cache_key}},
+            UpdateExpression="SET #payload_json = :payload_json",
+            ExpressionAttributeNames={
+                "#payload_json": _DYNAMODB_OAUTH_CACHE_PAYLOAD_ATTRIBUTE,
+                "#cache_key": _DYNAMODB_OAUTH_CACHE_KEY_ATTRIBUTE,
+            },
+            ExpressionAttributeValues={
+                ":payload_json": {
+                    "S": serialized_payload,
+                }
+            },
+            ConditionExpression="attribute_exists(#cache_key)",
+        )
+    except Exception:
+        return False
+    return True
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
