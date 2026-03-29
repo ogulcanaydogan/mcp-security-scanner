@@ -18,6 +18,17 @@ class ReleaseValidationError(RuntimeError):
     """Raised when release/version consistency checks fail."""
 
 
+def _emit_pypi_visibility_event(
+    *,
+    attempt: int,
+    attempts: int,
+    status: str,
+    message: str,
+) -> None:
+    """Emit deterministic attempt-scoped PyPI visibility diagnostics."""
+    print(f"[pypi-visibility attempt {attempt}/{attempts}] status={status} {message}")
+
+
 def _normalize_tag_version(raw_tag_version: str) -> str:
     """Normalize Git tag prerelease format (e.g. 1.0.0-rc1 -> 1.0.0rc1)."""
     return re.sub(r"-([ab]|rc)", r"\1", raw_tag_version)
@@ -208,16 +219,25 @@ def _verify_pypi_version_visibility(
 
     last_output = ""
     for attempt in range(1, attempts + 1):
-        attempt_label = f"[pypi-visibility attempt {attempt}/{attempts}]"
         result = subprocess.run(pip_command, check=False, capture_output=True, text=True, env=pip_env)
         output = (result.stdout or "").strip()
         error_output = (result.stderr or "").strip()
         combined_output = _normalize_retry_output(output or error_output or f"exit={result.returncode}")
         last_output = combined_output
         if result.returncode != 0:
-            print(f"{attempt_label} lookup_failed rc={result.returncode} output={combined_output}")
+            _emit_pypi_visibility_event(
+                attempt=attempt,
+                attempts=attempts,
+                status="lookup_failed",
+                message=f"rc={result.returncode} output={combined_output}",
+            )
             if attempt < attempts:
-                print(f"{attempt_label} retry_in={sleep_seconds}s")
+                _emit_pypi_visibility_event(
+                    attempt=attempt,
+                    attempts=attempts,
+                    status="retry_wait",
+                    message=f"sleep_seconds={sleep_seconds}",
+                )
                 time.sleep(sleep_seconds)
             continue
         versions_line = next(
@@ -225,15 +245,27 @@ def _verify_pypi_version_visibility(
             "",
         )
         if re.search(rf"(^|[, ]){re.escape(expected_version)}([, ]|$)", versions_line):
-            print(f"{attempt_label} visibility_verified package={package_name} version={expected_version}")
+            _emit_pypi_visibility_event(
+                attempt=attempt,
+                attempts=attempts,
+                status="visibility_verified",
+                message=f"package={package_name} version={expected_version}",
+            )
             return
         available_versions_display = _normalize_retry_output(versions_line or "<missing versions line>")
-        print(
-            f"{attempt_label} version_not_visible expected={expected_version} "
-            f"available={available_versions_display}"
+        _emit_pypi_visibility_event(
+            attempt=attempt,
+            attempts=attempts,
+            status="version_not_visible",
+            message=f"expected={expected_version} available={available_versions_display}",
         )
         if attempt < attempts:
-            print(f"{attempt_label} retry_in={sleep_seconds}s")
+            _emit_pypi_visibility_event(
+                attempt=attempt,
+                attempts=attempts,
+                status="retry_wait",
+                message=f"sleep_seconds={sleep_seconds}",
+            )
             time.sleep(sleep_seconds)
 
     raise ReleaseValidationError(

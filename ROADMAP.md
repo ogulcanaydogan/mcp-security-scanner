@@ -2,16 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.16` and advancing under stabilization-first post-1.0 policy.
+- Release line is stable at `v1.0.17` and advancing under stabilization-first post-1.0 policy.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.17` provider onboarding (`s3_object_kv`) while keeping GA contracts stable:
+- `v1.0.18` stabilization hardening (no new backend) while keeping GA contracts stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
   - keep OAuth cache lookup order and non-fatal bypass behavior unchanged
-  - add pre-provisioned-only S3 object cache provider (`GetObject` read, preflight `GetObject` + `PutObject` write; no auto-create)
+  - keep canonical backend-contract drift checks deterministic across supported/spec/load/persist sources
+  - improve attempt-scoped PyPI visibility logging determinism under the shared release-consistency script
   - preserve release hardening and deterministic PyPI visibility checks under official-index no-cache posture
 
 ## v1.0 GA Status

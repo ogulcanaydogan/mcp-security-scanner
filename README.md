@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9Q)
+## Capability Snapshot (Sprint 1-9R)
 
 | Area | Status |
 |---|---|
@@ -92,6 +92,7 @@ flowchart LR
 - Post-1.0 provider expansion (Sprint 9O): added `dynamodb_kv` backend (boto3 DynamoDB client with existing AWS region/endpoint settings, fixed-schema pre-provisioned item model)
 - Post-1.0 stabilization hardening (Sprint 9P): canonical OAuth cache contract mismatch diagnostics now emit deterministic missing/extra backend details, and PyPI visibility retries log deterministic attempt-scoped diagnostics in the shared release-consistency script
 - Post-1.0 provider expansion (Sprint 9Q): added `s3_object_kv` backend (boto3 S3 object client with existing AWS region/endpoint settings, fixed-schema pre-provisioned object model)
+- Post-1.0 stabilization hardening (Sprint 9R): canonical backend contract expected-map baseline is now initialized from spec-derived sources and PyPI visibility diagnostics are emitted through a deterministic attempt-scoped logger (no runtime behavior change)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -998,7 +999,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.17` provider patch release adding `s3_object_kv` (minimal v1, pre-provisioned-only) while preserving runtime/CLI/report contracts.
+- `1.0.18` stabilization patch release (no new backend) focused on deterministic backend-contract drift checks and release-visibility diagnostics.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):

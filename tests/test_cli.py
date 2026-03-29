@@ -13345,6 +13345,27 @@ class TestCLIHelpers:
             "s3_object_kv",
         }
 
+    def test_oauth_cache_remote_expected_handler_maps_are_derived_from_specs(self):
+        """Expected remote handler maps should mirror canonical backend specs exactly."""
+        expected_loaders = {
+            backend: loader
+            for backend, (loader, _persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
+        }
+        expected_persisters = {
+            backend: persister
+            for backend, (_loader, persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
+        }
+        assert cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_LOADERS == expected_loaders
+        assert cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_PERSISTERS == expected_persisters
+
+    def test_oauth_cache_backend_set_delta_is_sorted_and_deterministic(self):
+        """Contract delta formatter should emit deterministic missing/extra ordering."""
+        delta = cli_module._format_oauth_backend_set_delta(
+            expected={"zeta_backend", "alpha_backend", "beta_backend"},
+            actual={"beta_backend", "omega_backend"},
+        )
+        assert delta == "missing=['alpha_backend', 'zeta_backend'], extra=['omega_backend']"
+
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
         """Remote backend spec should be the single source of truth for load/persist handler maps."""
         remote_backends = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}

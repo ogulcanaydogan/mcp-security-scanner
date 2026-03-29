@@ -235,9 +235,11 @@ def _derive_oauth_remote_persistent_cache_handler_maps(
 
 
 _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS = frozenset(_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
-_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS, _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = (
+_OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_LOADERS, _OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_PERSISTERS = (
     _derive_oauth_remote_persistent_cache_handler_maps(_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
 )
+_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS = dict(_OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_LOADERS)
+_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS = dict(_OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_PERSISTERS)
 _SUPPORTED_OAUTH_CACHE_BACKENDS = frozenset(
     {
         _OAUTH_CACHE_BACKEND_LOCAL,
@@ -309,8 +311,13 @@ def _oauth_cache_backend_contract_error() -> str | None:
 
 
 def _oauth_cache_backend_contract_snapshot() -> dict[str, Any]:
-    """Build canonical backend-contract snapshot used by drift checks and tests."""
-    remote_supported_backends = frozenset(set(_SUPPORTED_OAUTH_CACHE_BACKENDS) - {_OAUTH_CACHE_BACKEND_LOCAL})
+    """Build canonical backend-contract snapshot used by drift checks and tests.
+
+    Contract views are derived from the same runtime-resolved sources so drift checks
+    report deterministic deltas when map/set sources diverge.
+    """
+    supported_backends = frozenset(_SUPPORTED_OAUTH_CACHE_BACKENDS)
+    remote_supported_backends = frozenset(supported_backends - {_OAUTH_CACHE_BACKEND_LOCAL})
     expected_loaders, expected_persisters = _derive_oauth_remote_persistent_cache_handler_maps(
         _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS
     )
