@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9T scope plus `v1.0.20` release target.
+Current index for the implemented Sprint 1-9U scope plus `v1.0.21` release target.
 
 ## Status Snapshot
 
@@ -73,6 +73,7 @@ Current index for the implemented Sprint 1-9T scope plus `v1.0.20` release targe
 - Sprint 9R: done (post-1.0 stabilization hardening with canonical expected-handler baseline from backend specs and deterministic attempt-scoped PyPI visibility event logger)
 - Sprint 9S: done (GitLab v2 finalization with explicit scope contract lock: project/group support `gitlab_environment_scope`, instance backend keeps scope forbidden)
 - Sprint 9T: done (post-1.0 stabilization hardening with deterministic PyPI retry-output normalization for volatile memory-address fragments)
+- Sprint 9U: done (post-1.0 stabilization hardening with detached OAuth cache contract snapshots and deterministic PyPI visibility retry-path test coverage)
 
 ## Top-Level Docs
 

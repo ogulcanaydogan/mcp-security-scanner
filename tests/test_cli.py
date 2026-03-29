@@ -13367,6 +13367,25 @@ class TestCLIHelpers:
         )
         assert delta == "missing=['alpha_backend', 'zeta_backend'], extra=['omega_backend']"
 
+    def test_oauth_cache_backend_source_delta_is_sorted_and_deterministic(self):
+        """Source delta formatter should emit deterministic backend/source mismatch ordering."""
+        delta = cli_module._format_oauth_backend_source_delta(
+            expected={
+                "zeta_backend": "_load_expected_zeta",
+                "alpha_backend": "_load_expected_alpha",
+                "beta_backend": "_load_expected_beta",
+            },
+            actual={
+                "zeta_backend": "_load_actual_zeta",
+                "alpha_backend": "_load_actual_alpha",
+                "beta_backend": "_load_expected_beta",
+            },
+        )
+        assert (
+            delta == "backend=alpha_backend, expected=_load_expected_alpha, actual=_load_actual_alpha; "
+            "backend=zeta_backend, expected=_load_expected_zeta, actual=_load_actual_zeta"
+        )
+
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
         """Remote backend spec should be the single source of truth for load/persist handler maps."""
         remote_backends = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}
@@ -13409,6 +13428,20 @@ class TestCLIHelpers:
             backend: persister
             for backend, (_loader, persister) in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS.items()
         }
+
+    def test_oauth_cache_backend_contract_snapshot_returns_detached_maps(self):
+        """Contract snapshot maps should be detached copies and must not mutate canonical globals."""
+        snapshot = cli_module._oauth_cache_backend_contract_snapshot()
+
+        snapshot["loader_map"]["injected_backend"] = "_injected_loader"
+        snapshot["persister_map"]["injected_backend"] = "_injected_persister"
+        snapshot["expected_loaders"]["injected_backend"] = "_injected_expected_loader"
+        snapshot["expected_persisters"]["injected_backend"] = "_injected_expected_persister"
+
+        assert "injected_backend" not in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS
+        assert "injected_backend" not in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS
+        assert "injected_backend" not in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_LOADERS
+        assert "injected_backend" not in cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_EXPECTED_PERSISTERS
 
     def test_oauth_cache_backend_contract_error_returns_none_for_consistent_maps(self):
         """Backend contract helper should return no error when canonical maps are aligned."""

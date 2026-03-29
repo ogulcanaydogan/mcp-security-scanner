@@ -2,17 +2,18 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.19` and advancing under stabilization-first post-1.0 policy.
+- Release line is stable at `v1.0.20` and advancing under stabilization-first post-1.0 policy.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.20` stabilization hardening (no new backend) while keeping GA contracts stable:
+- `v1.0.21` stabilization hardening (no new backend) while keeping GA contracts stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
   - keep OAuth cache lookup order and non-fatal bypass behavior unchanged
   - keep GitLab v2 scope contract lock unchanged (project/group only, instance forbidden)
-  - normalize volatile retry diagnostics in release-visibility checks for deterministic logs
+  - keep backend-contract snapshots detached from mutable global maps to isolate drift checks
+  - extend deterministic retry-path coverage for release-visibility diagnostics (official index + no-cache)
   - preserve deterministic backend-contract drift checks and release visibility verification
 
 ## v1.0 GA Status

@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9R)
+## Capability Snapshot (Sprint 1-9U)
 
 | Area | Status |
 |---|---|
@@ -95,6 +95,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9R): canonical backend contract expected-map baseline is now initialized from spec-derived sources and PyPI visibility diagnostics are emitted through a deterministic attempt-scoped logger (no runtime behavior change)
 - Post-1.0 GitLab v2 finalization (Sprint 9S): GitLab capability contract is explicitly locked so `gitlab_environment_scope` remains supported only for project/group backends while instance backend stays scope-forbidden (`auth_config_error`) due upstream API limits
 - Post-1.0 stabilization hardening (Sprint 9T): release-consistency PyPI retry diagnostics now normalize volatile memory-address fragments for deterministic logs while preserving retry semantics and runtime behavior
+- Post-1.0 stabilization hardening (Sprint 9U): OAuth cache contract snapshot checks now use detached map snapshots for stricter drift isolation, and release-visibility diagnostics are covered by deterministic retry-path tests (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 

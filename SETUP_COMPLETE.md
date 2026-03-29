@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9T Implementation State
+# Setup Complete — Sprint 1-9U Implementation State
 
-This file records the actual implementation status after Sprint 9T.
+This file records the actual implementation status after Sprint 9U.
 
 ## Completed Work
 
@@ -1265,6 +1265,18 @@ This file records the actual implementation status after Sprint 9T.
 - Release-consistency diagnostics hardening:
   - PyPI visibility retry normalization now masks volatile memory-address fragments (`0x...`) to deterministic tokens
   - existing retry/backoff behavior, official-index/no-cache posture, and visibility semantics are unchanged
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+
+### Sprint 9U (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - contract snapshot now returns detached loader/persister/expected maps to prevent mutation bleed-through during drift checks
+  - source mismatch diagnostics remain deterministic with explicit backend/expected/actual details
+- Release-consistency hardening:
+  - deterministic retry-path behavior for PyPI visibility checks now has direct unit-test coverage (lookup failure -> retry_wait -> success/failure)
+  - official-index + no-cache visibility semantics remain unchanged
 - Runtime behavior remains unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 

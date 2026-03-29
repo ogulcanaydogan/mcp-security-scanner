@@ -261,6 +261,21 @@ def _format_oauth_backend_set_delta(
     return f"missing={missing}, extra={extra}"
 
 
+def _format_oauth_backend_source_delta(
+    *,
+    expected: Mapping[str, str],
+    actual: Mapping[str, str],
+) -> str:
+    """Return deterministic backend->symbol mismatch details for contract errors."""
+    deltas: list[str] = []
+    for backend in sorted(expected):
+        expected_symbol = expected[backend]
+        actual_symbol = actual.get(backend)
+        if actual_symbol != expected_symbol:
+            deltas.append(f"backend={backend}, expected={expected_symbol}, actual={actual_symbol}")
+    return "; ".join(deltas)
+
+
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
     contract = _oauth_cache_backend_contract_snapshot()
@@ -281,27 +296,24 @@ def _oauth_cache_backend_contract_error() -> str | None:
     if set(persister_map) != remote_backends:
         delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=persister_map)
         return f"auth.cache backend contract is inconsistent (remote persister map mismatch: {delta})."
-    for backend, expected_loader in expected_loaders.items():
-        actual_loader = loader_map.get(backend)
-        if actual_loader != expected_loader:
-            return (
-                "auth.cache backend contract is inconsistent (remote loader source mismatch: "
-                f"backend={backend}, expected={expected_loader}, actual={actual_loader})."
-            )
-    for backend, expected_persister in expected_persisters.items():
-        actual_persister = persister_map.get(backend)
-        if actual_persister != expected_persister:
-            return (
-                "auth.cache backend contract is inconsistent (remote persister source mismatch: "
-                f"backend={backend}, expected={expected_persister}, actual={actual_persister})."
-            )
-    for backend, function_name in loader_map.items():
+
+    loader_delta = _format_oauth_backend_source_delta(expected=expected_loaders, actual=loader_map)
+    if loader_delta:
+        return f"auth.cache backend contract is inconsistent (remote loader source mismatch: {loader_delta})."
+
+    persister_delta = _format_oauth_backend_source_delta(expected=expected_persisters, actual=persister_map)
+    if persister_delta:
+        return f"auth.cache backend contract is inconsistent (remote persister source mismatch: {persister_delta})."
+
+    for backend in sorted(loader_map):
+        function_name = loader_map[backend]
         if not callable(globals().get(function_name)):
             return (
                 "auth.cache backend contract is inconsistent (remote loader callable mismatch: "
                 f"backend={backend}, symbol={function_name})."
             )
-    for backend, function_name in persister_map.items():
+    for backend in sorted(persister_map):
+        function_name = persister_map[backend]
         if not callable(globals().get(function_name)):
             return (
                 "auth.cache backend contract is inconsistent (remote persister callable mismatch: "
@@ -321,13 +333,14 @@ def _oauth_cache_backend_contract_snapshot() -> dict[str, Any]:
     expected_loaders, expected_persisters = _derive_oauth_remote_persistent_cache_handler_maps(
         _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS
     )
+    remote_backends = frozenset(_OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS)
     return {
         "remote_supported_backends": remote_supported_backends,
-        "remote_backends": _OAUTH_REMOTE_PERSISTENT_CACHE_BACKENDS,
-        "loader_map": _OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS,
-        "persister_map": _OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS,
-        "expected_loaders": expected_loaders,
-        "expected_persisters": expected_persisters,
+        "remote_backends": remote_backends,
+        "loader_map": dict(_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS),
+        "persister_map": dict(_OAUTH_REMOTE_PERSISTENT_CACHE_PERSISTERS),
+        "expected_loaders": dict(expected_loaders),
+        "expected_persisters": dict(expected_persisters),
     }
 
 
