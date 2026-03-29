@@ -3527,6 +3527,51 @@ class TestCLIHelpers:
         assert settings.aws_region is None
         assert settings.aws_endpoint_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_s3_object_backend(self):
+        """OAuth cache settings should accept s3_object_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "s3_object_kv",
+                    "s3_bucket": "mcp-security-cache-prod",
+                    "s3_object_key": "mcp/security/oauth/cache.json",
+                    "aws_region": "eu-west-2",
+                    "aws_endpoint_url": "https://s3.eu-west-2.amazonaws.com",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "s3_object_kv"
+        assert settings.s3_bucket == "mcp-security-cache-prod"
+        assert settings.s3_object_key == "mcp/security/oauth/cache.json"
+        assert settings.aws_region == "eu-west-2"
+        assert settings.aws_endpoint_url == "https://s3.eu-west-2.amazonaws.com"
+
+    def test_coerce_oauth_cache_settings_sets_s3_object_defaults(self):
+        """OAuth cache settings should apply s3_object_kv optional defaults."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "s3_object_kv",
+                    "s3_bucket": "mcp-security-cache-prod",
+                    "s3_object_key": "mcp/security/oauth/cache.json",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.aws_region is None
+        assert settings.aws_endpoint_url is None
+
     def test_coerce_oauth_cache_settings_rejects_backend_contract_drift(self, monkeypatch):
         """OAuth cache settings should fail closed when backend contract maps are inconsistent."""
         monkeypatch.setattr(
@@ -4403,6 +4448,39 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "dynamodb_cache_key": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='dynamodb_kv'",
+            ),
+            (
+                {"backend": "s3_object_kv"},
+                "auth.cache.s3_bucket is required",
+            ),
+            (
+                {
+                    "backend": "s3_object_kv",
+                    "s3_bucket": "Invalid Bucket",
+                    "s3_object_key": "mcp/security/oauth/cache.json",
+                },
+                "auth.cache.s3_bucket must be a valid S3 bucket name.",
+            ),
+            (
+                {
+                    "backend": "s3_object_kv",
+                    "s3_bucket": "mcp-security-cache",
+                    "s3_object_key": "invalid\x07key",
+                },
+                "auth.cache.s3_object_key must be a valid S3 object key path.",
+            ),
+            (
+                {
+                    "backend": "s3_object_kv",
+                    "s3_bucket": "mcp-security-cache",
+                    "s3_object_key": "mcp/security/oauth/cache.json",
+                    "aws_ssm_parameter_name": "/mcp/security/oauth/cache",
+                },
+                "auth.cache.aws_secret_id and auth.cache.aws_ssm_parameter_name are only supported when",
+            ),
+            (
+                {"backend": "local", "s3_bucket": "mcp-security-cache"},
+                "only supported when auth.cache.backend='s3_object_kv'",
             ),
         ],
     )
@@ -11165,6 +11243,299 @@ class TestCLIHelpers:
         )
         assert bypass_entries == {}
 
+    def test_build_s3_bucket_and_key_normalize_values(self):
+        """S3 bucket/key builders should normalize configured values."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="s3-prod",
+            backend="s3_object_kv",
+            s3_bucket="mcp-security-cache-prod",
+            s3_object_key="/mcp/security/oauth/cache.json/",
+        )
+
+        bucket_name = cli_module._build_s3_bucket_name(cache_settings=settings)
+        object_key = cli_module._build_s3_object_key(cache_settings=settings)
+
+        assert bucket_name == "mcp-security-cache-prod"
+        assert object_key == "mcp/security/oauth/cache.json"
+
+    def test_read_s3_payload_parses_and_bypasses_paths(self, monkeypatch):
+        """S3 reader should parse payload and map missing object/payload to empty envelope."""
+
+        class FakeBody:
+            def __init__(self, payload: bytes | str) -> None:
+                self._payload = payload
+
+            def read(self) -> bytes | str:
+                return self._payload
+
+            def close(self) -> None:
+                return None
+
+        class NoSuchKeyError(Exception):
+            def __init__(self) -> None:
+                self.response = {"Error": {"Code": "NoSuchKey"}}
+                super().__init__("missing-object")
+
+        class FakeS3Client:
+            call_count = 0
+
+            def get_object(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs.get("Bucket") == "mcp-security-cache-prod"
+                assert kwargs.get("Key") == "mcp/security/oauth/cache.json"
+                FakeS3Client.call_count += 1
+                if FakeS3Client.call_count == 1:
+                    return {
+                        "Body": FakeBody(
+                            json.dumps(
+                                {
+                                    "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                                    "entries": {"k": {"access_token": "t"}},
+                                }
+                            ).encode("utf-8")
+                        )
+                    }
+                if FakeS3Client.call_count == 2:
+                    raise NoSuchKeyError()
+                if FakeS3Client.call_count == 3:
+                    return {"Body": FakeBody(b"")}
+                if FakeS3Client.call_count == 4:
+                    return {"Body": FakeBody("{invalid-json")}
+                raise RuntimeError("s3-read-failed")
+
+        monkeypatch.setattr(cli_module, "_build_s3_object_client", lambda *, cache_settings: FakeS3Client())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="s3-prod",
+            backend="s3_object_kv",
+            s3_bucket="mcp-security-cache-prod",
+            s3_object_key="mcp/security/oauth/cache.json",
+            aws_region="eu-west-2",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=settings)
+        fifth = cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=settings)
+
+        assert first == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k": {"access_token": "t"}},
+        }
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+        assert isinstance(third, dict)
+        assert third.get("entries") == {}
+        assert fourth is None
+        assert fifth is None
+
+    def test_s3_write_success_and_bypass_paths(self, monkeypatch):
+        """S3 writer should support success flow and fail closed when preflight/write fails."""
+
+        class FakeBody:
+            def close(self) -> None:
+                return None
+
+        class MissingObjectError(Exception):
+            def __init__(self) -> None:
+                self.response = {"Error": {"Code": "NoSuchKey"}}
+                super().__init__("missing-object")
+
+        class FakeS3Client:
+            call_count = 0
+
+            def __init__(self) -> None:
+                FakeS3Client.call_count += 1
+                self._scenario = FakeS3Client.call_count
+
+            def get_object(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs.get("Bucket") == "mcp-security-cache-prod"
+                assert kwargs.get("Key") == "mcp/security/oauth/cache.json"
+                if self._scenario == 1:
+                    return {"Body": FakeBody()}
+                if self._scenario == 2:
+                    raise MissingObjectError()
+                if self._scenario == 3:
+                    raise RuntimeError("preflight-failed")
+                return {"Body": FakeBody()}
+
+            def put_object(self, **kwargs: object) -> dict[str, object]:
+                assert kwargs.get("Bucket") == "mcp-security-cache-prod"
+                assert kwargs.get("Key") == "mcp/security/oauth/cache.json"
+                assert kwargs.get("ContentType") == "application/json"
+                body_value = kwargs.get("Body")
+                assert isinstance(body_value, (bytes, bytearray))
+                parsed_payload = json.loads(bytes(body_value).decode("utf-8"))
+                assert parsed_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+                if self._scenario == 4:
+                    raise RuntimeError("write-failed")
+                return {}
+
+        monkeypatch.setattr(cli_module, "_build_s3_object_client", lambda *, cache_settings: FakeS3Client())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="s3-prod",
+            backend="s3_object_kv",
+            s3_bucket="mcp-security-cache-prod",
+            s3_object_key="mcp/security/oauth/cache.json",
+            aws_region="eu-west-2",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_s3_object(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_s3_object(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_s3_object(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_s3_object(cache_settings=settings, entries={}) is False
+
+    def test_s3_client_builder_and_required_guards(self, monkeypatch):
+        """S3 helpers should fail closed when module/client/bucket/object identity is missing."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="s3-prod",
+            backend="s3_object_kv",
+            s3_bucket="mcp-security-cache-prod",
+            s3_object_key="mcp/security/oauth/cache.json",
+            aws_region="eu-west-2",
+            aws_endpoint_url="https://s3.eu-west-2.amazonaws.com",
+        )
+        original_import_module = cli_module.importlib.import_module
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                (_ for _ in ()).throw(ImportError("missing-boto3"))
+                if module_name == "boto3"
+                else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_s3_object_client(cache_settings=settings) is None
+
+        class FakeBoto3MissingClient:
+            pass
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                FakeBoto3MissingClient if module_name == "boto3" else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_s3_object_client(cache_settings=settings) is None
+
+        client_calls: list[dict[str, object]] = []
+
+        class FakeBoto3:
+            @staticmethod
+            def client(service_name: str, **kwargs: object) -> object:
+                client_calls.append({"service_name": service_name, **kwargs})
+                return object()
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: FakeBoto3 if module_name == "boto3" else original_import_module(module_name),
+        )
+        assert cli_module._build_s3_object_client(cache_settings=settings) is not None
+        assert client_calls == [
+            {
+                "service_name": "s3",
+                "region_name": "eu-west-2",
+                "endpoint_url": "https://s3.eu-west-2.amazonaws.com",
+            }
+        ]
+
+        missing_bucket_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="s3-prod",
+            backend="s3_object_kv",
+            s3_bucket=None,
+            s3_object_key="mcp/security/oauth/cache.json",
+            aws_region="eu-west-2",
+        )
+        assert cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=missing_bucket_settings) is None
+        assert (
+            cli_module._write_oauth_cache_payload_to_s3_object(cache_settings=missing_bucket_settings, entries={})
+            is False
+        )
+
+        missing_key_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="s3-prod",
+            backend="s3_object_kv",
+            s3_bucket="mcp-security-cache-prod",
+            s3_object_key=None,
+            aws_region="eu-west-2",
+        )
+        assert cli_module._read_oauth_cache_payload_from_s3_object(cache_settings=missing_key_settings) is None
+        assert (
+            cli_module._write_oauth_cache_payload_to_s3_object(cache_settings=missing_key_settings, entries={}) is False
+        )
+
+    def test_s3_persist_removes_deleted_in_memory_entry(self, monkeypatch):
+        """S3 persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_s3_object",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_s3_object", fake_write)
+
+        cli_module._persist_oauth_cache_entry_s3_object(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="s3-prod",
+                backend="s3_object_kv",
+                s3_bucket="mcp-security-cache-prod",
+                s3_object_key="mcp/security/oauth/cache.json",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_load_s3_entries_parses_and_bypasses_payload(self, monkeypatch):
+        """S3 loader should parse payload entries and bypass cleanly on provider None."""
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_s3_object",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = cli_module._load_oauth_persistent_cache_entries_from_s3_object(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="s3-prod",
+                backend="s3_object_kv",
+                s3_bucket="mcp-security-cache-prod",
+                s3_object_key="mcp/security/oauth/cache.json",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_s3_object", lambda *, cache_settings: None)
+        bypass_entries = cli_module._load_oauth_persistent_cache_entries_from_s3_object(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="s3-prod",
+                backend="s3_object_kv",
+                s3_bucket="mcp-security-cache-prod",
+                s3_object_key="mcp/security/oauth/cache.json",
+            )
+        )
+        assert bypass_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -12971,6 +13342,7 @@ class TestCLIHelpers:
             "mysql_kv",
             "mongo_kv",
             "dynamodb_kv",
+            "s3_object_kv",
         }
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
@@ -13758,6 +14130,20 @@ class TestCLIHelpers:
                     namespace="contract",
                     backend="dynamodb_kv",
                     dynamodb_cache_key="mcp/security/oauth/cache",
+                    aws_region="eu-west-2",
+                ),
+            ),
+            (
+                "_build_s3_object_client",
+                None,
+                "_read_oauth_cache_payload_from_s3_object",
+                "_write_oauth_cache_payload_to_s3_object",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="s3_object_kv",
+                    s3_bucket="mcp-security-cache-prod",
+                    s3_object_key="mcp/security/oauth/cache.json",
                     aws_region="eu-west-2",
                 ),
             ),

@@ -79,6 +79,7 @@ _OAUTH_CACHE_BACKEND_POSTGRES_KV = "postgres_kv"
 _OAUTH_CACHE_BACKEND_MYSQL_KV = "mysql_kv"
 _OAUTH_CACHE_BACKEND_MONGO_KV = "mongo_kv"
 _OAUTH_CACHE_BACKEND_DYNAMODB_KV = "dynamodb_kv"
+_OAUTH_CACHE_BACKEND_S3_OBJECT_KV = "s3_object_kv"
 
 
 @dataclass(frozen=True)
@@ -213,6 +214,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
     _OAUTH_CACHE_BACKEND_DYNAMODB_KV: (
         "_load_oauth_persistent_cache_entries_from_dynamodb",
         "_persist_oauth_cache_entry_dynamodb",
+    ),
+    _OAUTH_CACHE_BACKEND_S3_OBJECT_KV: (
+        "_load_oauth_persistent_cache_entries_from_s3_object",
+        "_persist_oauth_cache_entry_s3_object",
     ),
 }
 
@@ -440,6 +445,8 @@ class OAuthCacheSettings:
     mongo_cache_key: str | None = None
     mongo_dsn_env: str | None = None
     dynamodb_cache_key: str | None = None
+    s3_bucket: str | None = None
+    s3_object_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2623,6 +2630,8 @@ def _coerce_oauth_cache_settings(
             "mongo_cache_key",
             "mongo_dsn_env",
             "dynamodb_cache_key",
+            "s3_bucket",
+            "s3_object_key",
         }
     ]
     if unknown_fields:
@@ -2646,7 +2655,7 @@ def _coerce_oauth_cache_settings(
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
             "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env, "
             "postgres_cache_key, postgres_dsn_env, mysql_cache_key, mysql_dsn_env, "
-            "mongo_cache_key, mongo_dsn_env, dynamodb_cache_key.",
+            "mongo_cache_key, mongo_dsn_env, dynamodb_cache_key, s3_bucket, s3_object_key.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -3328,6 +3337,22 @@ def _coerce_oauth_cache_settings(
     if dynamodb_cache_key is not None and not _is_valid_dynamodb_cache_key(dynamodb_cache_key):
         return None, "auth.cache.dynamodb_cache_key must be a valid DynamoDB cache key path."
 
+    s3_bucket_value = cache_value.get("s3_bucket")
+    if s3_bucket_value is not None and (not isinstance(s3_bucket_value, str) or not s3_bucket_value.strip()):
+        return None, "auth.cache.s3_bucket must be a non-empty string when provided."
+    s3_bucket = s3_bucket_value.strip() if isinstance(s3_bucket_value, str) else None
+    if s3_bucket is not None and not _is_valid_s3_bucket_name(s3_bucket):
+        return None, "auth.cache.s3_bucket must be a valid S3 bucket name."
+
+    s3_object_key_value = cache_value.get("s3_object_key")
+    if s3_object_key_value is not None and (
+        not isinstance(s3_object_key_value, str) or not s3_object_key_value.strip()
+    ):
+        return None, "auth.cache.s3_object_key must be a non-empty string when provided."
+    s3_object_key = s3_object_key_value.strip() if isinstance(s3_object_key_value, str) else None
+    if s3_object_key is not None and not _is_valid_s3_object_key(s3_object_key):
+        return None, "auth.cache.s3_object_key must be a valid S3 object key path."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3670,6 +3695,22 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.dynamodb_cache_key is required when auth.cache.backend='dynamodb_kv'.",
+        )
+    if backend != _OAUTH_CACHE_BACKEND_S3_OBJECT_KV and (s3_bucket is not None or s3_object_key is not None):
+        return (
+            None,
+            "auth.cache.s3_bucket and auth.cache.s3_object_key are only supported when "
+            "auth.cache.backend='s3_object_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_S3_OBJECT_KV and s3_bucket is None:
+        return (
+            None,
+            "auth.cache.s3_bucket is required when auth.cache.backend='s3_object_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_S3_OBJECT_KV and s3_object_key is None:
+        return (
+            None,
+            "auth.cache.s3_object_key is required when auth.cache.backend='s3_object_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -4462,7 +4503,7 @@ def _coerce_oauth_cache_settings(
                 "supported when auth.cache.backend='oci_vault'.",
             )
     else:
-        if backend == _OAUTH_CACHE_BACKEND_DYNAMODB_KV and (
+        if backend in {_OAUTH_CACHE_BACKEND_DYNAMODB_KV, _OAUTH_CACHE_BACKEND_S3_OBJECT_KV} and (
             aws_secret_id is not None or aws_ssm_parameter_name is not None
         ):
             return (
@@ -4474,6 +4515,7 @@ def _coerce_oauth_cache_settings(
             _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER,
             _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE,
             _OAUTH_CACHE_BACKEND_DYNAMODB_KV,
+            _OAUTH_CACHE_BACKEND_S3_OBJECT_KV,
         } and (
             aws_secret_id is not None
             or aws_ssm_parameter_name is not None
@@ -4484,7 +4526,7 @@ def _coerce_oauth_cache_settings(
                 None,
                 "auth.cache.aws_secret_id, auth.cache.aws_ssm_parameter_name, auth.cache.aws_region, and "
                 "auth.cache.aws_endpoint_url are only supported when auth.cache.backend is "
-                "'aws_secrets_manager', 'aws_ssm_parameter_store', or 'dynamodb_kv'.",
+                "'aws_secrets_manager', 'aws_ssm_parameter_store', 'dynamodb_kv', or 's3_object_kv'.",
             )
         if gcp_secret_name is not None or gcp_endpoint_url is not None:
             return (
@@ -4685,6 +4727,8 @@ def _coerce_oauth_cache_settings(
                 else (_MONGO_DEFAULT_DSN_ENV if backend == _OAUTH_CACHE_BACKEND_MONGO_KV else None)
             ),
             dynamodb_cache_key=dynamodb_cache_key,
+            s3_bucket=s3_bucket,
+            s3_object_key=s3_object_key,
         ),
         None,
     )
@@ -4838,6 +4882,32 @@ def _is_valid_dynamodb_cache_key(value: str) -> bool:
     if not normalized:
         return False
     return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_s3_bucket_name(value: str) -> bool:
+    """Validate AWS S3 bucket naming shape for cache backend configuration."""
+    normalized = value.strip()
+    if not normalized:
+        return False
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])?", normalized):
+        return False
+    if ".." in normalized:
+        return False
+    if re.fullmatch(r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}", normalized):
+        return False
+    return True
+
+
+def _is_valid_s3_object_key(value: str) -> bool:
+    """Validate S3 object-key shape for OAuth cache payload storage."""
+    normalized = value.strip()
+    if not normalized:
+        return False
+    if len(normalized) > 1024:
+        return False
+    if any(ord(character) < 32 for character in normalized):
+        return False
+    return re.fullmatch(r"[0-9A-Za-z!_.*'()/:@&=+$,\-~.% ]{1,1024}", normalized) is not None
 
 
 def _is_valid_cloudflare_identifier(value: str) -> bool:
@@ -10412,6 +10482,182 @@ def _write_oauth_cache_payload_to_dynamodb(
                 }
             },
             ConditionExpression="attribute_exists(#cache_key)",
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _load_oauth_persistent_cache_entries_from_s3_object(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from S3 object payload; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_s3_object(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_s3_object(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to S3 object payload; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_s3_object(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_s3_object(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_s3_object_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create AWS S3 client for OAuth cache backend."""
+    try:
+        boto3_module = importlib.import_module("boto3")
+    except Exception:
+        return None
+
+    client_kwargs: dict[str, Any] = {}
+    if cache_settings.aws_region is not None:
+        client_kwargs["region_name"] = cache_settings.aws_region
+    if cache_settings.aws_endpoint_url is not None:
+        client_kwargs["endpoint_url"] = cache_settings.aws_endpoint_url
+
+    try:
+        return boto3_module.client("s3", **client_kwargs)
+    except Exception:
+        return None
+
+
+def _build_s3_bucket_name(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build S3 bucket name from validated cache settings."""
+    if cache_settings.s3_bucket is None:
+        return None
+    normalized_bucket = cache_settings.s3_bucket.strip()
+    if not normalized_bucket:
+        return None
+    return normalized_bucket
+
+
+def _build_s3_object_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build S3 object key from validated cache settings."""
+    if cache_settings.s3_object_key is None:
+        return None
+    normalized_key = cache_settings.s3_object_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _read_oauth_cache_payload_from_s3_object(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned S3 object."""
+    bucket_name = _build_s3_bucket_name(cache_settings=cache_settings)
+    object_key = _build_s3_object_key(cache_settings=cache_settings)
+    if bucket_name is None or object_key is None:
+        return None
+
+    client = _build_s3_object_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        response = client.get_object(Bucket=bucket_name, Key=object_key)
+    except Exception as exc:
+        if _extract_aws_error_code(exc) in {
+            "NoSuchBucket",
+            "NoSuchKey",
+            "NotFound",
+            "ResourceNotFoundException",
+            "ResourceNotFound",
+            "404",
+        }:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        return None
+
+    body = response.get("Body")
+    raw_payload: str
+    if hasattr(body, "read"):
+        try:
+            payload_data = body.read()
+        except Exception:
+            return None
+        finally:
+            close_method = getattr(body, "close", None)
+            if callable(close_method):
+                try:
+                    close_method()
+                except Exception:
+                    pass
+        if isinstance(payload_data, bytes):
+            raw_payload = payload_data.decode("utf-8", errors="ignore")
+        elif isinstance(payload_data, str):
+            raw_payload = payload_data
+        else:
+            return None
+    elif isinstance(body, bytes):
+        raw_payload = body.decode("utf-8", errors="ignore")
+    elif isinstance(body, str):
+        raw_payload = body
+    else:
+        return None
+
+    if not raw_payload.strip():
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+    try:
+        envelope = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    return envelope
+
+
+def _write_oauth_cache_payload_to_s3_object(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing S3 object value."""
+    bucket_name = _build_s3_bucket_name(cache_settings=cache_settings)
+    object_key = _build_s3_object_key(cache_settings=cache_settings)
+    if bucket_name is None or object_key is None:
+        return False
+
+    client = _build_s3_object_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        preflight_response = client.get_object(Bucket=bucket_name, Key=object_key)
+    except Exception:
+        return False
+
+    preflight_body = preflight_response.get("Body")
+    close_method = getattr(preflight_body, "close", None)
+    if callable(close_method):
+        try:
+            close_method()
+        except Exception:
+            pass
+
+    payload = {
+        "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+        "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "entries": entries,
+    }
+    serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    try:
+        client.put_object(
+            Bucket=bucket_name,
+            Key=object_key,
+            Body=serialized_payload.encode("utf-8"),
+            ContentType="application/json",
         )
     except Exception:
         return False

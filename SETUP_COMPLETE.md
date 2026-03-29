@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9P Implementation State
+# Setup Complete — Sprint 1-9Q Implementation State
 
-This file records the actual implementation status after Sprint 9P.
+This file records the actual implementation status after Sprint 9Q.
 
 ## Completed Work
 
@@ -1220,6 +1220,24 @@ This file records the actual implementation status after Sprint 9P.
 - Runtime invariants remain unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass semantics, and local-only `cache rotate`
 
+### Sprint 9Q (S3 Object KV Backend v1)
+
+- Added OAuth persistent cache backend:
+  - `auth.cache.backend` now also supports:
+    - `s3_object_kv`
+- Added config fields for S3 object backend:
+  - `s3_bucket` (required when `backend=s3_object_kv`)
+  - `s3_object_key` (required when `backend=s3_object_kv`)
+- S3 object backend behavior:
+  - cache payload stored as JSON envelope in pre-provisioned S3 object (`s3_bucket` + `s3_object_key`)
+  - reuses existing AWS routing inputs (`aws_region`, `aws_endpoint_url`) for client construction
+  - read via `GetObject` and parse JSON envelope
+  - write via preflight `GetObject` + `PutObject` on same object key (no create path)
+  - provider/read/write/parse/auth/network errors are non-fatal and bypass persistent layer
+- lookup/write order remains unchanged:
+  - in-memory -> persistent backend -> refresh grant -> primary grant
+- `cache rotate` remains local-backend only
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -1232,7 +1250,7 @@ This file records the actual implementation status after Sprint 9P.
 
 ## Current Non-Goals / Deferred (Post-1.0)
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, and `dynamodb_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, and `s3_object_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets
