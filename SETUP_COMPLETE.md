@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9R Implementation State
+# Setup Complete — Sprint 1-9S Implementation State
 
-This file records the actual implementation status after Sprint 9R.
+This file records the actual implementation status after Sprint 9S.
 
 ## Completed Work
 
@@ -1248,6 +1248,16 @@ This file records the actual implementation status after Sprint 9R.
 - Release consistency diagnostics:
   - PyPI visibility retries now emit deterministic attempt-scoped events through a shared logger
   - official-index + no-cache posture and retry/backoff semantics are unchanged
+
+### Sprint 9S (GitLab v2 Finalization)
+
+- No new backend added; sprint scope is GitLab v2 contract finalization.
+- GitLab scope contract is now explicitly locked:
+  - `gitlab_environment_scope` remains supported for `gitlab_variables` and `gitlab_group_variables` (default `*`)
+  - `gitlab_instance_variables` keeps `gitlab_environment_scope` forbidden (`auth_config_error`)
+  - instance read/write requests continue without scope query/body fields (`/admin/ci/variables/{key}` path unchanged)
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 
 ## Exit Code Contract (Current)
 

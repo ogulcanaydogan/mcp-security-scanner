@@ -2,18 +2,18 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.17` and advancing under stabilization-first post-1.0 policy.
+- Release line is stable at `v1.0.18` and advancing under stabilization-first post-1.0 policy.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.18` stabilization hardening (no new backend) while keeping GA contracts stable:
+- `v1.0.19` GitLab v2 finalization (no new backend) while keeping GA contracts stable:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
+  - explicitly lock `gitlab_environment_scope` support to project/group backends
+  - keep GitLab instance backend scope-forbidden due upstream API constraints
   - keep OAuth cache lookup order and non-fatal bypass behavior unchanged
-  - keep canonical backend-contract drift checks deterministic across supported/spec/load/persist sources
-  - improve attempt-scoped PyPI visibility logging determinism under the shared release-consistency script
-  - preserve release hardening and deterministic PyPI visibility checks under official-index no-cache posture
+  - preserve deterministic backend-contract drift checks and release visibility verification
 
 ## v1.0 GA Status
 

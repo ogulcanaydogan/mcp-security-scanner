@@ -3996,7 +3996,8 @@ class TestCLIHelpers:
             ),
             (
                 {"backend": "local", "gitlab_environment_scope": "production"},
-                "auth.cache.backend is 'gitlab_variables', 'gitlab_group_variables', or " "'gitlab_instance_variables'",
+                "auth.cache.gitlab_environment_scope is only supported when auth.cache.backend is "
+                "'gitlab_variables' or 'gitlab_group_variables'.",
             ),
             (
                 {"backend": "gitlab_group_variables"},

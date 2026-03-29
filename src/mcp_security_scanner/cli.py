@@ -3427,6 +3427,21 @@ def _coerce_oauth_cache_settings(
         )
 
     gitlab_capability = _GITLAB_OAUTH_CACHE_BACKEND_CAPABILITIES.get(backend)
+    if (
+        gitlab_capability is None
+        and gitlab_environment_scope is not None
+        and gitlab_project_id is None
+        and gitlab_group_id is None
+        and gitlab_variable_key is None
+        and gitlab_token_env is None
+        and gitlab_api_url is None
+    ):
+        return (
+            None,
+            "auth.cache.gitlab_environment_scope is only supported when auth.cache.backend is "
+            "'gitlab_variables' or 'gitlab_group_variables'.",
+        )
+
     if gitlab_capability is None and (
         gitlab_project_id is not None
         or gitlab_group_id is not None

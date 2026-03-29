@@ -93,6 +93,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9P): canonical OAuth cache contract mismatch diagnostics now emit deterministic missing/extra backend details, and PyPI visibility retries log deterministic attempt-scoped diagnostics in the shared release-consistency script
 - Post-1.0 provider expansion (Sprint 9Q): added `s3_object_kv` backend (boto3 S3 object client with existing AWS region/endpoint settings, fixed-schema pre-provisioned object model)
 - Post-1.0 stabilization hardening (Sprint 9R): canonical backend contract expected-map baseline is now initialized from spec-derived sources and PyPI visibility diagnostics are emitted through a deterministic attempt-scoped logger (no runtime behavior change)
+- Post-1.0 GitLab v2 finalization (Sprint 9S): GitLab capability contract is explicitly locked so `gitlab_environment_scope` remains supported only for project/group backends while instance backend stays scope-forbidden (`auth_config_error`) due upstream API limits
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -999,7 +1000,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.18` stabilization patch release (no new backend) focused on deterministic backend-contract drift checks and release-visibility diagnostics.
+- `1.0.19` GitLab v2 finalization patch release (no new backend) focused on explicit scope-contract lock for GitLab project/group vs instance backends.
 - Post-1.0 provider onboarding continues under the same contract baseline.
 
 Deferred (post-1.0):
