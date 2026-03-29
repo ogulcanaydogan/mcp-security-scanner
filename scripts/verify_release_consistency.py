@@ -18,6 +18,20 @@ class ReleaseValidationError(RuntimeError):
     """Raised when release/version consistency checks fail."""
 
 
+_HEX_ADDRESS_PATTERN = re.compile(r"0x[0-9a-fA-F]+")
+
+
+def _normalize_retry_output(raw_text: str, *, limit: int = 500) -> str:
+    """Normalize retry diagnostics to single-line deterministic output."""
+    normalized = " ".join(raw_text.split())
+    if not normalized:
+        return "<empty>"
+    normalized = _HEX_ADDRESS_PATTERN.sub("0xADDR", normalized)
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[:limit]}...<truncated>"
+
+
 def _emit_pypi_visibility_event(
     *,
     attempt: int,
@@ -207,15 +221,6 @@ def _verify_pypi_version_visibility(
     pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     pip_env["PIP_NO_CACHE_DIR"] = "1"
     pip_env["PIP_INDEX_URL"] = index_url
-
-    def _normalize_retry_output(raw_text: str, *, limit: int = 500) -> str:
-        """Normalize retry diagnostics to single-line deterministic output."""
-        normalized = " ".join(raw_text.split())
-        if not normalized:
-            return "<empty>"
-        if len(normalized) <= limit:
-            return normalized
-        return f"{normalized[:limit]}...<truncated>"
 
     last_output = ""
     for attempt in range(1, attempts + 1):

@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9S Implementation State
+# Setup Complete — Sprint 1-9T Implementation State
 
-This file records the actual implementation status after Sprint 9S.
+This file records the actual implementation status after Sprint 9T.
 
 ## Completed Work
 
@@ -1256,6 +1256,15 @@ This file records the actual implementation status after Sprint 9S.
   - `gitlab_environment_scope` remains supported for `gitlab_variables` and `gitlab_group_variables` (default `*`)
   - `gitlab_instance_variables` keeps `gitlab_environment_scope` forbidden (`auth_config_error`)
   - instance read/write requests continue without scope query/body fields (`/admin/ci/variables/{key}` path unchanged)
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+
+### Sprint 9T (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- Release-consistency diagnostics hardening:
+  - PyPI visibility retry normalization now masks volatile memory-address fragments (`0x...`) to deterministic tokens
+  - existing retry/backoff behavior, official-index/no-cache posture, and visibility semantics are unchanged
 - Runtime behavior remains unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 
