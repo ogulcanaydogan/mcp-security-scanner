@@ -3572,6 +3572,45 @@ class TestCLIHelpers:
         assert settings.aws_region is None
         assert settings.aws_endpoint_url is None
 
+    def test_coerce_oauth_cache_settings_accepts_sqlite_backend(self):
+        """OAuth cache settings should accept sqlite_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "sqlite_kv",
+                    "sqlite_cache_key": "mcp/security/oauth/cache",
+                    "sqlite_dsn_env": "SQLITE_DSN_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "sqlite_kv"
+        assert settings.sqlite_cache_key == "mcp/security/oauth/cache"
+        assert settings.sqlite_dsn_env == "SQLITE_DSN_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_sqlite_defaults(self):
+        """OAuth cache settings should apply sqlite_kv optional defaults."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "sqlite_kv",
+                    "sqlite_cache_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.sqlite_dsn_env == "SQLITE_DSN"
+
     def test_coerce_oauth_cache_settings_rejects_backend_contract_drift(self, monkeypatch):
         """OAuth cache settings should fail closed when backend contract maps are inconsistent."""
         monkeypatch.setattr(
@@ -4482,6 +4521,29 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "s3_bucket": "mcp-security-cache"},
                 "only supported when auth.cache.backend='s3_object_kv'",
+            ),
+            (
+                {"backend": "sqlite_kv"},
+                "auth.cache.sqlite_cache_key is required",
+            ),
+            (
+                {
+                    "backend": "sqlite_kv",
+                    "sqlite_cache_key": "invalid key",
+                },
+                "auth.cache.sqlite_cache_key must be a valid SQLite cache key path.",
+            ),
+            (
+                {
+                    "backend": "sqlite_kv",
+                    "sqlite_cache_key": "mcp/security/oauth/cache",
+                    "sqlite_dsn_env": "9INVALID",
+                },
+                "auth.cache.sqlite_dsn_env must be a valid environment variable name.",
+            ),
+            (
+                {"backend": "local", "sqlite_cache_key": "mcp/security/oauth/cache"},
+                "only supported when auth.cache.backend='sqlite_kv'",
             ),
         ],
     )
@@ -11537,6 +11599,299 @@ class TestCLIHelpers:
         )
         assert bypass_entries == {}
 
+    def test_build_sqlite_cache_key_normalizes_path(self):
+        """SQLite key builder should normalize leading/trailing slashes."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="sqlite-prod",
+            backend="sqlite_kv",
+            sqlite_cache_key="/mcp/security/oauth/cache/",
+        )
+
+        key_name = cli_module._build_sqlite_cache_key(cache_settings=settings)
+
+        assert key_name == "mcp/security/oauth/cache"
+
+    def test_read_sqlite_payload_parses_and_bypasses_paths(self, monkeypatch):
+        """SQLite reader should parse payload, map missing row to empty envelope, and bypass on errors."""
+
+        class FakeCursor:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+
+            def execute(self, sql: str, params: tuple[object, ...]) -> None:
+                assert "SELECT payload_json FROM mcp_oauth_cache_store" in sql
+                assert params == ("mcp/security/oauth/cache",)
+                if self._scenario == 4:
+                    raise RuntimeError("db-read-failed")
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                if self._scenario == 1:
+                    return (
+                        json.dumps(
+                            {
+                                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                                "entries": {"k": {"access_token": "t"}},
+                            }
+                        ),
+                    )
+                if self._scenario == 2:
+                    return None
+                if self._scenario == 3:
+                    return (b'{"schema_version":"v2","entries":{"k2":{"access_token":"tb"}}}',)
+                if self._scenario == 5:
+                    return ("{invalid-json",)
+                return None
+
+            def close(self) -> None:
+                return None
+
+        class FakeConnection:
+            call_count = 0
+            close_count = 0
+
+            def __init__(self) -> None:
+                FakeConnection.call_count += 1
+                self._scenario = FakeConnection.call_count
+
+            def cursor(self):
+                return FakeCursor(self._scenario)
+
+            def close(self) -> None:
+                FakeConnection.close_count += 1
+
+        monkeypatch.setattr(cli_module, "_build_sqlite_connection", lambda *, cache_settings: FakeConnection())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="sqlite-prod",
+            backend="sqlite_kv",
+            sqlite_cache_key="mcp/security/oauth/cache",
+            sqlite_dsn_env="SQLITE_DSN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_sqlite(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_sqlite(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_sqlite(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_sqlite(cache_settings=settings)
+        fifth = cli_module._read_oauth_cache_payload_from_sqlite(cache_settings=settings)
+
+        assert first == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k": {"access_token": "t"}},
+        }
+        assert isinstance(second, dict)
+        assert second.get("entries") == {}
+        assert third == {
+            "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {"k2": {"access_token": "tb"}},
+        }
+        assert fourth is None
+        assert fifth is None
+        assert FakeConnection.close_count == 5
+
+    def test_sqlite_write_success_and_bypass_paths(self, monkeypatch):
+        """SQLite writer should support success flow and fail closed when preflight/update fails."""
+
+        class FakeCursor:
+            def __init__(self, scenario: int) -> None:
+                self._scenario = scenario
+                self.rowcount = 1
+
+            def execute(self, sql: str, params: tuple[object, ...]) -> None:
+                if sql.startswith("SELECT cache_key FROM mcp_oauth_cache_store"):
+                    assert params == ("mcp/security/oauth/cache",)
+                    if self._scenario == 3:
+                        raise RuntimeError("preflight-failed")
+                    return
+                if sql.startswith("UPDATE mcp_oauth_cache_store SET payload_json = ?"):
+                    payload_text, cache_key = params
+                    assert cache_key == "mcp/security/oauth/cache"
+                    assert isinstance(payload_text, str)
+                    parsed_payload = json.loads(payload_text)
+                    assert parsed_payload["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+                    assert isinstance(parsed_payload["entries"], dict)
+                    if self._scenario == 4:
+                        self.rowcount = 0
+                    if self._scenario == 5:
+                        raise RuntimeError("update-failed")
+                    return
+                raise AssertionError(sql)
+
+            def fetchone(self) -> tuple[object, ...] | None:
+                if self._scenario == 1:
+                    return ("mcp/security/oauth/cache",)
+                if self._scenario == 2:
+                    return None
+                if self._scenario in (4, 5):
+                    return ("mcp/security/oauth/cache",)
+                return None
+
+            def close(self) -> None:
+                return None
+
+        class FakeConnection:
+            init_count = 0
+            commit_count = 0
+
+            def __init__(self) -> None:
+                FakeConnection.init_count += 1
+                self._scenario = FakeConnection.init_count
+
+            def cursor(self):
+                return FakeCursor(self._scenario)
+
+            def commit(self) -> None:
+                FakeConnection.commit_count += 1
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module, "_build_sqlite_connection", lambda *, cache_settings: FakeConnection())
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="sqlite-prod",
+            backend="sqlite_kv",
+            sqlite_cache_key="mcp/security/oauth/cache",
+            sqlite_dsn_env="SQLITE_DSN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_sqlite(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_sqlite(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_sqlite(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_sqlite(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_sqlite(cache_settings=settings, entries={}) is False
+        assert FakeConnection.commit_count == 1
+
+    def test_sqlite_connection_builder_and_close_guards(self, monkeypatch):
+        """SQLite helpers should fail closed for missing module/connect fn/env and close safely."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="sqlite-prod",
+            backend="sqlite_kv",
+            sqlite_cache_key="mcp/security/oauth/cache",
+            sqlite_dsn_env="SQLITE_DSN",
+        )
+        original_import_module = cli_module.importlib.import_module
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                (_ for _ in ()).throw(ImportError("missing-sqlite3"))
+                if module_name == "sqlite3"
+                else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_sqlite_connection(cache_settings=settings) is None
+
+        class FakeSqliteMissingConnect:
+            pass
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                FakeSqliteMissingConnect if module_name == "sqlite3" else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_sqlite_connection(cache_settings=settings) is None
+
+        monkeypatch.delenv("SQLITE_DSN", raising=False)
+        assert cli_module._build_sqlite_connection(cache_settings=settings) is None
+
+        connect_calls: list[tuple[str, dict[str, object]]] = []
+
+        class FakeSqliteConnection:
+            def close(self) -> None:
+                return None
+
+        class FakeSqlite3:
+            @staticmethod
+            def connect(dsn: str, **kwargs: object):
+                connect_calls.append((dsn, kwargs))
+                return FakeSqliteConnection()
+
+        monkeypatch.setenv("SQLITE_DSN", "/tmp/oauth-cache.sqlite3")
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: FakeSqlite3 if module_name == "sqlite3" else original_import_module(module_name),
+        )
+        connection = cli_module._build_sqlite_connection(cache_settings=settings)
+        assert isinstance(connection, FakeSqliteConnection)
+        assert connect_calls[0][0] == "/tmp/oauth-cache.sqlite3"
+        assert connect_calls[0][1] == {"timeout": 10.0}
+
+        monkeypatch.setenv("SQLITE_DSN", "file:/tmp/oauth-cache.sqlite3?mode=rw")
+        connection_uri = cli_module._build_sqlite_connection(cache_settings=settings)
+        assert isinstance(connection_uri, FakeSqliteConnection)
+        assert connect_calls[1][0] == "file:/tmp/oauth-cache.sqlite3?mode=rw"
+        assert connect_calls[1][1] == {"timeout": 10.0, "uri": True}
+
+        assert cli_module._close_sqlite_connection(object()) is None
+        assert cli_module._close_sqlite_connection(connection) is None
+
+    def test_sqlite_persist_removes_deleted_in_memory_entry(self, monkeypatch):
+        """SQLite persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_sqlite",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_sqlite", fake_write)
+
+        cli_module._persist_oauth_cache_entry_sqlite(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="sqlite-prod",
+                backend="sqlite_kv",
+                sqlite_cache_key="mcp/security/oauth/cache",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_load_sqlite_entries_parses_and_bypasses_payload(self, monkeypatch):
+        """SQLite loader should parse payload entries and bypass cleanly on provider None."""
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_sqlite",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = cli_module._load_oauth_persistent_cache_entries_from_sqlite(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="sqlite-prod",
+                backend="sqlite_kv",
+                sqlite_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_sqlite", lambda *, cache_settings: None)
+        bypass_entries = cli_module._load_oauth_persistent_cache_entries_from_sqlite(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="sqlite-prod",
+                backend="sqlite_kv",
+                sqlite_cache_key="mcp/security/oauth/cache",
+            )
+        )
+        assert bypass_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -13344,6 +13699,7 @@ class TestCLIHelpers:
             "mongo_kv",
             "dynamodb_kv",
             "s3_object_kv",
+            "sqlite_kv",
         }
 
     def test_oauth_cache_remote_expected_handler_maps_are_derived_from_specs(self):
@@ -14200,6 +14556,19 @@ class TestCLIHelpers:
                     s3_bucket="mcp-security-cache-prod",
                     s3_object_key="mcp/security/oauth/cache.json",
                     aws_region="eu-west-2",
+                ),
+            ),
+            (
+                "_build_sqlite_connection",
+                None,
+                "_read_oauth_cache_payload_from_sqlite",
+                "_write_oauth_cache_payload_to_sqlite",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="sqlite_kv",
+                    sqlite_cache_key="mcp/security/oauth/cache",
+                    sqlite_dsn_env="SQLITE_DSN",
                 ),
             ),
         ],

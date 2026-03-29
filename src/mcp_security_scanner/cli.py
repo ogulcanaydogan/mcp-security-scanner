@@ -80,6 +80,7 @@ _OAUTH_CACHE_BACKEND_MYSQL_KV = "mysql_kv"
 _OAUTH_CACHE_BACKEND_MONGO_KV = "mongo_kv"
 _OAUTH_CACHE_BACKEND_DYNAMODB_KV = "dynamodb_kv"
 _OAUTH_CACHE_BACKEND_S3_OBJECT_KV = "s3_object_kv"
+_OAUTH_CACHE_BACKEND_SQLITE_KV = "sqlite_kv"
 
 
 @dataclass(frozen=True)
@@ -218,6 +219,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
     _OAUTH_CACHE_BACKEND_S3_OBJECT_KV: (
         "_load_oauth_persistent_cache_entries_from_s3_object",
         "_persist_oauth_cache_entry_s3_object",
+    ),
+    _OAUTH_CACHE_BACKEND_SQLITE_KV: (
+        "_load_oauth_persistent_cache_entries_from_sqlite",
+        "_persist_oauth_cache_entry_sqlite",
     ),
 }
 
@@ -383,6 +388,10 @@ _MONGO_OAUTH_CACHE_PAYLOAD_FIELD = "payload_json"
 _DYNAMODB_OAUTH_CACHE_TABLE = "mcp_oauth_cache_store"
 _DYNAMODB_OAUTH_CACHE_KEY_ATTRIBUTE = "cache_key"
 _DYNAMODB_OAUTH_CACHE_PAYLOAD_ATTRIBUTE = "payload_json"
+_SQLITE_DEFAULT_DSN_ENV = "SQLITE_DSN"
+_SQLITE_OAUTH_CACHE_TABLE = "mcp_oauth_cache_store"
+_SQLITE_OAUTH_CACHE_KEY_COLUMN = "cache_key"
+_SQLITE_OAUTH_CACHE_PAYLOAD_COLUMN = "payload_json"
 
 
 @dataclass(frozen=True)
@@ -467,6 +476,8 @@ class OAuthCacheSettings:
     dynamodb_cache_key: str | None = None
     s3_bucket: str | None = None
     s3_object_key: str | None = None
+    sqlite_cache_key: str | None = None
+    sqlite_dsn_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2652,6 +2663,8 @@ def _coerce_oauth_cache_settings(
             "dynamodb_cache_key",
             "s3_bucket",
             "s3_object_key",
+            "sqlite_cache_key",
+            "sqlite_dsn_env",
         }
     ]
     if unknown_fields:
@@ -2675,7 +2688,8 @@ def _coerce_oauth_cache_settings(
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
             "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env, "
             "postgres_cache_key, postgres_dsn_env, mysql_cache_key, mysql_dsn_env, "
-            "mongo_cache_key, mongo_dsn_env, dynamodb_cache_key, s3_bucket, s3_object_key.",
+            "mongo_cache_key, mongo_dsn_env, dynamodb_cache_key, s3_bucket, s3_object_key, "
+            "sqlite_cache_key, sqlite_dsn_env.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -3373,6 +3387,24 @@ def _coerce_oauth_cache_settings(
     if s3_object_key is not None and not _is_valid_s3_object_key(s3_object_key):
         return None, "auth.cache.s3_object_key must be a valid S3 object key path."
 
+    sqlite_cache_key_value = cache_value.get("sqlite_cache_key")
+    if sqlite_cache_key_value is not None and (
+        not isinstance(sqlite_cache_key_value, str) or not sqlite_cache_key_value.strip()
+    ):
+        return None, "auth.cache.sqlite_cache_key must be a non-empty string when provided."
+    sqlite_cache_key = sqlite_cache_key_value.strip() if isinstance(sqlite_cache_key_value, str) else None
+    if sqlite_cache_key is not None and not _is_valid_sqlite_cache_key(sqlite_cache_key):
+        return None, "auth.cache.sqlite_cache_key must be a valid SQLite cache key path."
+
+    sqlite_dsn_env_value = cache_value.get("sqlite_dsn_env")
+    if sqlite_dsn_env_value is not None and (
+        not isinstance(sqlite_dsn_env_value, str) or not sqlite_dsn_env_value.strip()
+    ):
+        return None, "auth.cache.sqlite_dsn_env must be a non-empty string when provided."
+    sqlite_dsn_env = sqlite_dsn_env_value.strip() if isinstance(sqlite_dsn_env_value, str) else None
+    if sqlite_dsn_env is not None and not _is_valid_env_var_name(sqlite_dsn_env):
+        return None, "auth.cache.sqlite_dsn_env must be a valid environment variable name."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -3746,6 +3778,17 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.s3_object_key is required when auth.cache.backend='s3_object_kv'.",
+        )
+    if backend != _OAUTH_CACHE_BACKEND_SQLITE_KV and (sqlite_cache_key is not None or sqlite_dsn_env is not None):
+        return (
+            None,
+            "auth.cache.sqlite_cache_key and auth.cache.sqlite_dsn_env are only supported when "
+            "auth.cache.backend='sqlite_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_SQLITE_KV and sqlite_cache_key is None:
+        return (
+            None,
+            "auth.cache.sqlite_cache_key is required when auth.cache.backend='sqlite_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -4764,6 +4807,12 @@ def _coerce_oauth_cache_settings(
             dynamodb_cache_key=dynamodb_cache_key,
             s3_bucket=s3_bucket,
             s3_object_key=s3_object_key,
+            sqlite_cache_key=sqlite_cache_key,
+            sqlite_dsn_env=(
+                sqlite_dsn_env
+                if sqlite_dsn_env is not None
+                else (_SQLITE_DEFAULT_DSN_ENV if backend == _OAUTH_CACHE_BACKEND_SQLITE_KV else None)
+            ),
         ),
         None,
     )
@@ -4913,6 +4962,14 @@ def _is_valid_mongo_cache_key(value: str) -> bool:
 
 def _is_valid_dynamodb_cache_key(value: str) -> bool:
     """Validate DynamoDB cache item key shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_sqlite_cache_key(value: str) -> bool:
+    """Validate SQLite cache row key shape."""
     normalized = value.strip().strip("/")
     if not normalized:
         return False
@@ -10697,6 +10754,200 @@ def _write_oauth_cache_payload_to_s3_object(
     except Exception:
         return False
     return True
+
+
+def _load_oauth_persistent_cache_entries_from_sqlite(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from SQLite row value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_sqlite(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_sqlite(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to SQLite row value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_sqlite(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_sqlite(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_sqlite_connection(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create sqlite3 connection for OAuth cache backend."""
+    try:
+        sqlite3_module = importlib.import_module("sqlite3")
+    except Exception:
+        return None
+
+    dsn_env_name = cache_settings.sqlite_dsn_env or _SQLITE_DEFAULT_DSN_ENV
+    dsn_value = os.getenv(dsn_env_name, "").strip()
+    if not dsn_value:
+        return None
+
+    connect_fn = getattr(sqlite3_module, "connect", None)
+    if not callable(connect_fn):
+        return None
+
+    connect_kwargs: dict[str, Any] = {"timeout": 10.0}
+    if dsn_value.startswith("file:"):
+        connect_kwargs["uri"] = True
+
+    try:
+        return connect_fn(dsn_value, **connect_kwargs)
+    except Exception:
+        return None
+
+
+def _close_sqlite_connection(connection: Any) -> None:
+    """Close sqlite3 connection safely when close method exists."""
+    close_method = getattr(connection, "close", None)
+    if callable(close_method):
+        try:
+            close_method()
+        except Exception:
+            pass
+
+
+def _build_sqlite_cache_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build SQLite row key from validated cache settings."""
+    if cache_settings.sqlite_cache_key is None:
+        return None
+    normalized_key = cache_settings.sqlite_cache_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _read_oauth_cache_payload_from_sqlite(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned SQLite row."""
+    cache_key = _build_sqlite_cache_key(cache_settings=cache_settings)
+    if cache_key is None:
+        return None
+
+    connection = _build_sqlite_connection(cache_settings=cache_settings)
+    if connection is None:
+        return None
+
+    select_sql = (
+        f"SELECT {_SQLITE_OAUTH_CACHE_PAYLOAD_COLUMN} FROM {_SQLITE_OAUTH_CACHE_TABLE} "
+        f"WHERE {_SQLITE_OAUTH_CACHE_KEY_COLUMN} = ?"
+    )
+    cursor: Any | None = None
+    try:
+        try:
+            cursor = connection.cursor()
+            cursor.execute(select_sql, (cache_key,))
+            row = cursor.fetchone()
+        except Exception:
+            return None
+
+        if row is None:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        if not isinstance(row, tuple) or not row:
+            return None
+
+        payload_value = row[0]
+        if payload_value is None:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        if isinstance(payload_value, bytes):
+            payload_text = payload_value.decode("utf-8", errors="ignore")
+        elif isinstance(payload_value, str):
+            payload_text = payload_value
+        else:
+            return None
+
+        if not payload_text.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            envelope = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        if cursor is not None:
+            close_method = getattr(cursor, "close", None)
+            if callable(close_method):
+                try:
+                    close_method()
+                except Exception:
+                    pass
+        _close_sqlite_connection(connection)
+
+
+def _write_oauth_cache_payload_to_sqlite(
+    cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]
+) -> bool:
+    """Write OAuth cache payload envelope to existing SQLite row value."""
+    cache_key = _build_sqlite_cache_key(cache_settings=cache_settings)
+    if cache_key is None:
+        return False
+
+    connection = _build_sqlite_connection(cache_settings=cache_settings)
+    if connection is None:
+        return False
+
+    preflight_sql = (
+        f"SELECT {_SQLITE_OAUTH_CACHE_KEY_COLUMN} FROM {_SQLITE_OAUTH_CACHE_TABLE} "
+        f"WHERE {_SQLITE_OAUTH_CACHE_KEY_COLUMN} = ?"
+    )
+    update_sql = (
+        f"UPDATE {_SQLITE_OAUTH_CACHE_TABLE} "
+        f"SET {_SQLITE_OAUTH_CACHE_PAYLOAD_COLUMN} = ? "
+        f"WHERE {_SQLITE_OAUTH_CACHE_KEY_COLUMN} = ?"
+    )
+    cursor: Any | None = None
+    try:
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            cursor = connection.cursor()
+            cursor.execute(preflight_sql, (cache_key,))
+            preflight_row = cursor.fetchone()
+            if preflight_row is None:
+                return False
+
+            cursor.execute(update_sql, (serialized_payload, cache_key))
+            affected_rows = getattr(cursor, "rowcount", None)
+            if isinstance(affected_rows, int) and affected_rows <= 0:
+                return False
+            commit_method = getattr(connection, "commit", None)
+            if callable(commit_method):
+                commit_method()
+        except Exception:
+            return False
+        return True
+    finally:
+        if cursor is not None:
+            close_method = getattr(cursor, "close", None)
+            if callable(close_method):
+                try:
+                    close_method()
+                except Exception:
+                    pass
+        _close_sqlite_connection(connection)
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:
