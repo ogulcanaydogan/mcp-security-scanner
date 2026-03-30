@@ -40,6 +40,47 @@ def test_normalize_retry_output_truncates_deterministically():
     assert normalized == "xxxxxxxxxx...<truncated>"
 
 
+def test_build_pypi_visibility_pip_command_uses_official_index_no_cache():
+    module = _load_release_consistency_module()
+
+    command = module._build_pypi_visibility_pip_command(
+        package_name="demo-pkg",
+        expected_version="1.0.23",
+        index_url="https://pypi.org/simple",
+        pip_timeout_seconds=17,
+    )
+
+    assert command[:3] == [module.sys.executable, "-m", "pip"]
+    assert "--no-cache-dir" in command
+    assert "--index-url" in command
+    assert "https://pypi.org/simple" in command
+    assert "--timeout" in command
+    assert "17" in command
+    assert command[-1] == "demo-pkg"
+    assert "--pre" not in command
+
+
+def test_build_pypi_visibility_pip_command_adds_pre_for_prerelease():
+    module = _load_release_consistency_module()
+
+    command = module._build_pypi_visibility_pip_command(
+        package_name="demo-pkg",
+        expected_version="1.0.24rc1",
+        index_url="https://pypi.org/simple",
+        pip_timeout_seconds=15,
+    )
+    assert "--pre" in command
+
+
+def test_build_pypi_visibility_pip_env_sets_deterministic_flags():
+    module = _load_release_consistency_module()
+
+    pip_env = module._build_pypi_visibility_pip_env("https://pypi.org/simple")
+    assert pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] == "1"
+    assert pip_env["PIP_NO_CACHE_DIR"] == "1"
+    assert pip_env["PIP_INDEX_URL"] == "https://pypi.org/simple"
+
+
 def test_verify_pypi_visibility_logs_retry_then_success_deterministically(monkeypatch, capsys):
     module = _load_release_consistency_module()
 

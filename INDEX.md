@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9W scope plus `v1.0.23` release target.
+Current index for the implemented Sprint 1-9X scope plus `v1.0.24` release target.
 
 ## Status Snapshot
 
@@ -76,6 +76,7 @@ Current index for the implemented Sprint 1-9W scope plus `v1.0.23` release targe
 - Sprint 9U: done (post-1.0 stabilization hardening with detached OAuth cache contract snapshots and deterministic PyPI visibility retry-path test coverage)
 - Sprint 9V: done (advanced OAuth cache backend v28 with SQLite KV using sqlite3, env-DSN auth, fixed-schema pre-provisioned row model)
 - Sprint 9W: done (post-1.0 stabilization hardening with shared deterministic OAuth contract mismatch helpers and explicit final-attempt PyPI visibility failure event logging)
+- Sprint 9X: done (post-1.0 stabilization hardening with deterministic single-pipeline contract mismatch evaluation and extracted PyPI visibility command/env builders in shared release consistency checks)
 
 ## Top-Level Docs
 

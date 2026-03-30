@@ -13821,6 +13821,30 @@ class TestCLIHelpers:
         """Backend contract helper should return no error when canonical maps are aligned."""
         assert cli_module._oauth_cache_backend_contract_error() is None
 
+    def test_oauth_cache_backend_contract_mismatch_candidates_returns_ordered_list(self):
+        """Mismatch candidate helper should evaluate deterministic checks in fixed order."""
+        contract = cli_module._oauth_cache_backend_contract_snapshot()
+        candidates = cli_module._oauth_cache_backend_contract_mismatch_candidates(contract)
+        assert len(candidates) == 7
+        assert all(candidate is None for candidate in candidates)
+
+    def test_oauth_cache_backend_contract_error_prioritizes_supported_set_mismatch(self, monkeypatch):
+        """Contract error helper should report set mismatch before downstream map drift checks."""
+        monkeypatch.setattr(
+            cli_module,
+            "_SUPPORTED_OAUTH_CACHE_BACKENDS",
+            frozenset({cli_module._OAUTH_CACHE_BACKEND_LOCAL}),
+        )
+        broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
+        broken_loaders.pop(next(iter(broken_loaders)))
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS", broken_loaders)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "supported backend set mismatch" in contract_error
+        assert "remote loader map mismatch" not in contract_error
+
     def test_oauth_cache_backend_contract_error_detects_loader_source_mismatch(self, monkeypatch):
         """Backend contract helper should detect map/source drift for loader mapping."""
         broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)

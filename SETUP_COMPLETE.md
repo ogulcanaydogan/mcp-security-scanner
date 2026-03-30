@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9W Implementation State
+# Setup Complete — Sprint 1-9X Implementation State
 
-This file records the actual implementation status after Sprint 9W.
+This file records the actual implementation status after Sprint 9X.
 
 ## Completed Work
 
@@ -1305,6 +1305,18 @@ This file records the actual implementation status after Sprint 9W.
   - source mismatches report `backend + expected/actual symbol`
   - callable mismatches report `backend + expected/actual symbol`
 - Release-consistency diagnostics now emit an explicit final-attempt `visibility_failed` event for PyPI checks.
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+
+### Sprint 9X (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - mismatch evaluation is now executed through a single ordered candidate pipeline
+  - deterministic mismatch message shapes (`set/source/callable`) are preserved
+- Release-consistency hardening:
+  - pip visibility command and env preparation moved into shared deterministic builders
+  - official-index + no-cache + attempt-scoped visibility diagnostics remain unchanged semantically
 - Runtime behavior remains unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 

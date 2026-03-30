@@ -43,6 +43,41 @@ def _emit_pypi_visibility_event(
     print(f"[pypi-visibility attempt {attempt}/{attempts}] status={status} {message}")
 
 
+def _build_pypi_visibility_pip_command(
+    *,
+    package_name: str,
+    expected_version: str,
+    index_url: str,
+    pip_timeout_seconds: int,
+) -> list[str]:
+    """Build deterministic pip command for attempt-scoped visibility checks."""
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "--timeout",
+        str(pip_timeout_seconds),
+        "index",
+        "versions",
+        "--no-cache-dir",
+        "--index-url",
+        index_url,
+    ]
+    if re.search(r"(a|b|rc)[0-9]+$", expected_version):
+        command.append("--pre")
+    command.append(package_name)
+    return command
+
+
+def _build_pypi_visibility_pip_env(index_url: str) -> dict[str, str]:
+    """Build deterministic pip environment for visibility checks."""
+    pip_env = dict(os.environ)
+    pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    pip_env["PIP_NO_CACHE_DIR"] = "1"
+    pip_env["PIP_INDEX_URL"] = index_url
+    return pip_env
+
+
 def _normalize_tag_version(raw_tag_version: str) -> str:
     """Normalize Git tag prerelease format (e.g. 1.0.0-rc1 -> 1.0.0rc1)."""
     return re.sub(r"-([ab]|rc)", r"\1", raw_tag_version)
@@ -202,25 +237,13 @@ def _verify_pypi_version_visibility(
     pip_timeout_seconds: int,
 ) -> None:
     """Verify that the expected version is visible in the public PyPI index."""
-    pip_command = [
-        sys.executable,
-        "-m",
-        "pip",
-        "--timeout",
-        str(pip_timeout_seconds),
-        "index",
-        "versions",
-        "--no-cache-dir",
-        "--index-url",
-        index_url,
-    ]
-    if re.search(r"(a|b|rc)[0-9]+$", expected_version):
-        pip_command.append("--pre")
-    pip_command.append(package_name)
-    pip_env = dict(os.environ)
-    pip_env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
-    pip_env["PIP_NO_CACHE_DIR"] = "1"
-    pip_env["PIP_INDEX_URL"] = index_url
+    pip_command = _build_pypi_visibility_pip_command(
+        package_name=package_name,
+        expected_version=expected_version,
+        index_url=index_url,
+        pip_timeout_seconds=pip_timeout_seconds,
+    )
+    pip_env = _build_pypi_visibility_pip_env(index_url)
 
     last_output = ""
     for attempt in range(1, attempts + 1):

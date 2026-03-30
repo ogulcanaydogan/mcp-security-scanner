@@ -98,6 +98,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9U): OAuth cache contract snapshot checks now use detached map snapshots for stricter drift isolation, and release-visibility diagnostics are covered by deterministic retry-path tests (runtime behavior unchanged)
 - Post-1.0 provider expansion (Sprint 9V): added `sqlite_kv` backend (`sqlite3` env-DSN auth, fixed-schema pre-provisioned row model)
 - Post-1.0 stabilization hardening (Sprint 9W): centralized OAuth cache contract mismatch validation through shared deterministic helpers (`set/source/callable` deltas) and added explicit final-attempt PyPI visibility failure events in release-consistency diagnostics (runtime behavior unchanged)
+- Post-1.0 stabilization hardening (Sprint 9X): unified contract mismatch evaluation into one deterministic candidate pipeline and extracted deterministic PyPI visibility command/env builders (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1012,7 +1013,7 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.23` stabilization patch release (no new backend) with deterministic OAuth cache contract mismatch diagnostics and clearer attempt-scoped PyPI visibility failure logging.
+- `1.0.24` stabilization patch release (no new backend) with single-pipeline OAuth cache contract mismatch evaluation and deterministic PyPI visibility command/env construction in the shared release-consistency script.
 - Post-1.0 provider onboarding remains available under the same contract baseline.
 
 Deferred (post-1.0):

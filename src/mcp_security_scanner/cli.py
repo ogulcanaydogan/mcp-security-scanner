@@ -328,68 +328,62 @@ def _oauth_cache_backend_callable_mismatch_error(
     return None
 
 
+def _oauth_cache_backend_contract_mismatch_candidates(
+    contract: Mapping[str, Any],
+) -> tuple[str | None, ...]:
+    """Return deterministic mismatch checks in strict evaluation order."""
+    remote_supported_backends = cast(Collection[str], contract["remote_supported_backends"])
+    remote_backends = cast(Collection[str], contract["remote_backends"])
+    loader_map = cast(Mapping[str, str], contract["loader_map"])
+    persister_map = cast(Mapping[str, str], contract["persister_map"])
+    expected_loaders = cast(Mapping[str, str], contract["expected_loaders"])
+    expected_persisters = cast(Mapping[str, str], contract["expected_persisters"])
+
+    return (
+        _oauth_cache_backend_set_mismatch_error(
+            mismatch_label="supported backend set mismatch",
+            expected=remote_backends,
+            actual=remote_supported_backends,
+        ),
+        _oauth_cache_backend_set_mismatch_error(
+            mismatch_label="remote loader map mismatch",
+            expected=remote_backends,
+            actual=loader_map,
+        ),
+        _oauth_cache_backend_set_mismatch_error(
+            mismatch_label="remote persister map mismatch",
+            expected=remote_backends,
+            actual=persister_map,
+        ),
+        _oauth_cache_backend_source_mismatch_error(
+            mismatch_label="remote loader source mismatch",
+            expected=expected_loaders,
+            actual=loader_map,
+        ),
+        _oauth_cache_backend_source_mismatch_error(
+            mismatch_label="remote persister source mismatch",
+            expected=expected_persisters,
+            actual=persister_map,
+        ),
+        _oauth_cache_backend_callable_mismatch_error(
+            mismatch_label="remote loader callable mismatch",
+            expected=expected_loaders,
+            actual=loader_map,
+        ),
+        _oauth_cache_backend_callable_mismatch_error(
+            mismatch_label="remote persister callable mismatch",
+            expected=expected_persisters,
+            actual=persister_map,
+        ),
+    )
+
+
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
     contract = _oauth_cache_backend_contract_snapshot()
-    remote_supported_backends = contract["remote_supported_backends"]
-    remote_backends = contract["remote_backends"]
-    loader_map = contract["loader_map"]
-    persister_map = contract["persister_map"]
-    expected_loaders = contract["expected_loaders"]
-    expected_persisters = contract["expected_persisters"]
-
-    set_mismatch = _oauth_cache_backend_set_mismatch_error(
-        mismatch_label="supported backend set mismatch",
-        expected=remote_backends,
-        actual=remote_supported_backends,
-    )
-    if set_mismatch is not None:
-        return set_mismatch
-
-    loader_set_mismatch = _oauth_cache_backend_set_mismatch_error(
-        mismatch_label="remote loader map mismatch",
-        expected=remote_backends,
-        actual=loader_map,
-    )
-    if loader_set_mismatch is not None:
-        return loader_set_mismatch
-    persister_set_mismatch = _oauth_cache_backend_set_mismatch_error(
-        mismatch_label="remote persister map mismatch",
-        expected=remote_backends,
-        actual=persister_map,
-    )
-    if persister_set_mismatch is not None:
-        return persister_set_mismatch
-
-    loader_source_mismatch = _oauth_cache_backend_source_mismatch_error(
-        mismatch_label="remote loader source mismatch",
-        expected=expected_loaders,
-        actual=loader_map,
-    )
-    if loader_source_mismatch is not None:
-        return loader_source_mismatch
-    persister_source_mismatch = _oauth_cache_backend_source_mismatch_error(
-        mismatch_label="remote persister source mismatch",
-        expected=expected_persisters,
-        actual=persister_map,
-    )
-    if persister_source_mismatch is not None:
-        return persister_source_mismatch
-
-    loader_callable_mismatch = _oauth_cache_backend_callable_mismatch_error(
-        mismatch_label="remote loader callable mismatch",
-        expected=expected_loaders,
-        actual=loader_map,
-    )
-    if loader_callable_mismatch is not None:
-        return loader_callable_mismatch
-    persister_callable_mismatch = _oauth_cache_backend_callable_mismatch_error(
-        mismatch_label="remote persister callable mismatch",
-        expected=expected_persisters,
-        actual=persister_map,
-    )
-    if persister_callable_mismatch is not None:
-        return persister_callable_mismatch
+    for mismatch_error in _oauth_cache_backend_contract_mismatch_candidates(contract):
+        if mismatch_error is not None:
+            return mismatch_error
     return None
 
 
