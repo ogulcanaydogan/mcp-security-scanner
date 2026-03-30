@@ -2,16 +2,17 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.21` and advancing under stabilization-first post-1.0 policy.
+- Release line is stable at `v1.0.23` and advancing under stabilization-first post-1.0 policy.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 
 ## Current Target
 
-- `v1.0.22` provider onboarding (`sqlite_kv`) with contract-safe behavior:
+- `v1.0.23` stabilization-only patch release with contract-safe behavior:
   - no breaking changes to CLI/exit-code/report/auth-cache contracts
   - keep OAuth cache lookup order and non-fatal bypass behavior unchanged
-  - add `sqlite_kv` backend with env-only DSN + fixed-schema pre-provisioned row model
+  - keep backend contract drift checks deterministic (`supported ↔ spec/load/persist` with explicit set/source/callable mismatch diagnostics)
+  - keep release-consistency PyPI visibility diagnostics attempt-scoped and deterministic, including final failure events
   - preserve deterministic backend-contract drift checks and release visibility verification
   - keep release consistency guard + official-index/no-cache visibility verification unchanged
 

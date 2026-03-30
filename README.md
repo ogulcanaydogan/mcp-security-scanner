@@ -97,6 +97,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9T): release-consistency PyPI retry diagnostics now normalize volatile memory-address fragments for deterministic logs while preserving retry semantics and runtime behavior
 - Post-1.0 stabilization hardening (Sprint 9U): OAuth cache contract snapshot checks now use detached map snapshots for stricter drift isolation, and release-visibility diagnostics are covered by deterministic retry-path tests (runtime behavior unchanged)
 - Post-1.0 provider expansion (Sprint 9V): added `sqlite_kv` backend (`sqlite3` env-DSN auth, fixed-schema pre-provisioned row model)
+- Post-1.0 stabilization hardening (Sprint 9W): centralized OAuth cache contract mismatch validation through shared deterministic helpers (`set/source/callable` deltas) and added explicit final-attempt PyPI visibility failure events in release-consistency diagnostics (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1011,8 +1012,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.22` provider onboarding patch release (`sqlite_kv`) with pre-provisioned-only semantics and unchanged runtime contracts.
-- Post-1.0 provider onboarding continues under the same contract baseline.
+- `1.0.23` stabilization patch release (no new backend) with deterministic OAuth cache contract mismatch diagnostics and clearer attempt-scoped PyPI visibility failure logging.
+- Post-1.0 provider onboarding remains available under the same contract baseline.
 
 Deferred (post-1.0):
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

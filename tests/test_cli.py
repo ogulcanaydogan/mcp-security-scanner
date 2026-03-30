@@ -13742,6 +13742,24 @@ class TestCLIHelpers:
             "backend=zeta_backend, expected=_load_expected_zeta, actual=_load_actual_zeta"
         )
 
+    def test_oauth_cache_backend_set_mismatch_error_returns_none_when_sets_match(self):
+        """Set mismatch helper should return None when canonical sets are aligned."""
+        mismatch_error = cli_module._oauth_cache_backend_set_mismatch_error(
+            mismatch_label="supported backend set mismatch",
+            expected={"alpha_backend", "beta_backend"},
+            actual={"beta_backend", "alpha_backend"},
+        )
+        assert mismatch_error is None
+
+    def test_oauth_cache_backend_source_mismatch_error_returns_none_when_sources_match(self):
+        """Source mismatch helper should return None when canonical source symbols are aligned."""
+        mismatch_error = cli_module._oauth_cache_backend_source_mismatch_error(
+            mismatch_label="remote loader source mismatch",
+            expected={"alpha_backend": "_load_alpha"},
+            actual={"alpha_backend": "_load_alpha"},
+        )
+        assert mismatch_error is None
+
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
         """Remote backend spec should be the single source of truth for load/persist handler maps."""
         remote_backends = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS) - {cli_module._OAUTH_CACHE_BACKEND_LOCAL}
@@ -13838,7 +13856,8 @@ class TestCLIHelpers:
         assert contract_error is not None
         assert "remote loader callable mismatch" in contract_error
         assert f"backend={backend_name}" in contract_error
-        assert f"symbol={loader_symbol}" in contract_error
+        assert f"expected={loader_symbol}" in contract_error
+        assert f"actual={loader_symbol}" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_persister_source_mismatch(self, monkeypatch):
         """Backend contract helper should detect map/source drift for persister mapping."""
@@ -13875,7 +13894,8 @@ class TestCLIHelpers:
         assert contract_error is not None
         assert "remote persister callable mismatch" in contract_error
         assert f"backend={backend_name}" in contract_error
-        assert f"symbol={persister_symbol}" in contract_error
+        assert f"expected={persister_symbol}" in contract_error
+        assert f"actual={persister_symbol}" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_supported_backend_set_mismatch(self, monkeypatch):
         """Backend contract helper should fail when supported-set and remote backend specs drift."""

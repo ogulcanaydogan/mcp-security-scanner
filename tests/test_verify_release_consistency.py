@@ -84,7 +84,7 @@ def test_verify_pypi_visibility_logs_retry_then_success_deterministically(monkey
     assert sleep_calls == [7]
 
 
-def test_verify_pypi_visibility_failure_uses_normalized_last_output(monkeypatch):
+def test_verify_pypi_visibility_failure_uses_normalized_last_output(monkeypatch, capsys):
     module = _load_release_consistency_module()
     response = subprocess.CompletedProcess(
         args=["pip", "index", "versions"],
@@ -109,3 +109,48 @@ def test_verify_pypi_visibility_failure_uses_normalized_last_output(monkeypatch)
     message = str(exc_info.value)
     assert "Last output: temporary failure at 0xADDR" in message
     assert "0xABCDEF01" not in message
+    output = capsys.readouterr().out
+    assert "[pypi-visibility attempt 1/1] status=visibility_failed expected=1.0.21" in output
+
+
+def test_verify_pypi_visibility_logs_version_not_visible_then_failure(monkeypatch, capsys):
+    module = _load_release_consistency_module()
+
+    responses = [
+        subprocess.CompletedProcess(
+            args=["pip", "index", "versions"],
+            returncode=0,
+            stdout="demo-pkg (1.0.21)\nAvailable versions: 1.0.20, 1.0.19",
+            stderr="",
+        ),
+        subprocess.CompletedProcess(
+            args=["pip", "index", "versions"],
+            returncode=0,
+            stdout="demo-pkg (1.0.21)\nAvailable versions: 1.0.20",
+            stderr="",
+        ),
+    ]
+    sleep_calls: list[int] = []
+
+    def fake_run(*args, **kwargs):
+        del args, kwargs
+        return responses.pop(0)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    with pytest.raises(module.ReleaseValidationError):
+        module._verify_pypi_version_visibility(
+            package_name="demo-pkg",
+            expected_version="1.0.21",
+            index_url="https://pypi.org/simple",
+            attempts=2,
+            sleep_seconds=3,
+            pip_timeout_seconds=15,
+        )
+
+    output = capsys.readouterr().out
+    assert "[pypi-visibility attempt 1/2] status=version_not_visible expected=1.0.21" in output
+    assert "[pypi-visibility attempt 1/2] status=retry_wait sleep_seconds=3" in output
+    assert "[pypi-visibility attempt 2/2] status=visibility_failed expected=1.0.21" in output
+    assert sleep_calls == [3]

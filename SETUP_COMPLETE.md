@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9V Implementation State
+# Setup Complete — Sprint 1-9W Implementation State
 
-This file records the actual implementation status after Sprint 9V.
+This file records the actual implementation status after Sprint 9W.
 
 ## Completed Work
 
@@ -1294,6 +1294,17 @@ This file records the actual implementation status after Sprint 9V.
   - read via `SELECT payload_json ... WHERE cache_key=?`
   - write via preflight `SELECT` + `UPDATE` on same row key (no create path)
   - provider/read/write/parse/auth/file-lock errors are non-fatal and bypass persistent layer
+- Runtime behavior remains unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+
+### Sprint 9W (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract diagnostics are now resolved through shared deterministic helpers:
+  - set mismatches report explicit `missing/extra` backend deltas
+  - source mismatches report `backend + expected/actual symbol`
+  - callable mismatches report `backend + expected/actual symbol`
+- Release-consistency diagnostics now emit an explicit final-attempt `visibility_failed` event for PyPI checks.
 - Runtime behavior remains unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 

@@ -281,6 +281,53 @@ def _format_oauth_backend_source_delta(
     return "; ".join(deltas)
 
 
+def _oauth_cache_backend_set_mismatch_error(
+    *,
+    mismatch_label: str,
+    expected: Collection[str],
+    actual: Collection[str],
+) -> str | None:
+    """Build deterministic set-mismatch error text for backend contract checks."""
+    expected_set = set(expected)
+    actual_set = set(actual)
+    if expected_set == actual_set:
+        return None
+    delta = _format_oauth_backend_set_delta(expected=expected_set, actual=actual_set)
+    return f"auth.cache backend contract is inconsistent ({mismatch_label}: {delta})."
+
+
+def _oauth_cache_backend_source_mismatch_error(
+    *,
+    mismatch_label: str,
+    expected: Mapping[str, str],
+    actual: Mapping[str, str],
+) -> str | None:
+    """Build deterministic source-mismatch error text for backend contract checks."""
+    delta = _format_oauth_backend_source_delta(expected=expected, actual=actual)
+    if not delta:
+        return None
+    return f"auth.cache backend contract is inconsistent ({mismatch_label}: {delta})."
+
+
+def _oauth_cache_backend_callable_mismatch_error(
+    *,
+    mismatch_label: str,
+    expected: Mapping[str, str],
+    actual: Mapping[str, str],
+) -> str | None:
+    """Build deterministic callable-mismatch error text for backend contract checks."""
+    for backend in sorted(actual):
+        actual_symbol = actual[backend]
+        if callable(globals().get(actual_symbol)):
+            continue
+        expected_symbol = expected.get(backend, "<missing>")
+        return (
+            "auth.cache backend contract is inconsistent "
+            f"({mismatch_label}: backend={backend}, expected={expected_symbol}, actual={actual_symbol})."
+        )
+    return None
+
+
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
     contract = _oauth_cache_backend_contract_snapshot()
@@ -291,39 +338,58 @@ def _oauth_cache_backend_contract_error() -> str | None:
     expected_loaders = contract["expected_loaders"]
     expected_persisters = contract["expected_persisters"]
 
-    if remote_supported_backends != remote_backends:
-        delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=remote_supported_backends)
-        return f"auth.cache backend contract is inconsistent (supported backend set mismatch: {delta})."
+    set_mismatch = _oauth_cache_backend_set_mismatch_error(
+        mismatch_label="supported backend set mismatch",
+        expected=remote_backends,
+        actual=remote_supported_backends,
+    )
+    if set_mismatch is not None:
+        return set_mismatch
 
-    if set(loader_map) != remote_backends:
-        delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=loader_map)
-        return f"auth.cache backend contract is inconsistent (remote loader map mismatch: {delta})."
-    if set(persister_map) != remote_backends:
-        delta = _format_oauth_backend_set_delta(expected=remote_backends, actual=persister_map)
-        return f"auth.cache backend contract is inconsistent (remote persister map mismatch: {delta})."
+    loader_set_mismatch = _oauth_cache_backend_set_mismatch_error(
+        mismatch_label="remote loader map mismatch",
+        expected=remote_backends,
+        actual=loader_map,
+    )
+    if loader_set_mismatch is not None:
+        return loader_set_mismatch
+    persister_set_mismatch = _oauth_cache_backend_set_mismatch_error(
+        mismatch_label="remote persister map mismatch",
+        expected=remote_backends,
+        actual=persister_map,
+    )
+    if persister_set_mismatch is not None:
+        return persister_set_mismatch
 
-    loader_delta = _format_oauth_backend_source_delta(expected=expected_loaders, actual=loader_map)
-    if loader_delta:
-        return f"auth.cache backend contract is inconsistent (remote loader source mismatch: {loader_delta})."
+    loader_source_mismatch = _oauth_cache_backend_source_mismatch_error(
+        mismatch_label="remote loader source mismatch",
+        expected=expected_loaders,
+        actual=loader_map,
+    )
+    if loader_source_mismatch is not None:
+        return loader_source_mismatch
+    persister_source_mismatch = _oauth_cache_backend_source_mismatch_error(
+        mismatch_label="remote persister source mismatch",
+        expected=expected_persisters,
+        actual=persister_map,
+    )
+    if persister_source_mismatch is not None:
+        return persister_source_mismatch
 
-    persister_delta = _format_oauth_backend_source_delta(expected=expected_persisters, actual=persister_map)
-    if persister_delta:
-        return f"auth.cache backend contract is inconsistent (remote persister source mismatch: {persister_delta})."
-
-    for backend in sorted(loader_map):
-        function_name = loader_map[backend]
-        if not callable(globals().get(function_name)):
-            return (
-                "auth.cache backend contract is inconsistent (remote loader callable mismatch: "
-                f"backend={backend}, symbol={function_name})."
-            )
-    for backend in sorted(persister_map):
-        function_name = persister_map[backend]
-        if not callable(globals().get(function_name)):
-            return (
-                "auth.cache backend contract is inconsistent (remote persister callable mismatch: "
-                f"backend={backend}, symbol={function_name})."
-            )
+    loader_callable_mismatch = _oauth_cache_backend_callable_mismatch_error(
+        mismatch_label="remote loader callable mismatch",
+        expected=expected_loaders,
+        actual=loader_map,
+    )
+    if loader_callable_mismatch is not None:
+        return loader_callable_mismatch
+    persister_callable_mismatch = _oauth_cache_backend_callable_mismatch_error(
+        mismatch_label="remote persister callable mismatch",
+        expected=expected_persisters,
+        actual=persister_map,
+    )
+    if persister_callable_mismatch is not None:
+        return persister_callable_mismatch
     return None
 
 

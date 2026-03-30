@@ -273,6 +273,12 @@ def _verify_pypi_version_visibility(
             )
             time.sleep(sleep_seconds)
 
+    _emit_pypi_visibility_event(
+        attempt=attempts,
+        attempts=attempts,
+        status="visibility_failed",
+        message=f"expected={expected_version} last_output={last_output}",
+    )
     raise ReleaseValidationError(
         f"Version {expected_version} not visible on PyPI for package {package_name} "
         f"after {attempts} attempts. Last output: {last_output}"
