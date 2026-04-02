@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9X Implementation State
+# Setup Complete — Sprint 1-9Y Implementation State
 
-This file records the actual implementation status after Sprint 9X.
+This file records the actual implementation status after Sprint 9Y.
 
 ## Completed Work
 
@@ -1319,6 +1319,13 @@ This file records the actual implementation status after Sprint 9X.
   - official-index + no-cache + attempt-scoped visibility diagnostics remain unchanged semantically
 - Runtime behavior remains unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+
+### Sprint 9Y (Milestone Freeze Closure, Docs-Only)
+
+- No new backend added; sprint scope is milestone-freeze closure.
+- Documentation was synchronized across roadmap/status surfaces to mark freeze closure on `v1.0.24`.
+- No runtime/code/release-script behavior change was introduced.
+- No new tag/publish was created in Sprint 9Y; `v1.0.24` remains the latest release line until freeze is reopened by a new sprint decision.
 
 ## Exit Code Contract (Current)
 

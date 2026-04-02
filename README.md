@@ -1013,8 +1013,9 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- `1.0.24` stabilization patch release (no new backend) with single-pipeline OAuth cache contract mismatch evaluation and deterministic PyPI visibility command/env construction in the shared release-consistency script.
-- Post-1.0 provider onboarding remains available under the same contract baseline.
+- `1.0.24` milestone-freeze closure completed (Sprint 9Y, docs-only).
+- Runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
+- No new tag/publish was opened in Sprint 9Y; `v1.0.24` remains the latest release line while post-freeze maintenance stays active.
 
 Deferred (post-1.0):
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
