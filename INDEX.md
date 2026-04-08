@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-9Y scope with milestone-freeze closure on `v1.0.24`.
+Current index for the implemented Sprint 1-9Z scope with post-freeze discovery gate completed on `v1.0.24`.
 
 ## Status Snapshot
 
@@ -78,6 +78,7 @@ Current index for the implemented Sprint 1-9Y scope with milestone-freeze closur
 - Sprint 9W: done (post-1.0 stabilization hardening with shared deterministic OAuth contract mismatch helpers and explicit final-attempt PyPI visibility failure event logging)
 - Sprint 9X: done (post-1.0 stabilization hardening with deterministic single-pipeline contract mismatch evaluation and extracted PyPI visibility command/env builders in shared release consistency checks)
 - Sprint 9Y: done (milestone-freeze closure, docs-only synchronization, no new tag/publish; `v1.0.24` remains current release line)
+- Sprint 9Z: done (post-freeze provider discovery gate with objective shortlist scoring and locked next target: Sprint 10A `openbao_kv`)
 
 ## Top-Level Docs
 
@@ -206,4 +207,5 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog (Post-1.0)
 
+- Locked next implementation target (Sprint 10A): `openbao_kv` onboarding toward `v1.0.25` using existing vault-style config surface and pre-provisioned/non-fatal cache contract posture.
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; Sprint 8AA established the shared backend dispatch/contract baseline used for post-1.0 provider onboarding

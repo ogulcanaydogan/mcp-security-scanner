@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9Y Implementation State
+# Setup Complete — Sprint 1-9Z Implementation State
 
-This file records the actual implementation status after Sprint 9Y.
+This file records the actual implementation status after Sprint 9Z.
 
 ## Completed Work
 
@@ -1326,6 +1326,16 @@ This file records the actual implementation status after Sprint 9Y.
 - Documentation was synchronized across roadmap/status surfaces to mark freeze closure on `v1.0.24`.
 - No runtime/code/release-script behavior change was introduced.
 - No new tag/publish was created in Sprint 9Y; `v1.0.24` remains the latest release line until freeze is reopened by a new sprint decision.
+
+### Sprint 9Z (Post-Freeze Provider Discovery Gate)
+
+- No new backend added; sprint scope is discovery/decision locking only.
+- Provider shortlist evaluated with objective criteria (auth model, pre-provisioned fit, contract risk, dependency impact, test/CI cost, release risk).
+- Locked next sprint target:
+  - Sprint 10A winner: `openbao_kv`
+  - target release: `v1.0.25`
+  - decision-complete scope fixed: vault-style config reuse, pre-provisioned-only reads/updates, non-fatal bypass preserved, local-only `cache rotate` preserved.
+- Non-selected candidates stay in deferred provider backlog until a new selection sprint.
 
 ## Exit Code Contract (Current)
 
