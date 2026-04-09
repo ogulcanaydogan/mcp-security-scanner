@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-9V)
+## Capability Snapshot (Sprint 1-10A)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke + tag/version consistency guard (`pyproject`/`__version__`/wheel/CLI) + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -101,6 +101,7 @@ flowchart LR
 - Post-1.0 stabilization hardening (Sprint 9X): unified contract mismatch evaluation into one deterministic candidate pipeline and extracted deterministic PyPI visibility command/env builders (runtime behavior unchanged)
 - Milestone freeze closure (Sprint 9Y): docs-only closure of `v1.0.24` release line without new tag/publish
 - Post-freeze provider discovery gate (Sprint 9Z): shortlist locked and next sprint target selected (`openbao_kv` for Sprint 10A)
+- Post-freeze provider expansion (Sprint 10A): added `openbao_kv` backend (Vault KV v2 compatible, vault-field reuse, pre-provisioned secret-path model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -667,7 +668,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, or `sqlite_kv`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, or `sqlite_kv`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store` / `dynamodb_kv` / `s3_object_kv`)
@@ -676,8 +677,8 @@ Notes:
   - `azure_vault_url` (required when `backend=azure_key_vault`, format `https://<name>.vault.azure.net`)
   - `azure_secret_name` (required when `backend=azure_key_vault`, Azure Key Vault secret-name rules)
   - optional `azure_secret_version` (default `latest`)
-  - `vault_url` (required when `backend=hashicorp_vault`, `http/https`)
-  - `vault_secret_path` (required when `backend=hashicorp_vault`, KV path)
+  - `vault_url` (required when `backend=hashicorp_vault` or `backend=openbao_kv`, `http/https`)
+  - `vault_secret_path` (required when `backend=hashicorp_vault` or `backend=openbao_kv`, KV path)
   - optional `vault_token_env` (Vault token env var name; defaults to `VAULT_TOKEN`)
   - optional `vault_namespace`
   - `k8s_secret_namespace` (required when `backend=kubernetes_secrets`, Kubernetes namespace)
@@ -782,6 +783,11 @@ Notes:
     - cache payload is stored as a single JSON envelope in configured Vault KV v2 secret path (`auth.cache.vault_secret_path`)
     - auth uses configured token env (`vault_token_env`) or `VAULT_TOKEN` fallback
     - optional Vault enterprise namespace is supported via `vault_namespace`
+    - secret path must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
+  - `backend=openbao_kv`:
+    - cache payload is stored as a single JSON envelope in configured OpenBao KV v2 secret path (`auth.cache.vault_secret_path`)
+    - auth uses configured token env (`vault_token_env`) or `VAULT_TOKEN` fallback
+    - optional namespace header is supported via `vault_namespace`
     - secret path must be pre-provisioned; missing/provider errors are non-fatal and scanner falls back to live token flow
   - `backend=kubernetes_secrets`:
     - cache payload is stored as a single JSON envelope in configured Kubernetes Secret data key
@@ -1015,9 +1021,9 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- latest published line stays `1.0.24` (freeze-closed release baseline).
-- next implementation target is Sprint 10A (`v1.0.25`) with selected provider onboarding candidate: `openbao_kv`.
-- runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged until Sprint 10A implementation starts.
+- latest published line is `1.0.25` (Sprint 10A provider onboarding complete).
+- next target is Sprint 10B stabilization hardening (`v1.0.26` planning baseline).
+- runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

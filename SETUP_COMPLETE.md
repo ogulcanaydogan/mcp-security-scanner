@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-9Z Implementation State
+# Setup Complete — Sprint 1-10A Implementation State
 
-This file records the actual implementation status after Sprint 9Z.
+This file records the actual implementation status after Sprint 10A.
 
 ## Completed Work
 
@@ -1325,7 +1325,7 @@ This file records the actual implementation status after Sprint 9Z.
 - No new backend added; sprint scope is milestone-freeze closure.
 - Documentation was synchronized across roadmap/status surfaces to mark freeze closure on `v1.0.24`.
 - No runtime/code/release-script behavior change was introduced.
-- No new tag/publish was created in Sprint 9Y; `v1.0.24` remains the latest release line until freeze is reopened by a new sprint decision.
+- No new tag/publish was created in Sprint 9Y; `v1.0.24` remained the latest release line until freeze was reopened by Sprint 10A.
 
 ### Sprint 9Z (Post-Freeze Provider Discovery Gate)
 
@@ -1336,6 +1336,20 @@ This file records the actual implementation status after Sprint 9Z.
   - target release: `v1.0.25`
   - decision-complete scope fixed: vault-style config reuse, pre-provisioned-only reads/updates, non-fatal bypass preserved, local-only `cache rotate` preserved.
 - Non-selected candidates stay in deferred provider backlog until a new selection sprint.
+
+### Sprint 10A (OpenBao KV Backend v1)
+
+- Added new OAuth cache backend: `openbao_kv`.
+- Reused existing vault-style config surface (no new auth.cache field):
+  - required for `openbao_kv`: `vault_url`, `vault_secret_path`
+  - optional: `vault_token_env`, `vault_namespace`
+- Runtime behavior stays contract-compatible:
+  - lookup order unchanged (`in-memory -> persistent -> refresh -> primary`)
+  - pre-provisioned-only write policy (no create path)
+  - provider/auth/parse/network errors remain non-fatal bypass
+  - `cache rotate` remains local-only
+- Backend dispatch contract updated to include `openbao_kv` with existing Vault loader/persister handlers.
+- Release finalized as `v1.0.25` with GitHub Release + PyPI visibility verification.
 
 ## Exit Code Contract (Current)
 
@@ -1349,7 +1363,7 @@ This file records the actual implementation status after Sprint 9Z.
 
 ## Current Non-Goals / Deferred (Post-1.0)
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

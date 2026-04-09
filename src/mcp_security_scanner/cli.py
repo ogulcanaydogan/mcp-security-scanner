@@ -58,6 +58,7 @@ _OAUTH_CACHE_BACKEND_AWS_SSM_PARAMETER_STORE = "aws_ssm_parameter_store"
 _OAUTH_CACHE_BACKEND_GCP_SECRET_MANAGER = "gcp_secret_manager"
 _OAUTH_CACHE_BACKEND_AZURE_KEY_VAULT = "azure_key_vault"
 _OAUTH_CACHE_BACKEND_HASHICORP_VAULT = "hashicorp_vault"
+_OAUTH_CACHE_BACKEND_OPENBAO_KV = "openbao_kv"
 _OAUTH_CACHE_BACKEND_KUBERNETES_SECRETS = "kubernetes_secrets"
 _OAUTH_CACHE_BACKEND_OCI_VAULT = "oci_vault"
 _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS = "doppler_secrets"
@@ -129,6 +130,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
         "_persist_oauth_cache_entry_azure",
     ),
     _OAUTH_CACHE_BACKEND_HASHICORP_VAULT: (
+        "_load_oauth_persistent_cache_entries_from_vault",
+        "_persist_oauth_cache_entry_vault",
+    ),
+    _OAUTH_CACHE_BACKEND_OPENBAO_KV: (
         "_load_oauth_persistent_cache_entries_from_vault",
         "_persist_oauth_cache_entry_vault",
     ),
@@ -3883,7 +3888,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -3929,7 +3934,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -3976,7 +3981,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4028,7 +4033,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4042,16 +4047,16 @@ def _coerce_oauth_cache_settings(
                 "auth.cache.oci_secret_ocid, auth.cache.oci_region, and auth.cache.oci_endpoint_url are only "
                 "supported when auth.cache.backend='oci_vault'.",
             )
-    elif backend == _OAUTH_CACHE_BACKEND_HASHICORP_VAULT:
+    elif backend in {_OAUTH_CACHE_BACKEND_HASHICORP_VAULT, _OAUTH_CACHE_BACKEND_OPENBAO_KV}:
         if vault_url is None:
             return (
                 None,
-                "auth.cache.vault_url is required when auth.cache.backend='hashicorp_vault'.",
+                f"auth.cache.vault_url is required when auth.cache.backend='{backend}'.",
             )
         if vault_secret_path is None:
             return (
                 None,
-                "auth.cache.vault_secret_path is required when auth.cache.backend='hashicorp_vault'.",
+                f"auth.cache.vault_secret_path is required when auth.cache.backend='{backend}'.",
             )
         if (
             aws_secret_id is not None
@@ -4133,7 +4138,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if oci_secret_ocid is not None or oci_region is not None or oci_endpoint_url is not None:
             return (
@@ -4180,7 +4185,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4237,7 +4242,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4300,7 +4305,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4359,7 +4364,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4434,7 +4439,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4482,7 +4487,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4530,7 +4535,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4578,7 +4583,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4626,7 +4631,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (
@@ -4687,7 +4692,7 @@ def _coerce_oauth_cache_settings(
             return (
                 None,
                 "auth.cache.vault_url, auth.cache.vault_secret_path, auth.cache.vault_token_env, and "
-                "auth.cache.vault_namespace are only supported when auth.cache.backend='hashicorp_vault'.",
+                "auth.cache.vault_namespace are only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'.",
             )
         if k8s_secret_namespace is not None or k8s_secret_name is not None or k8s_secret_key is not None:
             return (

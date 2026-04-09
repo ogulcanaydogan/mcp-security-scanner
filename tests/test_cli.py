@@ -2650,6 +2650,33 @@ class TestCLIHelpers:
         assert settings.vault_token_env == "VAULT_TOKEN"
         assert settings.vault_namespace == "team-security"
 
+    def test_coerce_oauth_cache_settings_accepts_openbao_backend(self):
+        """OAuth cache settings should accept openbao_kv backend with reused vault fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "openbao_kv",
+                    "vault_url": "https://openbao.example.com",
+                    "vault_secret_path": "kv/mcp-security/oauth-cache",
+                    "vault_token_env": "OPENBAO_TOKEN",
+                    "vault_namespace": "team-security",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.persistent is True
+        assert settings.namespace == "prod-security"
+        assert settings.backend == "openbao_kv"
+        assert settings.vault_url == "https://openbao.example.com"
+        assert settings.vault_secret_path == "kv/mcp-security/oauth-cache"
+        assert settings.vault_token_env == "OPENBAO_TOKEN"
+        assert settings.vault_namespace == "team-security"
+
     def test_coerce_oauth_cache_settings_accepts_kubernetes_backend(self):
         """OAuth cache settings should accept kubernetes_secrets backend with required fields."""
         settings, error = cli_module._coerce_oauth_cache_settings(
@@ -3731,9 +3758,21 @@ class TestCLIHelpers:
                 "auth.cache.vault_url is required",
             ),
             (
+                {"backend": "openbao_kv"},
+                "auth.cache.vault_url is required",
+            ),
+            (
                 {
                     "backend": "hashicorp_vault",
                     "vault_url": "ftp://vault.example.com",
+                    "vault_secret_path": "kv/mcp-security/oauth-cache",
+                },
+                "auth.cache.vault_url must be a valid http/https URL.",
+            ),
+            (
+                {
+                    "backend": "openbao_kv",
+                    "vault_url": "ftp://openbao.example.com",
                     "vault_secret_path": "kv/mcp-security/oauth-cache",
                 },
                 "auth.cache.vault_url must be a valid http/https URL.",
@@ -3747,6 +3786,13 @@ class TestCLIHelpers:
             ),
             (
                 {
+                    "backend": "openbao_kv",
+                    "vault_url": "https://openbao.example.com",
+                },
+                "auth.cache.vault_secret_path is required",
+            ),
+            (
+                {
                     "backend": "hashicorp_vault",
                     "vault_url": "https://vault.example.com",
                     "vault_secret_path": "invalid path",
@@ -3755,7 +3801,7 @@ class TestCLIHelpers:
             ),
             (
                 {"backend": "local", "vault_url": "https://vault.example.com"},
-                "only supported when auth.cache.backend='hashicorp_vault'",
+                "only supported when auth.cache.backend is 'hashicorp_vault' or 'openbao_kv'",
             ),
             (
                 {"backend": "kubernetes_secrets"},
@@ -5184,8 +5230,9 @@ class TestCLIHelpers:
         )
         assert entries == {}
 
-    def test_hashicorp_vault_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch):
-        """HashiCorp Vault backend should persist and reload cache entries across runs."""
+    @pytest.mark.parametrize("backend", ["hashicorp_vault", "openbao_kv"])
+    def test_vault_style_persistent_cache_roundtrip_and_namespace_reuse(self, monkeypatch, backend: str):
+        """Vault-style backends should persist and reload cache entries across runs."""
         cli_module._clear_oauth_token_cache()
         monkeypatch.setenv("MCP_OAUTH_CLIENT_ID", "client-vault")
         monkeypatch.setenv("MCP_OAUTH_CLIENT_SECRET", "secret-vault")
@@ -5254,7 +5301,7 @@ class TestCLIHelpers:
                 "cache": {
                     "persistent": True,
                     "namespace": "vault-prod",
-                    "backend": "hashicorp_vault",
+                    "backend": backend,
                     "vault_url": "https://vault.example.com",
                     "vault_secret_path": "kv/mcp-security/oauth-cache",
                     "vault_token_env": "VAULT_TOKEN_TEST",
@@ -5292,8 +5339,9 @@ class TestCLIHelpers:
 
         cli_module._clear_oauth_token_cache()
 
-    def test_hashicorp_vault_persistent_cache_bypasses_provider_errors(self, monkeypatch):
-        """HashiCorp Vault backend cache load should bypass provider errors without raising."""
+    @pytest.mark.parametrize("backend", ["hashicorp_vault", "openbao_kv"])
+    def test_vault_style_persistent_cache_bypasses_provider_errors(self, monkeypatch, backend: str):
+        """Vault-style backend cache load should bypass provider errors without raising."""
 
         class FakeKVV2:
             def read_secret_version(self, *, path: str) -> dict[str, object]:
@@ -5321,7 +5369,7 @@ class TestCLIHelpers:
             cache_settings=cli_module.OAuthCacheSettings(
                 persistent=True,
                 namespace="vault-prod",
-                backend="hashicorp_vault",
+                backend=backend,
                 vault_url="https://vault.example.com",
                 vault_secret_path="kv/mcp-security/oauth-cache",
                 vault_token_env="VAULT_TOKEN_TEST",
@@ -13677,6 +13725,7 @@ class TestCLIHelpers:
             "gcp_secret_manager",
             "azure_key_vault",
             "hashicorp_vault",
+            "openbao_kv",
             "kubernetes_secrets",
             "oci_vault",
             "doppler_secrets",
@@ -14285,6 +14334,19 @@ class TestCLIHelpers:
                     namespace="contract",
                     backend="hashicorp_vault",
                     vault_url="https://vault.example.com",
+                    vault_secret_path="kv/mcp-security/oauth-cache",
+                ),
+            ),
+            (
+                "_build_hashicorp_vault_client",
+                None,
+                "_read_oauth_cache_payload_from_vault",
+                "_write_oauth_cache_payload_to_vault",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="openbao_kv",
+                    vault_url="https://openbao.example.com",
                     vault_secret_path="kv/mcp-security/oauth-cache",
                 ),
             ),
