@@ -14055,6 +14055,71 @@ class TestCLIHelpers:
         assert resolved_bad is None
         assert resolved_missing is None
 
+    def test_oauth_cache_remote_dispatch_generic_resolver_fails_closed_on_contract_drift(self, monkeypatch):
+        """Generic resolver should return None when backend contract drift is detected."""
+        handler_symbol = "_oauth_contract_drift_guard_handler"
+        monkeypatch.setattr(cli_module, handler_symbol, lambda **_: None, raising=False)
+        monkeypatch.setattr(
+            cli_module,
+            "_oauth_cache_backend_contract_error",
+            lambda: "auth.cache backend contract is inconsistent (test drift).",
+        )
+
+        resolved = cli_module._resolve_oauth_remote_persistent_cache_handler(
+            "ok",
+            {"ok": handler_symbol},
+        )
+
+        assert resolved is None
+
+    def test_oauth_cache_load_and_persist_dispatch_fall_back_local_on_contract_drift(self, monkeypatch):
+        """Load/persist dispatch should fall back to local handlers when contract drift is detected."""
+        remote_backend = next(iter(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS))
+        remote_loader_name, remote_persister_name = cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS[
+            remote_backend
+        ]
+        calls: list[tuple[str, str]] = []
+
+        monkeypatch.setattr(
+            cli_module,
+            "_oauth_cache_backend_contract_error",
+            lambda: "auth.cache backend contract is inconsistent (test drift).",
+        )
+        monkeypatch.setattr(
+            cli_module,
+            remote_loader_name,
+            lambda *, cache_settings: calls.append(("remote_loader", cache_settings.backend)) or {"remote": {}},
+        )
+        monkeypatch.setattr(
+            cli_module,
+            remote_persister_name,
+            lambda *, cache_key, cache_settings: calls.append(("remote_persister", cache_settings.backend)),
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_local",
+            lambda: calls.append(("local_loader", "local")) or {"local": {}},
+        )
+        monkeypatch.setattr(
+            cli_module,
+            "_persist_oauth_cache_entry_local",
+            lambda cache_key: calls.append(("local_persister", cache_key)),
+        )
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="contract-drift",
+            backend=remote_backend,
+        )
+        loaded = cli_module._load_oauth_persistent_cache_entries(cache_settings=settings)
+        cli_module._persist_oauth_cache_entry("contract-key", cache_settings=settings)
+
+        assert loaded == {"local": {}}
+        assert ("remote_loader", remote_backend) not in calls
+        assert ("remote_persister", remote_backend) not in calls
+        assert ("local_loader", "local") in calls
+        assert ("local_persister", "contract-key") in calls
+
     @pytest.mark.parametrize(
         ("backend", "loader_name"),
         [

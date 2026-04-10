@@ -81,6 +81,13 @@ def test_build_pypi_visibility_pip_env_sets_deterministic_flags():
     assert pip_env["PIP_INDEX_URL"] == "https://pypi.org/simple"
 
 
+def test_build_pypi_retry_wait_message_includes_next_attempt():
+    module = _load_release_consistency_module()
+
+    message = module._build_pypi_retry_wait_message(sleep_seconds=7, next_attempt=3)
+    assert message == "sleep_seconds=7 next_attempt=3"
+
+
 def test_verify_pypi_visibility_logs_retry_then_success_deterministically(monkeypatch, capsys):
     module = _load_release_consistency_module()
 
@@ -120,7 +127,7 @@ def test_verify_pypi_visibility_logs_retry_then_success_deterministically(monkey
     assert "[pypi-visibility attempt 1/2] status=lookup_failed" in output
     assert "0xADDR" in output
     assert "0x10b99e5d0" not in output
-    assert "[pypi-visibility attempt 1/2] status=retry_wait sleep_seconds=7" in output
+    assert "[pypi-visibility attempt 1/2] status=retry_wait sleep_seconds=7 next_attempt=2" in output
     assert "[pypi-visibility attempt 2/2] status=visibility_verified package=demo-pkg version=1.0.21" in output
     assert sleep_calls == [7]
 
@@ -151,7 +158,7 @@ def test_verify_pypi_visibility_failure_uses_normalized_last_output(monkeypatch,
     assert "Last output: temporary failure at 0xADDR" in message
     assert "0xABCDEF01" not in message
     output = capsys.readouterr().out
-    assert "[pypi-visibility attempt 1/1] status=visibility_failed expected=1.0.21" in output
+    assert "[pypi-visibility attempt 1/1] status=visibility_failed expected=1.0.21 last_status=lookup_failed" in output
 
 
 def test_verify_pypi_visibility_logs_version_not_visible_then_failure(monkeypatch, capsys):
@@ -192,6 +199,9 @@ def test_verify_pypi_visibility_logs_version_not_visible_then_failure(monkeypatc
 
     output = capsys.readouterr().out
     assert "[pypi-visibility attempt 1/2] status=version_not_visible expected=1.0.21" in output
-    assert "[pypi-visibility attempt 1/2] status=retry_wait sleep_seconds=3" in output
-    assert "[pypi-visibility attempt 2/2] status=visibility_failed expected=1.0.21" in output
+    assert "[pypi-visibility attempt 1/2] status=retry_wait sleep_seconds=3 next_attempt=2" in output
+    assert (
+        "[pypi-visibility attempt 2/2] status=visibility_failed expected=1.0.21 last_status=version_not_visible"
+        in output
+    )
     assert sleep_calls == [3]

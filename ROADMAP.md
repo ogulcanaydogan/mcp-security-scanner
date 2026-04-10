@@ -2,15 +2,16 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.25` after Sprint 10A provider onboarding.
+- Release line is stable at `v1.0.26` after Sprint 10B stabilization hardening.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
-- Sprint `9Z` discovery gate completed and Sprint `10A` target is now implemented.
+- Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
+- Sprint `10B` stabilization-only hardening is implemented with full release closure.
 
 ## Current Target
 
-Sprint 10B Stabilization Target (`v1.0.26`, no new provider):
-  - harden backend contract drift checks and deterministic release visibility diagnostics
+Sprint 10C Planning Target (post-10B, decision gate):
+  - lock next sprint direction (provider onboarding vs stabilization) with decision-complete scope
   - keep runtime contracts unchanged (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
   - keep release model patch-only and OIDC publish-safe
 
@@ -40,6 +41,23 @@ Sprint 10B Stabilization Target (`v1.0.26`, no new provider):
   - `persistent=false` remote bypass preserved
   - `compare` contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
   - released as `v1.0.25` with existing deterministic release-consistency guards
+
+### Sprint 10B Completed Scope (Stabilization-Only)
+
+- Runtime behavior unchanged:
+  - lookup order and persistent-cache contracts preserved
+  - pre-provisioned-only write model preserved
+  - provider failure paths remain non-fatal bypass
+  - `cache rotate` remains local-only
+- OAuth cache contract hardening:
+  - remote dispatch resolver now fails closed when backend contract drift is detected
+  - deterministic backend-contract drift diagnostics retained (`set/source/callable` deltas)
+- Release-consistency hardening:
+  - deterministic retry-wait visibility diagnostics now include `next_attempt`
+  - terminal visibility failure diagnostics include deterministic `last_status` + `last_output`
+  - official-index + no-cache visibility semantics unchanged
+- Acceptance (completed):
+  - released as `v1.0.26` with full CI/tag publish closure
 
 ## v1.0 GA Status
 

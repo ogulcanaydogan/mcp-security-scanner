@@ -1351,6 +1351,20 @@ This file records the actual implementation status after Sprint 10A.
 - Backend dispatch contract updated to include `openbao_kv` with existing Vault loader/persister handlers.
 - Release finalized as `v1.0.25` with GitHub Release + PyPI visibility verification.
 
+### Sprint 10B (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract/dispatch hardening:
+  - remote persistent-cache handler resolver now fails closed when backend-contract drift is detected
+  - canonical contract mismatch diagnostics remain deterministic (`set/source/callable` with missing/extra + backend/symbol details)
+- Release consistency hardening:
+  - retry-wait PyPI visibility events now include deterministic `next_attempt`
+  - terminal visibility failure event now includes deterministic `last_status` and `last_output`
+  - official index + no-cache verification semantics remain unchanged
+- Runtime contracts unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+- Release finalized as `v1.0.26` with GitHub Release + PyPI visibility verification.
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:

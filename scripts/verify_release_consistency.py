@@ -43,6 +43,11 @@ def _emit_pypi_visibility_event(
     print(f"[pypi-visibility attempt {attempt}/{attempts}] status={status} {message}")
 
 
+def _build_pypi_retry_wait_message(*, sleep_seconds: int, next_attempt: int) -> str:
+    """Build deterministic retry-wait message with explicit next-attempt context."""
+    return f"sleep_seconds={sleep_seconds} next_attempt={next_attempt}"
+
+
 def _build_pypi_visibility_pip_command(
     *,
     package_name: str,
@@ -246,6 +251,7 @@ def _verify_pypi_version_visibility(
     pip_env = _build_pypi_visibility_pip_env(index_url)
 
     last_output = ""
+    last_status = "uninitialized"
     for attempt in range(1, attempts + 1):
         result = subprocess.run(pip_command, check=False, capture_output=True, text=True, env=pip_env)
         output = (result.stdout or "").strip()
@@ -253,6 +259,7 @@ def _verify_pypi_version_visibility(
         combined_output = _normalize_retry_output(output or error_output or f"exit={result.returncode}")
         last_output = combined_output
         if result.returncode != 0:
+            last_status = "lookup_failed"
             _emit_pypi_visibility_event(
                 attempt=attempt,
                 attempts=attempts,
@@ -264,7 +271,10 @@ def _verify_pypi_version_visibility(
                     attempt=attempt,
                     attempts=attempts,
                     status="retry_wait",
-                    message=f"sleep_seconds={sleep_seconds}",
+                    message=_build_pypi_retry_wait_message(
+                        sleep_seconds=sleep_seconds,
+                        next_attempt=attempt + 1,
+                    ),
                 )
                 time.sleep(sleep_seconds)
             continue
@@ -281,6 +291,7 @@ def _verify_pypi_version_visibility(
             )
             return
         available_versions_display = _normalize_retry_output(versions_line or "<missing versions line>")
+        last_status = "version_not_visible"
         _emit_pypi_visibility_event(
             attempt=attempt,
             attempts=attempts,
@@ -292,7 +303,10 @@ def _verify_pypi_version_visibility(
                 attempt=attempt,
                 attempts=attempts,
                 status="retry_wait",
-                message=f"sleep_seconds={sleep_seconds}",
+                message=_build_pypi_retry_wait_message(
+                    sleep_seconds=sleep_seconds,
+                    next_attempt=attempt + 1,
+                ),
             )
             time.sleep(sleep_seconds)
 
@@ -300,7 +314,7 @@ def _verify_pypi_version_visibility(
         attempt=attempts,
         attempts=attempts,
         status="visibility_failed",
-        message=f"expected={expected_version} last_output={last_output}",
+        message=f"expected={expected_version} last_status={last_status} last_output={last_output}",
     )
     raise ReleaseValidationError(
         f"Version {expected_version} not visible on PyPI for package {package_name} "

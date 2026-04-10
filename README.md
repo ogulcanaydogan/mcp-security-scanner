@@ -102,6 +102,7 @@ flowchart LR
 - Milestone freeze closure (Sprint 9Y): docs-only closure of `v1.0.24` release line without new tag/publish
 - Post-freeze provider discovery gate (Sprint 9Z): shortlist locked and next sprint target selected (`openbao_kv` for Sprint 10A)
 - Post-freeze provider expansion (Sprint 10A): added `openbao_kv` backend (Vault KV v2 compatible, vault-field reuse, pre-provisioned secret-path model)
+- Post-freeze stabilization hardening (Sprint 10B): fail-closed remote dispatch guard under backend-contract drift and deterministic attempt-scoped PyPI visibility retry/failure diagnostics (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1021,8 +1022,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- latest published line is `1.0.25` (Sprint 10A provider onboarding complete).
-- next target is Sprint 10B stabilization hardening (`v1.0.26` planning baseline).
+- latest published line is `1.0.26` (Sprint 10B stabilization hardening complete).
+- next target is Sprint 10C planning baseline (post-10B decision gate).
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):

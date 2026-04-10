@@ -6788,7 +6788,13 @@ def _resolve_oauth_remote_persistent_cache_handler(
     backend: str,
     handler_map: Mapping[str, str],
 ) -> Callable[..., Any] | None:
-    """Resolve remote persistent-cache handler from canonical handler map."""
+    """Resolve remote persistent-cache handler from canonical handler map.
+
+    Contract drift is treated fail-closed so runtime dispatch does not invoke partially
+    inconsistent remote handlers when map/spec sources diverge.
+    """
+    if _oauth_cache_backend_contract_error() is not None:
+        return None
     function_name = handler_map.get(backend)
     if function_name is None:
         return None
