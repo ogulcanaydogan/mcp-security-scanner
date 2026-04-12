@@ -7,11 +7,13 @@
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 - Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
 - Sprint `10B` stabilization-only hardening is implemented with full release closure.
+- Sprint `10C` discovery gate is completed and Sprint `10D` provider target is locked.
 
 ## Current Target
 
-Sprint 10C Planning Target (post-10B, decision gate):
-  - lock next sprint direction (provider onboarding vs stabilization) with decision-complete scope
+Sprint 10D Provider Onboarding Target (`v1.0.27`, decision locked):
+  - winner backend: `gitea_actions_variables`
+  - model: pre-provisioned-only variable update, env-token auth, non-fatal bypass
   - keep runtime contracts unchanged (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
   - keep release model patch-only and OIDC publish-safe
 
@@ -59,6 +61,23 @@ Sprint 10C Planning Target (post-10B, decision gate):
 - Acceptance (completed):
   - released as `v1.0.26` with full CI/tag publish closure
 
+### Sprint 10C Discovery Matrix (Decision Gate)
+
+| Candidate | Auth Model | Pre-Provisioned-Only Fit | Contract Risk | Dependency Impact | Test/CI Cost | Release Risk | Decision |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `gitea_actions_variables` | env PAT token | Strong | Medium | None (`httpx` reuse) | Medium | Medium | **Winner (Sprint 10D)** |
+| `nats_kv` | token/creds chain | Weak (v1 constraints) | High | New SDK + async surface | High | High | Deferred |
+| `stabilization_only` | n/a | n/a | Low | None | Low | Low | Deferred (10C picked provider onboarding) |
+
+### Sprint 10C Completed Scope (Discovery Gate)
+
+- No new backend added; sprint scope is discovery/decision locking only.
+- Objective matrix refreshed for post-10B priorities (fit/risk/dependency/test/release).
+- Locked next sprint target:
+  - Sprint 10D winner: `gitea_actions_variables`
+  - target release: `v1.0.27`
+  - decision baseline: pre-provisioned-only, env-token auth, no create path, non-fatal bypass preserved.
+
 ## v1.0 GA Status
 
 - `v1.0.0` GA published successfully.
@@ -68,7 +87,7 @@ Sprint 10C Planning Target (post-10B, decision gate):
 
 ## Post-1.0 Backlog
 
-- Sprint 10A onboarding is complete (`openbao_kv`); non-selected candidates remain deferred.
+- Sprint 10A onboarding is complete (`openbao_kv`); Sprint 10C gate locked `gitea_actions_variables` as next provider target.
 - Additional persistent secret-store providers beyond:
   - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`
 - Optional report/visual schema improvements that do not break contracts.

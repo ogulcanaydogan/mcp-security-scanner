@@ -1365,6 +1365,16 @@ This file records the actual implementation status after Sprint 10A.
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 - Release finalized as `v1.0.26` with GitHub Release + PyPI visibility verification.
 
+### Sprint 10C (Post-Freeze Provider Discovery Gate)
+
+- No new backend added; sprint scope is decision-gate planning only.
+- Provider shortlist evaluated with an objective matrix (auth model, pre-provisioned fit, contract risk, dependency impact, test/CI cost, release risk).
+- Locked next sprint target:
+  - Sprint 10D winner: `gitea_actions_variables`
+  - target release: `v1.0.27`
+  - decision-complete scope fixed: env-token model, pre-provisioned-only reads/updates, non-fatal bypass preserved, local-only `cache rotate` preserved.
+- Non-selected candidates remain in deferred provider backlog until the next selection gate.
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:

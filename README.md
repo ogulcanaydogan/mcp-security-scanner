@@ -1023,7 +1023,8 @@ Current quality gate:
 
 Current release target:
 - latest published line is `1.0.26` (Sprint 10B stabilization hardening complete).
-- next target is Sprint 10C planning baseline (post-10B decision gate).
+- Sprint 10C discovery gate is complete (docs/decision sprint, no runtime change).
+- next locked target is Sprint 10D provider onboarding with `gitea_actions_variables` targeting `v1.0.27`.
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):
