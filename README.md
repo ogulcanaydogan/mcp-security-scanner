@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-10A)
+## Capability Snapshot (Sprint 1-10D)
 
 | Area | Status |
 |---|---|
@@ -41,7 +41,7 @@ flowchart LR
 | Dynamic mode | Opt-in (`--dynamic`), bounded and deterministic |
 | OAuth auth types | `oauth_client_credentials`, `oauth_device_code`, `oauth_auth_code_pkce` |
 | Token endpoint auth methods | `client_secret_post`, `client_secret_basic`, `private_key_jwt` |
-| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv` |
+| Persistent cache backends | `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv` |
 | Release pipeline | OIDC publish + Sigstore + idempotent GitHub release + build-wheel CLI smoke + tag/version consistency guard (`pyproject`/`__version__`/wheel/CLI) + PyPI visibility verification |
 | mTLS | OAuth token-endpoint mTLS + transport discovery mTLS |
 | Compare contract | only `tool_added`, `tool_removed`, `tool_changed` mapped to `LLM05` |
@@ -103,6 +103,7 @@ flowchart LR
 - Post-freeze provider discovery gate (Sprint 9Z): shortlist locked and next sprint target selected (`openbao_kv` for Sprint 10A)
 - Post-freeze provider expansion (Sprint 10A): added `openbao_kv` backend (Vault KV v2 compatible, vault-field reuse, pre-provisioned secret-path model)
 - Post-freeze stabilization hardening (Sprint 10B): fail-closed remote dispatch guard under backend-contract drift and deterministic attempt-scoped PyPI visibility retry/failure diagnostics (runtime behavior unchanged)
+- Post-freeze provider expansion (Sprint 10D): added `gitea_actions_variables` backend (env-token auth, pre-provisioned repository variable model)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -669,7 +670,7 @@ Notes:
 - `auth.cache` is optional and only valid for OAuth auth types:
   - `persistent` (bool, default `false`)
   - `namespace` (string, default `"default"`)
-  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, or `sqlite_kv`
+  - `backend` (string, default `"local"`): `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, or `sqlite_kv`
   - `aws_secret_id` (required when `backend=aws_secrets_manager`)
   - `aws_ssm_parameter_name` (required when `backend=aws_ssm_parameter_store`)
   - optional `aws_region`, `aws_endpoint_url` for AWS client routing (`aws_secrets_manager` / `aws_ssm_parameter_store` / `dynamodb_kv` / `s3_object_kv`)
@@ -721,6 +722,10 @@ Notes:
   - `github_variable_name` (required when `backend=github_actions_variables`, `backend=github_environment_variables`, or `backend=github_organization_variables`, env-style key)
   - optional `github_token_env` (default `GITHUB_TOKEN`)
   - optional `github_api_url` (`https` URL; defaults to `https://api.github.com`)
+  - `gitea_repository` (required when `backend=gitea_actions_variables`, format `<owner>/<repo>`)
+  - `gitea_variable_name` (required when `backend=gitea_actions_variables`, env-style key)
+  - optional `gitea_token_env` (default `GITEA_TOKEN`)
+  - optional `gitea_api_url` (`https` URL; defaults to `https://gitea.com/api/v1`)
   - `consul_key_path` (required when `backend=consul_kv`, Consul KV key path)
   - optional `consul_token_env` (default `CONSUL_HTTP_TOKEN`)
   - optional `consul_api_url` (`http/https` URL; defaults to `http://127.0.0.1:8500`)
@@ -874,6 +879,13 @@ Notes:
     - when visibility is `selected`, scanner resolves current selected repository IDs and re-sends them on update
     - organization/variable path segments are URL-encoded before API calls
     - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
+  - `backend=gitea_actions_variables`:
+    - cache payload is stored as a single JSON envelope in configured Gitea repository Actions variable value
+      (`auth.cache.gitea_repository` / `auth.cache.gitea_variable_name`)
+    - auth uses env token only (`auth.cache.gitea_token_env`, default `GITEA_TOKEN`)
+    - API base defaults to `https://gitea.com/api/v1` (`auth.cache.gitea_api_url`)
+    - variable must be pre-provisioned; scanner updates existing variable value and does not auto-create missing variables
+    - missing/provider/read/write/parse errors are non-fatal and scanner falls back to live token flow
   - `backend=consul_kv`:
     - cache payload is stored as a single JSON envelope in configured Consul KV key
       (`auth.cache.consul_key_path`)
@@ -1022,10 +1034,9 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- latest published line is `1.0.26` (Sprint 10B stabilization hardening complete).
-- Sprint 10C discovery gate is complete (docs/decision sprint, no runtime change).
-- next locked target is Sprint 10D provider onboarding with `gitea_actions_variables` targeting `v1.0.27`.
+- latest published line is `1.0.27` (Sprint 10D provider onboarding complete).
+- next target is Sprint 10E stabilization planning baseline (post-10D hardening cycle).
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.

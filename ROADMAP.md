@@ -2,19 +2,18 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.26` after Sprint 10B stabilization hardening.
+- Release line is stable at `v1.0.27` after Sprint 10D provider onboarding.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 - Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
 - Sprint `10B` stabilization-only hardening is implemented with full release closure.
-- Sprint `10C` discovery gate is completed and Sprint `10D` provider target is locked.
+- Sprint `10C` discovery gate is completed and Sprint `10D` provider target is now implemented.
 
 ## Current Target
 
-Sprint 10D Provider Onboarding Target (`v1.0.27`, decision locked):
-  - winner backend: `gitea_actions_variables`
-  - model: pre-provisioned-only variable update, env-token auth, non-fatal bypass
-  - keep runtime contracts unchanged (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
+Sprint 10E Stabilization Planning Baseline:
+  - no new provider in current target window
+  - preserve runtime contracts (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
   - keep release model patch-only and OIDC publish-safe
 
 ### Sprint 9Z Discovery Matrix (Decision Gate)
@@ -78,6 +77,26 @@ Sprint 10D Provider Onboarding Target (`v1.0.27`, decision locked):
   - target release: `v1.0.27`
   - decision baseline: pre-provisioned-only, env-token auth, no create path, non-fatal bypass preserved.
 
+### Sprint 10D Completed Scope (`gitea_actions_variables`)
+
+- Config/API shape:
+  - `auth.cache.backend += gitea_actions_variables`
+  - required fields: `gitea_repository`, `gitea_variable_name`
+  - optional fields: `gitea_token_env` (default `GITEA_TOKEN`), `gitea_api_url` (default `https://gitea.com/api/v1`)
+- Validation:
+  - `gitea_*` fields are only accepted for `gitea_actions_variables`
+  - repository must be `<owner>/<repo>`, variable key must be env-style
+- Provider behavior:
+  - pre-provisioned-only variable update path (no create)
+  - auth uses env token only
+  - read/write/provider/auth/parse/network errors remain non-fatal bypass
+  - token/secret plaintext is not emitted into findings/logs
+- Acceptance (completed):
+  - dispatch completeness includes `gitea_actions_variables`
+  - `persistent=false` remote bypass preserved
+  - `compare` contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
+  - released as `v1.0.27` with full CI/tag publish closure
+
 ## v1.0 GA Status
 
 - `v1.0.0` GA published successfully.
@@ -87,7 +106,7 @@ Sprint 10D Provider Onboarding Target (`v1.0.27`, decision locked):
 
 ## Post-1.0 Backlog
 
-- Sprint 10A onboarding is complete (`openbao_kv`); Sprint 10C gate locked `gitea_actions_variables` as next provider target.
+- Sprint 10A onboarding (`openbao_kv`) and Sprint 10D onboarding (`gitea_actions_variables`) are complete.
 - Additional persistent secret-store providers beyond:
-  - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`
+  - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`
 - Optional report/visual schema improvements that do not break contracts.

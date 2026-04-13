@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-10A Implementation State
+# Setup Complete — Sprint 1-10D Implementation State
 
-This file records the actual implementation status after Sprint 10A.
+This file records the actual implementation status after Sprint 10D.
 
 ## Completed Work
 
@@ -1375,6 +1375,23 @@ This file records the actual implementation status after Sprint 10A.
   - decision-complete scope fixed: env-token model, pre-provisioned-only reads/updates, non-fatal bypass preserved, local-only `cache rotate` preserved.
 - Non-selected candidates remain in deferred provider backlog until the next selection gate.
 
+### Sprint 10D (Gitea Actions Variables Backend v1)
+
+- Added new OAuth cache backend: `gitea_actions_variables`.
+- Added backend-specific config fields:
+  - required: `gitea_repository`, `gitea_variable_name`
+  - optional: `gitea_token_env` (default `GITEA_TOKEN`), `gitea_api_url` (default `https://gitea.com/api/v1`)
+- Validation and contract updates:
+  - `gitea_*` fields are accepted only when `auth.cache.backend='gitea_actions_variables'`
+  - repository shape `<owner>/<repo>` and env-style variable key are enforced
+  - canonical dispatch completeness includes `gitea_actions_variables` in supported/spec/load/persist checks
+- Runtime behavior remains contract-compatible:
+  - lookup order unchanged (`in-memory -> persistent -> refresh -> primary`)
+  - pre-provisioned-only variable update (no create path)
+  - provider/auth/parse/network failures are non-fatal bypass
+  - `cache rotate` remains local-only
+- Release finalized as `v1.0.27` with GitHub Release + PyPI visibility verification.
+
 ## Exit Code Contract (Current)
 
 - `server` / `config` / `compare`:
@@ -1387,7 +1404,7 @@ This file records the actual implementation status after Sprint 10A.
 
 ## Current Non-Goals / Deferred (Post-1.0)
 
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; Sprint 8AA provides the shared dispatch/contract baseline for post-1.0 provider onboarding
 - visual/report schema refactors beyond current formatter behavior
 
 ## Validation Targets

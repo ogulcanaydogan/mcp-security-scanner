@@ -72,6 +72,7 @@ _OAUTH_CACHE_BACKEND_GITLAB_INSTANCE_VARIABLES = "gitlab_instance_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ACTIONS_VARIABLES = "github_actions_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ENVIRONMENT_VARIABLES = "github_environment_variables"
 _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES = "github_organization_variables"
+_OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES = "gitea_actions_variables"
 _OAUTH_CACHE_BACKEND_CONSUL_KV = "consul_kv"
 _OAUTH_CACHE_BACKEND_REDIS_KV = "redis_kv"
 _OAUTH_CACHE_BACKEND_CLOUDFLARE_KV = "cloudflare_kv"
@@ -188,6 +189,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
     _OAUTH_CACHE_BACKEND_GITHUB_ORGANIZATION_VARIABLES: (
         "_load_oauth_persistent_cache_entries_from_github_organization",
         "_persist_oauth_cache_entry_github_organization",
+    ),
+    _OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES: (
+        "_load_oauth_persistent_cache_entries_from_gitea",
+        "_persist_oauth_cache_entry_gitea",
     ),
     _OAUTH_CACHE_BACKEND_CONSUL_KV: (
         "_load_oauth_persistent_cache_entries_from_consul",
@@ -433,6 +438,7 @@ _INFISICAL_DEFAULT_API_URL = "https://app.infisical.com/api"
 _AKEYLESS_DEFAULT_API_URL = "https://api.akeyless.io"
 _GITLAB_DEFAULT_API_URL = "https://gitlab.com/api/v4"
 _GITHUB_DEFAULT_API_URL = "https://api.github.com"
+_GITEA_DEFAULT_API_URL = "https://gitea.com/api/v1"
 _CONSUL_DEFAULT_API_URL = "http://127.0.0.1:8500"
 _REDIS_DEFAULT_URL = "redis://127.0.0.1:6379/0"
 _CLOUDFLARE_DEFAULT_API_URL = "https://api.cloudflare.com/client/v4"
@@ -518,6 +524,10 @@ class OAuthCacheSettings:
     github_variable_name: str | None = None
     github_token_env: str | None = None
     github_api_url: str | None = None
+    gitea_repository: str | None = None
+    gitea_variable_name: str | None = None
+    gitea_token_env: str | None = None
+    gitea_api_url: str | None = None
     consul_key_path: str | None = None
     consul_token_env: str | None = None
     consul_api_url: str | None = None
@@ -2705,6 +2715,10 @@ def _coerce_oauth_cache_settings(
             "github_variable_name",
             "github_token_env",
             "github_api_url",
+            "gitea_repository",
+            "gitea_variable_name",
+            "gitea_token_env",
+            "gitea_api_url",
             "consul_key_path",
             "consul_token_env",
             "consul_api_url",
@@ -2749,7 +2763,9 @@ def _coerce_oauth_cache_settings(
             "gitlab_project_id, gitlab_group_id, gitlab_variable_key, gitlab_environment_scope, "
             "gitlab_token_env, gitlab_api_url, "
             "github_repository, github_organization, github_environment_name, github_variable_name, "
-            "github_token_env, github_api_url, consul_key_path, consul_token_env, consul_api_url, "
+            "github_token_env, github_api_url, "
+            "gitea_repository, gitea_variable_name, gitea_token_env, gitea_api_url, "
+            "consul_key_path, consul_token_env, consul_api_url, "
             "redis_key, redis_url, redis_password_env, cf_account_id, cf_namespace_id, cf_kv_key, "
             "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env, "
             "postgres_cache_key, postgres_dsn_env, mysql_cache_key, mysql_dsn_env, "
@@ -3251,6 +3267,44 @@ def _coerce_oauth_cache_settings(
         if parsed_github_api_url.scheme != "https" or not parsed_github_api_url.netloc:
             return None, "auth.cache.github_api_url must be a valid https URL."
 
+    gitea_repository_value = cache_value.get("gitea_repository")
+    if gitea_repository_value is not None and (
+        not isinstance(gitea_repository_value, str) or not gitea_repository_value.strip()
+    ):
+        return None, "auth.cache.gitea_repository must be a non-empty string when provided."
+    gitea_repository = gitea_repository_value.strip() if isinstance(gitea_repository_value, str) else None
+    if gitea_repository is not None and not _is_valid_gitea_repository(gitea_repository):
+        return None, "auth.cache.gitea_repository must match '<owner>/<repo>' format."
+
+    gitea_variable_name_value = cache_value.get("gitea_variable_name")
+    if gitea_variable_name_value is not None and (
+        not isinstance(gitea_variable_name_value, str) or not gitea_variable_name_value.strip()
+    ):
+        return None, "auth.cache.gitea_variable_name must be a non-empty string when provided."
+    gitea_variable_name = gitea_variable_name_value.strip() if isinstance(gitea_variable_name_value, str) else None
+    if gitea_variable_name is not None and not _is_valid_gitea_variable_name(gitea_variable_name):
+        return None, "auth.cache.gitea_variable_name must match environment-style key naming rules."
+
+    gitea_token_env_value = cache_value.get("gitea_token_env")
+    if gitea_token_env_value is not None and (
+        not isinstance(gitea_token_env_value, str) or not gitea_token_env_value.strip()
+    ):
+        return None, "auth.cache.gitea_token_env must be a non-empty string when provided."
+    gitea_token_env = gitea_token_env_value.strip() if isinstance(gitea_token_env_value, str) else None
+    if gitea_token_env is not None and not _is_valid_env_var_name(gitea_token_env):
+        return None, "auth.cache.gitea_token_env must be a valid environment variable name."
+
+    gitea_api_url_value = cache_value.get("gitea_api_url")
+    if gitea_api_url_value is not None and (
+        not isinstance(gitea_api_url_value, str) or not gitea_api_url_value.strip()
+    ):
+        return None, "auth.cache.gitea_api_url must be a non-empty string when provided."
+    gitea_api_url = gitea_api_url_value.strip() if isinstance(gitea_api_url_value, str) else None
+    if gitea_api_url is not None:
+        parsed_gitea_api_url = urlparse(gitea_api_url)
+        if parsed_gitea_api_url.scheme != "https" or not parsed_gitea_api_url.netloc:
+            return None, "auth.cache.gitea_api_url must be a valid https URL."
+
     consul_key_path_value = cache_value.get("consul_key_path")
     if consul_key_path_value is not None and (
         not isinstance(consul_key_path_value, str) or not consul_key_path_value.strip()
@@ -3709,6 +3763,28 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.github_organization is required when auth.cache.backend='github_organization_variables'.",
+        )
+
+    if backend != _OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES and (
+        gitea_repository is not None
+        or gitea_variable_name is not None
+        or gitea_token_env is not None
+        or gitea_api_url is not None
+    ):
+        return (
+            None,
+            "auth.cache.gitea_repository, auth.cache.gitea_variable_name, auth.cache.gitea_token_env, and "
+            "auth.cache.gitea_api_url are only supported when auth.cache.backend='gitea_actions_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES and gitea_repository is None:
+        return (
+            None,
+            "auth.cache.gitea_repository is required when auth.cache.backend='gitea_actions_variables'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES and gitea_variable_name is None:
+        return (
+            None,
+            "auth.cache.gitea_variable_name is required when auth.cache.backend='gitea_actions_variables'.",
         )
 
     if backend != _OAUTH_CACHE_BACKEND_CONSUL_KV and (
@@ -4813,6 +4889,18 @@ def _coerce_oauth_cache_settings(
                 )
             ),
             github_api_url=github_api_url,
+            gitea_repository=gitea_repository,
+            gitea_variable_name=gitea_variable_name,
+            gitea_token_env=(
+                gitea_token_env
+                if gitea_token_env is not None
+                else ("GITEA_TOKEN" if backend == _OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES else None)
+            ),
+            gitea_api_url=(
+                gitea_api_url
+                if gitea_api_url is not None
+                else (_GITEA_DEFAULT_API_URL if backend == _OAUTH_CACHE_BACKEND_GITEA_ACTIONS_VARIABLES else None)
+            ),
             consul_key_path=consul_key_path,
             consul_token_env=(
                 consul_token_env
@@ -4974,6 +5062,16 @@ def _is_valid_github_organization(value: str) -> bool:
 
 def _is_valid_github_variable_name(value: str) -> bool:
     """Validate GitHub Actions variable naming shape."""
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", value) is not None
+
+
+def _is_valid_gitea_repository(value: str) -> bool:
+    """Validate Gitea repository slug shape (<owner>/<repo>)."""
+    return re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value) is not None
+
+
+def _is_valid_gitea_variable_name(value: str) -> bool:
+    """Validate Gitea Actions variable naming shape."""
     return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,254}", value) is not None
 
 
@@ -9330,6 +9428,171 @@ def _write_oauth_cache_payload_to_github_organization(
 
         try:
             response = client.patch(path, json=request_payload)
+        except Exception:
+            return False
+        if response.status_code == 404:
+            return False
+        try:
+            response.raise_for_status()
+        except Exception:
+            return False
+        return True
+    finally:
+        client.close()
+
+
+def _load_oauth_persistent_cache_entries_from_gitea(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from Gitea Actions variable value; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_gitea(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_gitea(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to Gitea Actions variable value; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_gitea(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_gitea(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_gitea_http_client(cache_settings: OAuthCacheSettings) -> httpx.Client | None:
+    """Create Gitea API client for OAuth cache backend."""
+    token_env_name = cache_settings.gitea_token_env or "GITEA_TOKEN"
+    token_value = os.getenv(token_env_name, "").strip()
+    if not token_value:
+        return None
+
+    api_url = (cache_settings.gitea_api_url or _GITEA_DEFAULT_API_URL).strip().rstrip("/")
+    if not api_url:
+        return None
+
+    try:
+        return httpx.Client(
+            base_url=api_url,
+            timeout=10.0,
+            headers={
+                "Authorization": f"token {token_value}",
+                "Accept": "application/json",
+            },
+        )
+    except Exception:
+        return None
+
+
+def _build_gitea_variable_path(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build Gitea Actions variable API path from validated cache settings."""
+    if cache_settings.gitea_repository is None or cache_settings.gitea_variable_name is None:
+        return None
+    variable_name = quote(cache_settings.gitea_variable_name, safe="")
+    return f"/repos/{cache_settings.gitea_repository}/actions/variables/{variable_name}"
+
+
+def _read_oauth_cache_payload_from_gitea(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from Gitea pre-provisioned Actions variable value."""
+    path = _build_gitea_variable_path(cache_settings=cache_settings)
+    if path is None:
+        return None
+
+    client = _build_gitea_http_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        try:
+            response = client.get(path)
+        except Exception:
+            return None
+
+        if response.status_code == 404:
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+        try:
+            response.raise_for_status()
+        except Exception:
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        raw_payload = payload.get("value")
+        if not isinstance(raw_payload, str):
+            raw_payload = payload.get("data")
+        if not isinstance(raw_payload, str):
+            variable_payload = payload.get("variable")
+            if isinstance(variable_payload, dict):
+                raw_payload = variable_payload.get("value")
+                if not isinstance(raw_payload, str):
+                    raw_payload = variable_payload.get("data")
+        if not isinstance(raw_payload, str) or not raw_payload.strip():
+            return {
+                "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {},
+            }
+
+        try:
+            envelope = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        return envelope
+    finally:
+        client.close()
+
+
+def _write_oauth_cache_payload_to_gitea(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to existing Gitea Actions variable value."""
+    path = _build_gitea_variable_path(cache_settings=cache_settings)
+    if path is None:
+        return False
+
+    client = _build_gitea_http_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        # Pre-provisioned mode: require variable to already exist.
+        try:
+            preflight_response = client.get(path)
+        except Exception:
+            return False
+        if preflight_response.status_code == 404:
+            return False
+        try:
+            preflight_response.raise_for_status()
+        except Exception:
+            return False
+
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+        try:
+            response = client.put(
+                path,
+                json={
+                    "name": cache_settings.gitea_variable_name,
+                    "value": serialized_payload,
+                },
+            )
         except Exception:
             return False
         if response.status_code == 404:
