@@ -48,6 +48,21 @@ def _build_pypi_retry_wait_message(*, sleep_seconds: int, next_attempt: int) -> 
     return f"sleep_seconds={sleep_seconds} next_attempt={next_attempt}"
 
 
+def _build_pypi_lookup_failed_message(*, returncode: int, combined_output: str) -> str:
+    """Build deterministic lookup-failed diagnostics for visibility retries."""
+    return f"rc={returncode} output={combined_output}"
+
+
+def _build_pypi_visibility_failed_message(
+    *,
+    expected_version: str,
+    last_status: str,
+    last_output: str,
+) -> str:
+    """Build deterministic terminal visibility-failed diagnostics."""
+    return f"expected={expected_version} last_status={last_status} last_output={last_output}"
+
+
 def _build_pypi_visibility_pip_command(
     *,
     package_name: str,
@@ -264,7 +279,10 @@ def _verify_pypi_version_visibility(
                 attempt=attempt,
                 attempts=attempts,
                 status="lookup_failed",
-                message=f"rc={result.returncode} output={combined_output}",
+                message=_build_pypi_lookup_failed_message(
+                    returncode=result.returncode,
+                    combined_output=combined_output,
+                ),
             )
             if attempt < attempts:
                 _emit_pypi_visibility_event(
@@ -314,7 +332,11 @@ def _verify_pypi_version_visibility(
         attempt=attempts,
         attempts=attempts,
         status="visibility_failed",
-        message=f"expected={expected_version} last_status={last_status} last_output={last_output}",
+        message=_build_pypi_visibility_failed_message(
+            expected_version=expected_version,
+            last_status=last_status,
+            last_output=last_output,
+        ),
     )
     raise ReleaseValidationError(
         f"Version {expected_version} not visible on PyPI for package {package_name} "

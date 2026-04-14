@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-10D Implementation State
+# Setup Complete — Sprint 1-10E Implementation State
 
-This file records the actual implementation status after Sprint 10D.
+This file records the actual implementation status after Sprint 10E.
 
 ## Completed Work
 
@@ -1391,6 +1391,19 @@ This file records the actual implementation status after Sprint 10D.
   - provider/auth/parse/network failures are non-fatal bypass
   - `cache rotate` remains local-only
 - Release finalized as `v1.0.27` with GitHub Release + PyPI visibility verification.
+
+### Sprint 10E (Post-1.0 Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - canonical mismatch collection now runs through a shared deterministic helper
+  - fail-closed contract drift behavior and mismatch ordering semantics are unchanged
+- Release consistency hardening:
+  - PyPI visibility `lookup_failed` and terminal `visibility_failed` diagnostics now use shared deterministic helper builders
+  - official index + no-cache verification semantics remain unchanged
+- Runtime contracts unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+- Release finalized as `v1.0.28` with GitHub Release + PyPI visibility verification.
 
 ## Exit Code Contract (Current)
 

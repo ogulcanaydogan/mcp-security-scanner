@@ -14242,6 +14242,23 @@ class TestCLIHelpers:
         assert len(candidates) == 7
         assert all(candidate is None for candidate in candidates)
 
+    def test_oauth_cache_backend_contract_mismatches_returns_empty_for_consistent_snapshot(self):
+        """Mismatch collector should return empty list when canonical contract is aligned."""
+        contract = cli_module._oauth_cache_backend_contract_snapshot()
+        assert cli_module._oauth_cache_backend_contract_mismatches(contract) == []
+
+    def test_oauth_cache_backend_contract_mismatches_returns_ordered_non_null_errors(self, monkeypatch):
+        """Mismatch collector should preserve deterministic ordering of non-null errors."""
+        broken_supported = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS)
+        broken_supported.remove("aws_secrets_manager")
+        monkeypatch.setattr(cli_module, "_SUPPORTED_OAUTH_CACHE_BACKENDS", frozenset(broken_supported))
+
+        contract = cli_module._oauth_cache_backend_contract_snapshot()
+        mismatches = cli_module._oauth_cache_backend_contract_mismatches(contract)
+
+        assert mismatches
+        assert "supported backend set mismatch" in mismatches[0]
+
     def test_oauth_cache_backend_contract_error_prioritizes_supported_set_mismatch(self, monkeypatch):
         """Contract error helper should report set mismatch before downstream map drift checks."""
         monkeypatch.setattr(

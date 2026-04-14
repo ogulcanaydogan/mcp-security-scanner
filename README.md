@@ -31,7 +31,7 @@ flowchart LR
   F --> E
 ```
 
-## Capability Snapshot (Sprint 1-10D)
+## Capability Snapshot (Sprint 1-10E)
 
 | Area | Status |
 |---|---|
@@ -104,6 +104,7 @@ flowchart LR
 - Post-freeze provider expansion (Sprint 10A): added `openbao_kv` backend (Vault KV v2 compatible, vault-field reuse, pre-provisioned secret-path model)
 - Post-freeze stabilization hardening (Sprint 10B): fail-closed remote dispatch guard under backend-contract drift and deterministic attempt-scoped PyPI visibility retry/failure diagnostics (runtime behavior unchanged)
 - Post-freeze provider expansion (Sprint 10D): added `gitea_actions_variables` backend (env-token auth, pre-provisioned repository variable model)
+- Post-freeze stabilization hardening (Sprint 10E): centralized contract-mismatch collection helper and deterministic PyPI visibility diagnostics helper builders (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1034,8 +1035,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- latest published line is `1.0.27` (Sprint 10D provider onboarding complete).
-- next target is Sprint 10E stabilization planning baseline (post-10D hardening cycle).
+- latest published line is `1.0.28` (Sprint 10E stabilization hardening complete).
+- next target is Sprint 10F discovery/planning baseline (post-10E provider selection cycle).
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):

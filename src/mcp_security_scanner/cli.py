@@ -388,12 +388,21 @@ def _oauth_cache_backend_contract_mismatch_candidates(
     )
 
 
+def _oauth_cache_backend_contract_mismatches(contract: Mapping[str, Any]) -> list[str]:
+    """Return deterministic list of backend-contract mismatches for a snapshot."""
+    mismatches: list[str] = []
+    for mismatch_error in _oauth_cache_backend_contract_mismatch_candidates(contract):
+        if mismatch_error is not None:
+            mismatches.append(mismatch_error)
+    return mismatches
+
+
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
     contract = _oauth_cache_backend_contract_snapshot()
-    for mismatch_error in _oauth_cache_backend_contract_mismatch_candidates(contract):
-        if mismatch_error is not None:
-            return mismatch_error
+    mismatches = _oauth_cache_backend_contract_mismatches(contract)
+    if mismatches:
+        return mismatches[0]
     return None
 
 

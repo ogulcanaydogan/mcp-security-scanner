@@ -88,6 +88,24 @@ def test_build_pypi_retry_wait_message_includes_next_attempt():
     assert message == "sleep_seconds=7 next_attempt=3"
 
 
+def test_build_pypi_lookup_failed_message_is_deterministic():
+    module = _load_release_consistency_module()
+
+    message = module._build_pypi_lookup_failed_message(returncode=1, combined_output="network timeout")
+    assert message == "rc=1 output=network timeout"
+
+
+def test_build_pypi_visibility_failed_message_is_deterministic():
+    module = _load_release_consistency_module()
+
+    message = module._build_pypi_visibility_failed_message(
+        expected_version="1.0.28",
+        last_status="version_not_visible",
+        last_output="available=1.0.27",
+    )
+    assert message == "expected=1.0.28 last_status=version_not_visible last_output=available=1.0.27"
+
+
 def test_verify_pypi_visibility_logs_retry_then_success_deterministically(monkeypatch, capsys):
     module = _load_release_consistency_module()
 

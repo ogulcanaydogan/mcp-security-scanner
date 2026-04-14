@@ -1,6 +1,6 @@
 # MCP Security Scanner — Repository Index
 
-Current index for the implemented Sprint 1-10D scope, with Sprint 10D release closure completed at `v1.0.27`.
+Current index for the implemented Sprint 1-10E scope, with Sprint 10E release closure completed at `v1.0.28`.
 
 ## Status Snapshot
 
@@ -83,6 +83,7 @@ Current index for the implemented Sprint 1-10D scope, with Sprint 10D release cl
 - Sprint 10B: done (stabilization-only hardening with fail-closed remote dispatch under contract drift and deterministic attempt-scoped PyPI visibility retry/failure diagnostics)
 - Sprint 10C: done (post-freeze provider discovery gate with objective shortlist scoring and locked next target: Sprint 10D `gitea_actions_variables`)
 - Sprint 10D: done (advanced OAuth cache backend v30 with `gitea_actions_variables`, env-token auth, pre-provisioned repository variable model)
+- Sprint 10E: done (stabilization-only hardening with shared deterministic contract-mismatch collection and deterministic PyPI visibility diagnostics helper builders, runtime behavior unchanged)
 
 ## Top-Level Docs
 
@@ -212,5 +213,5 @@ Coverage threshold is enforced at `>=80%`.
 
 ## Current Deferred Backlog (Post-1.0)
 
-- Current target (Sprint 10E planning baseline): stabilization-first follow-up after Sprint 10D release completion.
+- Current target (Sprint 10F discovery/planning baseline): next provider target selection after Sprint 10E stabilization release closure.
 - additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; Sprint 8AA established the shared backend dispatch/contract baseline used for post-1.0 provider onboarding

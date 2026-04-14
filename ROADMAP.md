@@ -2,17 +2,19 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.27` after Sprint 10D provider onboarding.
+- Release line is stable at `v1.0.28` after Sprint 10E stabilization hardening.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 - Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
 - Sprint `10B` stabilization-only hardening is implemented with full release closure.
-- Sprint `10C` discovery gate is completed and Sprint `10D` provider target is now implemented.
+- Sprint `10C` discovery gate is completed and Sprint `10D` provider target is implemented.
+- Sprint `10E` stabilization-only hardening is implemented with full release closure.
 
 ## Current Target
 
-Sprint 10E Stabilization Planning Baseline:
-  - no new provider in current target window
+Sprint 10F Discovery/Planning Baseline:
+  - no implementation changes in current target window
+  - next provider target will be locked with discovery matrix scoring
   - preserve runtime contracts (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
   - keep release model patch-only and OIDC publish-safe
 
@@ -96,6 +98,22 @@ Sprint 10E Stabilization Planning Baseline:
   - `persistent=false` remote bypass preserved
   - `compare` contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
   - released as `v1.0.27` with full CI/tag publish closure
+
+### Sprint 10E Completed Scope (Stabilization-Only)
+
+- Runtime behavior unchanged:
+  - lookup order and persistent-cache contracts preserved
+  - pre-provisioned-only write model preserved
+  - provider failure paths remain non-fatal bypass
+  - `cache rotate` remains local-only
+- OAuth cache contract hardening:
+  - canonical mismatch collection now runs through shared deterministic helper
+  - contract drift diagnostics still fail closed and preserve strict mismatch ordering
+- Release-consistency hardening:
+  - PyPI visibility lookup-failed and terminal failure diagnostics now share deterministic helper builders
+  - official-index + no-cache visibility semantics unchanged
+- Acceptance (completed):
+  - released as `v1.0.28` with full CI/tag publish closure
 
 ## v1.0 GA Status
 
