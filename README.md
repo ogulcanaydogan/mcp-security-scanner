@@ -105,6 +105,7 @@ flowchart LR
 - Post-freeze stabilization hardening (Sprint 10B): fail-closed remote dispatch guard under backend-contract drift and deterministic attempt-scoped PyPI visibility retry/failure diagnostics (runtime behavior unchanged)
 - Post-freeze provider expansion (Sprint 10D): added `gitea_actions_variables` backend (env-token auth, pre-provisioned repository variable model)
 - Post-freeze stabilization hardening (Sprint 10E): centralized contract-mismatch collection helper and deterministic PyPI visibility diagnostics helper builders (runtime behavior unchanged)
+- Post-freeze provider discovery gate (Sprint 10F): shortlist locked and next sprint target selected (`forgejo_actions_variables` for Sprint 10G)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1036,8 +1037,8 @@ Current quality gate:
 
 Current release target:
 - latest published line is `1.0.28` (Sprint 10E stabilization hardening complete).
-- next target is Sprint 10F discovery/planning baseline (post-10E provider selection cycle).
+- next target is Sprint 10G provider onboarding (locked by Sprint 10F discovery gate): `forgejo_actions_variables`.
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):
-- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
+- additional persistent secret-store providers beyond `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `forgejo_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, and `sqlite_kv`; backend onboarding uses the shared dispatch/contract baseline from Sprint 8AA.
