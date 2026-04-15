@@ -3266,6 +3266,51 @@ class TestCLIHelpers:
         assert settings.gitea_token_env == "GITEA_TOKEN"
         assert settings.gitea_api_url == "https://gitea.com/api/v1"
 
+    def test_coerce_oauth_cache_settings_accepts_forgejo_backend(self):
+        """OAuth cache settings should accept forgejo_actions_variables backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "forgejo_actions_variables",
+                    "forgejo_repository": "acme/mcp-security-scanner",
+                    "forgejo_variable_name": "MCP_OAUTH_CACHE",
+                    "forgejo_token_env": "FORGEJO_TOKEN_PROD",
+                    "forgejo_api_url": "https://forgejo.example.com/api/v1",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "forgejo_actions_variables"
+        assert settings.forgejo_repository == "acme/mcp-security-scanner"
+        assert settings.forgejo_variable_name == "MCP_OAUTH_CACHE"
+        assert settings.forgejo_token_env == "FORGEJO_TOKEN_PROD"
+        assert settings.forgejo_api_url == "https://forgejo.example.com/api/v1"
+
+    def test_coerce_oauth_cache_settings_sets_forgejo_defaults(self):
+        """OAuth cache settings should apply default forgejo_actions_variables optional values."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "forgejo_actions_variables",
+                    "forgejo_repository": "acme/mcp-security-scanner",
+                    "forgejo_variable_name": "MCP_OAUTH_CACHE",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.forgejo_token_env == "FORGEJO_TOKEN"
+        assert settings.forgejo_api_url == "https://codeberg.org/api/v1"
+
     def test_coerce_oauth_cache_settings_accepts_consul_backend(self):
         """OAuth cache settings should accept consul_kv backend with required fields."""
         settings, error = cli_module._coerce_oauth_cache_settings(
@@ -4369,6 +4414,51 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "gitea_repository": "acme/mcp-security-scanner"},
                 "only supported when auth.cache.backend='gitea_actions_variables'",
+            ),
+            (
+                {"backend": "forgejo_actions_variables"},
+                "auth.cache.forgejo_repository is required",
+            ),
+            (
+                {"backend": "forgejo_actions_variables", "forgejo_repository": "acme"},
+                "auth.cache.forgejo_repository must match '<owner>/<repo>' format.",
+            ),
+            (
+                {
+                    "backend": "forgejo_actions_variables",
+                    "forgejo_repository": "acme/mcp-security-scanner",
+                },
+                "auth.cache.forgejo_variable_name is required",
+            ),
+            (
+                {
+                    "backend": "forgejo_actions_variables",
+                    "forgejo_repository": "acme/mcp-security-scanner",
+                    "forgejo_variable_name": "INVALID KEY",
+                },
+                "auth.cache.forgejo_variable_name must match environment-style key naming rules.",
+            ),
+            (
+                {
+                    "backend": "forgejo_actions_variables",
+                    "forgejo_repository": "acme/mcp-security-scanner",
+                    "forgejo_variable_name": "MCP_OAUTH_CACHE",
+                    "forgejo_token_env": "9INVALID",
+                },
+                "auth.cache.forgejo_token_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "forgejo_actions_variables",
+                    "forgejo_repository": "acme/mcp-security-scanner",
+                    "forgejo_variable_name": "MCP_OAUTH_CACHE",
+                    "forgejo_api_url": "http://forgejo.example.com/api/v1",
+                },
+                "auth.cache.forgejo_api_url must be a valid https URL.",
+            ),
+            (
+                {"backend": "local", "forgejo_repository": "acme/mcp-security-scanner"},
+                "only supported when auth.cache.backend='forgejo_actions_variables'",
             ),
             (
                 {"backend": "consul_kv"},
@@ -8880,6 +8970,280 @@ class TestCLIHelpers:
                 gitea_repository="acme/mcp-security-scanner",
                 gitea_variable_name="MCP_OAUTH_CACHE",
                 gitea_token_env="GITEA_TOKEN",
+            ),
+        )
+
+        assert seen_entries == {}
+
+    def test_build_forgejo_variable_path_encodes_variable_name(self):
+        """Forgejo variable path should URL-encode variable-name segment."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="forgejo-prod",
+            backend="forgejo_actions_variables",
+            forgejo_repository="acme/mcp-security-scanner",
+            forgejo_variable_name="MCP OAUTH/CACHE",
+        )
+
+        path = cli_module._build_forgejo_variable_path(cache_settings=settings)
+
+        assert path == "/repos/acme/mcp-security-scanner/actions/variables/MCP%20OAUTH%2FCACHE"
+
+    def test_read_forgejo_payload_supports_value_and_data_fallback(self, monkeypatch):
+        """Forgejo reader should parse envelope from value and data payload keys."""
+        monkeypatch.setenv("FORGEJO_TOKEN", "forgejo-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeForgejoClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert path == "/repos/acme/mcp-security-scanner/actions/variables/MCP_OAUTH_CACHE"
+                FakeForgejoClient.call_count += 1
+                if FakeForgejoClient.call_count == 1:
+                    return FakeResponse(
+                        status_code=200,
+                        json_data={
+                            "value": json.dumps(
+                                {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+                            )
+                        },
+                    )
+                return FakeResponse(
+                    status_code=200,
+                    json_data={
+                        "data": json.dumps({"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}})
+                    },
+                )
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeForgejoClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="forgejo-prod",
+            backend="forgejo_actions_variables",
+            forgejo_repository="acme/mcp-security-scanner",
+            forgejo_variable_name="MCP_OAUTH_CACHE",
+            forgejo_token_env="FORGEJO_TOKEN",
+            forgejo_api_url="https://forgejo.example.com/api/v1",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        assert first.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert second.get("schema_version") == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+
+    def test_read_forgejo_payload_bypasses_errors_and_missing_variable(self, monkeypatch):
+        """Forgejo reader should fail closed for errors and map 404 to empty envelope."""
+        monkeypatch.setenv("FORGEJO_TOKEN", "forgejo-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object, json_error: bool = False) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+                self._json_error = json_error
+
+            def json(self) -> object:
+                if self._json_error:
+                    raise ValueError("bad-json")
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeForgejoClient:
+            call_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del path, kwargs
+                FakeForgejoClient.call_count += 1
+                if FakeForgejoClient.call_count == 1:
+                    return FakeResponse(status_code=404, json_data={})
+                if FakeForgejoClient.call_count == 2:
+                    return FakeResponse(status_code=500, json_data={})
+                if FakeForgejoClient.call_count == 3:
+                    return FakeResponse(status_code=200, json_data={}, json_error=True)
+                return FakeResponse(status_code=200, json_data={"value": "{invalid-json"})
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeForgejoClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="forgejo-prod",
+            backend="forgejo_actions_variables",
+            forgejo_repository="acme/mcp-security-scanner",
+            forgejo_variable_name="MCP_OAUTH_CACHE",
+            forgejo_token_env="FORGEJO_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings)
+        assert isinstance(first, dict)
+        assert first.get("entries") == {}
+        assert second is None
+        assert third is None
+        assert fourth is None
+
+    def test_forgejo_write_success_and_bypass_paths(self, monkeypatch):
+        """Forgejo writer should support success flow and fail-closed preflight/post paths."""
+        monkeypatch.setenv("FORGEJO_TOKEN", "forgejo-token-test")
+
+        class FakeResponse:
+            def __init__(self, *, status_code: int, json_data: object) -> None:
+                self.status_code = status_code
+                self._json_data = json_data
+
+            def json(self) -> object:
+                return self._json_data
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise RuntimeError(f"status={self.status_code}")
+
+        class FakeForgejoClient:
+            init_count = 0
+
+            def __init__(self, **kwargs: object) -> None:
+                del kwargs
+                FakeForgejoClient.init_count += 1
+                self._scenario = FakeForgejoClient.init_count
+
+            def get(self, path: str, **kwargs: object) -> FakeResponse:
+                del kwargs
+                assert path == "/repos/acme/mcp-security-scanner/actions/variables/MCP_OAUTH_CACHE"
+                if self._scenario == 1:
+                    return FakeResponse(status_code=200, json_data={"value": "{}"})
+                if self._scenario == 2:
+                    return FakeResponse(status_code=404, json_data={})
+                if self._scenario == 3:
+                    return FakeResponse(status_code=500, json_data={})
+                return FakeResponse(status_code=200, json_data={"value": "{}"})
+
+            def put(self, path: str, **kwargs: object) -> FakeResponse:
+                assert path == "/repos/acme/mcp-security-scanner/actions/variables/MCP_OAUTH_CACHE"
+                if self._scenario == 1:
+                    payload = kwargs.get("json")
+                    assert isinstance(payload, dict)
+                    assert payload.get("name") == "MCP_OAUTH_CACHE"
+                    assert isinstance(payload.get("value"), str)
+                    return FakeResponse(status_code=204, json_data={})
+                raise RuntimeError("write-failed")
+
+            def close(self) -> None:
+                return None
+
+        monkeypatch.setattr(cli_module.httpx, "Client", FakeForgejoClient)
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="forgejo-prod",
+            backend="forgejo_actions_variables",
+            forgejo_repository="acme/mcp-security-scanner",
+            forgejo_variable_name="MCP_OAUTH_CACHE",
+            forgejo_token_env="FORGEJO_TOKEN",
+        )
+
+        assert cli_module._write_oauth_cache_payload_to_forgejo(cache_settings=settings, entries={}) is True
+        assert cli_module._write_oauth_cache_payload_to_forgejo(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_forgejo(cache_settings=settings, entries={}) is False
+        assert cli_module._write_oauth_cache_payload_to_forgejo(cache_settings=settings, entries={}) is False
+
+    def test_forgejo_build_client_and_required_guards(self, monkeypatch):
+        """Forgejo helpers should fail closed when token/url/identity is missing."""
+        monkeypatch.delenv("FORGEJO_TOKEN", raising=False)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="forgejo-prod",
+            backend="forgejo_actions_variables",
+            forgejo_repository="acme/mcp-security-scanner",
+            forgejo_variable_name="MCP_OAUTH_CACHE",
+            forgejo_token_env="FORGEJO_TOKEN",
+        )
+        assert cli_module._build_forgejo_http_client(cache_settings=settings) is None
+        assert cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=settings) is None
+        assert cli_module._write_oauth_cache_payload_to_forgejo(cache_settings=settings, entries={}) is False
+
+        monkeypatch.setenv("FORGEJO_TOKEN", "token")
+        assert (
+            cli_module._build_forgejo_http_client(
+                cache_settings=cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="forgejo-prod",
+                    backend="forgejo_actions_variables",
+                    forgejo_repository="acme/mcp-security-scanner",
+                    forgejo_variable_name="MCP_OAUTH_CACHE",
+                    forgejo_token_env="FORGEJO_TOKEN",
+                    forgejo_api_url="   ",
+                )
+            )
+            is None
+        )
+
+        missing_settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="forgejo-prod",
+            backend="forgejo_actions_variables",
+            forgejo_repository=None,
+            forgejo_variable_name="MCP_OAUTH_CACHE",
+            forgejo_token_env="FORGEJO_TOKEN",
+        )
+        assert cli_module._read_oauth_cache_payload_from_forgejo(cache_settings=missing_settings) is None
+        assert cli_module._write_oauth_cache_payload_to_forgejo(cache_settings=missing_settings, entries={}) is False
+
+    def test_persist_forgejo_removes_deleted_in_memory_entry(self, monkeypatch):
+        """Forgejo persister should remove cache key when in-memory entry is missing."""
+        cli_module._clear_oauth_token_cache()
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_forgejo",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_forgejo", fake_write)
+
+        cli_module._persist_oauth_cache_entry_forgejo(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="forgejo-prod",
+                backend="forgejo_actions_variables",
+                forgejo_repository="acme/mcp-security-scanner",
+                forgejo_variable_name="MCP_OAUTH_CACHE",
+                forgejo_token_env="FORGEJO_TOKEN",
             ),
         )
 
@@ -14104,6 +14468,7 @@ class TestCLIHelpers:
             "github_environment_variables",
             "github_organization_variables",
             "gitea_actions_variables",
+            "forgejo_actions_variables",
             "consul_kv",
             "redis_kv",
             "cloudflare_kv",
@@ -15000,6 +15365,21 @@ class TestCLIHelpers:
                     gitea_variable_name="MCP_OAUTH_CACHE",
                     gitea_token_env="GITEA_TOKEN",
                     gitea_api_url="https://gitea.example.com/api/v1",
+                ),
+            ),
+            (
+                "_build_forgejo_http_client",
+                None,
+                "_read_oauth_cache_payload_from_forgejo",
+                "_write_oauth_cache_payload_to_forgejo",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="forgejo_actions_variables",
+                    forgejo_repository="acme/mcp-security-scanner",
+                    forgejo_variable_name="MCP_OAUTH_CACHE",
+                    forgejo_token_env="FORGEJO_TOKEN",
+                    forgejo_api_url="https://forgejo.example.com/api/v1",
                 ),
             ),
             (

@@ -2,21 +2,21 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.28` after Sprint 10E stabilization hardening and Sprint 10F discovery closure.
+- Release line is stable at `v1.0.29` after Sprint 10G provider onboarding closure.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 - Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
 - Sprint `10B` stabilization-only hardening is implemented with full release closure.
 - Sprint `10C` discovery gate is completed and Sprint `10D` provider target is implemented.
 - Sprint `10E` stabilization-only hardening is implemented with full release closure.
-- Sprint `10F` discovery gate is completed and Sprint `10G` provider target is locked.
+- Sprint `10F` discovery gate is completed and Sprint `10G` provider target is implemented.
 
 ## Current Target
 
-Sprint 10G Provider Onboarding Target (locked by Sprint 10F):
-  - winner backend: `forgejo_actions_variables`
-  - onboarding scope stays pre-provisioned-only and env-token based (no create path)
+Sprint 10H Stabilization Target:
+  - no new backend onboarding
   - preserve runtime contracts (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
+  - harden contract/CI determinism with behavior-preserving changes only
   - keep release model patch-only and OIDC publish-safe
 
 ### Sprint 9Z Discovery Matrix (Decision Gate)
@@ -134,6 +134,26 @@ Sprint 10G Provider Onboarding Target (locked by Sprint 10F):
   - decision baseline: pre-provisioned-only, env-token auth, no create path, non-fatal bypass preserved.
 - Non-selected candidates remain in deferred provider backlog until the next selection gate.
 
+### Sprint 10G Completed Scope (`forgejo_actions_variables`)
+
+- Config/API shape:
+  - `auth.cache.backend += forgejo_actions_variables`
+  - required fields: `forgejo_repository`, `forgejo_variable_name`
+  - optional fields: `forgejo_token_env` (default `FORGEJO_TOKEN`), `forgejo_api_url` (default `https://codeberg.org/api/v1`)
+- Validation:
+  - `forgejo_*` fields are only accepted for `forgejo_actions_variables`
+  - repository must be `<owner>/<repo>`, variable key must be env-style, API URL must be `https`
+- Provider behavior:
+  - pre-provisioned-only variable update path (no create)
+  - auth uses env token only
+  - read/write/provider/auth/parse/network errors remain non-fatal bypass
+  - token/secret plaintext is not emitted into findings/logs
+- Acceptance (completed):
+  - dispatch completeness includes `forgejo_actions_variables`
+  - `persistent=false` remote bypass preserved
+  - `compare` contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
+  - released as `v1.0.29` with full CI/tag publish closure
+
 ## v1.0 GA Status
 
 - `v1.0.0` GA published successfully.
@@ -144,7 +164,7 @@ Sprint 10G Provider Onboarding Target (locked by Sprint 10F):
 ## Post-1.0 Backlog
 
 - Sprint 10A onboarding (`openbao_kv`) and Sprint 10D onboarding (`gitea_actions_variables`) are complete.
-- Sprint 10F discovery gate is complete and Sprint 10G onboarding target is locked (`forgejo_actions_variables`).
+- Sprint 10G onboarding (`forgejo_actions_variables`) is complete; next target is Sprint 10H stabilization-only hardening.
 - Additional persistent secret-store providers beyond:
   - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `forgejo_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`
 - Optional report/visual schema improvements that do not break contracts.

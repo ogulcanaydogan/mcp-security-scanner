@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-10F Implementation State
+# Setup Complete — Sprint 1-10G Implementation State
 
-This file records the actual implementation status after Sprint 10F.
+This file records the actual implementation status after Sprint 10G.
 
 ## Completed Work
 
@@ -1414,6 +1414,20 @@ This file records the actual implementation status after Sprint 10F.
   - target release: `v1.0.29`
   - decision-complete scope fixed: env-token model, pre-provisioned-only reads/updates, non-fatal bypass preserved, local-only `cache rotate` preserved.
 - Non-selected candidates remain in deferred provider backlog until the next selection gate.
+
+### Sprint 10G (Post-Freeze Provider Onboarding: `forgejo_actions_variables`)
+
+- Added backend `auth.cache.backend=forgejo_actions_variables` with pre-provisioned-only repository variable model.
+- Config contract:
+  - required: `forgejo_repository`, `forgejo_variable_name`
+  - optional: `forgejo_token_env` (default `FORGEJO_TOKEN`), `forgejo_api_url` (default `https://codeberg.org/api/v1`)
+- Validation and runtime behavior:
+  - `forgejo_*` fields are backend-scoped and validated (`owner/repo`, env-style variable key, `https` API URL)
+  - create path remains disabled; provider/auth/permission/parse/network failures stay non-fatal bypass
+  - lookup order and local-only `cache rotate` behavior are unchanged
+- Dispatch/contract integration:
+  - canonical `supported ↔ spec/load/persist` completeness includes `forgejo_actions_variables`
+- Release finalized as `v1.0.29` with GitHub Release + PyPI visibility verification.
 
 ## Exit Code Contract (Current)
 
