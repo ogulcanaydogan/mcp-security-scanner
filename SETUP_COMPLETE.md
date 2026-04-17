@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-10H Implementation State
+# Setup Complete — Sprint 1-10I Implementation State
 
-This file records the actual implementation status after Sprint 10H.
+This file records the actual implementation status after Sprint 10I.
 
 ## Completed Work
 
@@ -1441,6 +1441,22 @@ This file records the actual implementation status after Sprint 10H.
 - Runtime contracts unchanged:
   - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
 - Release finalized as `v1.0.30` with GitHub Release + PyPI visibility verification.
+
+### Sprint 10I (Post-Freeze Provider Discovery Gate)
+
+- No new backend added; sprint scope is discovery/decision locking only.
+- Provider shortlist was evaluated with objective criteria:
+  - auth model
+  - pre-provisioned-only fit
+  - contract risk
+  - dependency impact
+  - test/CI cost
+  - release risk
+- Locked next sprint target:
+  - Sprint 10J winner: `nats_kv`
+  - target release: `v1.0.31`
+  - decision baseline: env-token auth, pre-provisioned-only writes, no create path, non-fatal bypass preserved.
+- Non-selected candidates remain in deferred provider backlog until the next selection gate.
 
 ## Exit Code Contract (Current)
 
