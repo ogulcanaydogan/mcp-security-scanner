@@ -48,6 +48,22 @@ def _build_pypi_retry_wait_message(*, sleep_seconds: int, next_attempt: int) -> 
     return f"sleep_seconds={sleep_seconds} next_attempt={next_attempt}"
 
 
+def _build_pypi_visibility_start_message(
+    *,
+    package_name: str,
+    expected_version: str,
+    index_url: str,
+    attempts: int,
+    pip_timeout_seconds: int,
+) -> str:
+    """Build deterministic visibility-check context emitted before retry loop."""
+    return (
+        "package="
+        f"{package_name} expected={expected_version} index={index_url} "
+        f"attempts={attempts} timeout={pip_timeout_seconds}"
+    )
+
+
 def _build_pypi_lookup_failed_message(*, returncode: int, combined_output: str) -> str:
     """Build deterministic lookup-failed diagnostics for visibility retries."""
     return f"rc={returncode} output={combined_output}"
@@ -264,6 +280,19 @@ def _verify_pypi_version_visibility(
         pip_timeout_seconds=pip_timeout_seconds,
     )
     pip_env = _build_pypi_visibility_pip_env(index_url)
+
+    _emit_pypi_visibility_event(
+        attempt=1,
+        attempts=attempts,
+        status="check_start",
+        message=_build_pypi_visibility_start_message(
+            package_name=package_name,
+            expected_version=expected_version,
+            index_url=index_url,
+            attempts=attempts,
+            pip_timeout_seconds=pip_timeout_seconds,
+        ),
+    )
 
     last_output = ""
     last_status = "uninitialized"

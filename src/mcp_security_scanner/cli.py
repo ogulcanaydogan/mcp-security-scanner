@@ -402,12 +402,25 @@ def _oauth_cache_backend_contract_mismatches(contract: Mapping[str, Any]) -> lis
     return mismatches
 
 
+def _annotate_oauth_cache_contract_mismatch(first_mismatch: str, *, total_mismatches: int) -> str:
+    """Annotate first mismatch with deterministic mismatch-count context."""
+    if total_mismatches <= 1:
+        return first_mismatch
+    annotation = f" [total_mismatches={total_mismatches}]"
+    if first_mismatch.endswith("."):
+        return f"{first_mismatch[:-1]}{annotation}."
+    return f"{first_mismatch}{annotation}"
+
+
 def _oauth_cache_backend_contract_error() -> str | None:
     """Return backend-contract mismatch error when canonical OAuth cache maps drift."""
     contract = _oauth_cache_backend_contract_snapshot()
     mismatches = _oauth_cache_backend_contract_mismatches(contract)
     if mismatches:
-        return mismatches[0]
+        return _annotate_oauth_cache_contract_mismatch(
+            mismatches[0],
+            total_mismatches=len(mismatches),
+        )
     return None
 
 

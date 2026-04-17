@@ -88,6 +88,19 @@ def test_build_pypi_retry_wait_message_includes_next_attempt():
     assert message == "sleep_seconds=7 next_attempt=3"
 
 
+def test_build_pypi_visibility_start_message_is_deterministic():
+    module = _load_release_consistency_module()
+
+    message = module._build_pypi_visibility_start_message(
+        package_name="demo-pkg",
+        expected_version="1.0.29",
+        index_url="https://pypi.org/simple",
+        attempts=12,
+        pip_timeout_seconds=15,
+    )
+    assert message == "package=demo-pkg expected=1.0.29 index=https://pypi.org/simple attempts=12 timeout=15"
+
+
 def test_build_pypi_lookup_failed_message_is_deterministic():
     module = _load_release_consistency_module()
 
@@ -142,6 +155,10 @@ def test_verify_pypi_visibility_logs_retry_then_success_deterministically(monkey
     )
 
     output = capsys.readouterr().out
+    assert (
+        "[pypi-visibility attempt 1/2] status=check_start "
+        "package=demo-pkg expected=1.0.21 index=https://pypi.org/simple attempts=2 timeout=15"
+    ) in output
     assert "[pypi-visibility attempt 1/2] status=lookup_failed" in output
     assert "0xADDR" in output
     assert "0x10b99e5d0" not in output

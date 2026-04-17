@@ -107,6 +107,7 @@ flowchart LR
 - Post-freeze stabilization hardening (Sprint 10E): centralized contract-mismatch collection helper and deterministic PyPI visibility diagnostics helper builders (runtime behavior unchanged)
 - Post-freeze provider discovery gate (Sprint 10F): shortlist locked and next sprint target selected (`forgejo_actions_variables` for Sprint 10G)
 - Post-freeze provider expansion (Sprint 10G): added `forgejo_actions_variables` backend (env-token auth, pre-provisioned repository variable model)
+- Post-freeze stabilization hardening (Sprint 10H): deterministic contract mismatch-count annotation and deterministic PyPI visibility check-start diagnostics (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1037,8 +1038,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- latest published line is `1.0.29` (Sprint 10G provider onboarding complete).
-- next target is Sprint 10H stabilization hardening (no new backend).
+- latest published line is `1.0.30` (Sprint 10H stabilization hardening complete).
+- next target is Sprint 10I provider discovery gate.
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):

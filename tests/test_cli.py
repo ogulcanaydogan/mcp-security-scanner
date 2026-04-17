@@ -14612,6 +14612,24 @@ class TestCLIHelpers:
         contract = cli_module._oauth_cache_backend_contract_snapshot()
         assert cli_module._oauth_cache_backend_contract_mismatches(contract) == []
 
+    def test_annotate_oauth_cache_contract_mismatch_returns_original_for_single_mismatch(self):
+        """Single mismatch should not add total-mismatch annotation."""
+        message = (
+            "auth.cache backend contract is inconsistent (supported backend set mismatch: missing=['x'], extra=[])."
+        )
+        assert cli_module._annotate_oauth_cache_contract_mismatch(message, total_mismatches=1) == message
+
+    def test_annotate_oauth_cache_contract_mismatch_adds_total_count_for_multiple(self):
+        """Multiple mismatches should append deterministic total-mismatch context."""
+        message = (
+            "auth.cache backend contract is inconsistent (supported backend set mismatch: missing=['x'], extra=[])."
+        )
+        annotated = cli_module._annotate_oauth_cache_contract_mismatch(message, total_mismatches=3)
+        assert annotated == (
+            "auth.cache backend contract is inconsistent (supported backend set mismatch: "
+            "missing=['x'], extra=[]) [total_mismatches=3]."
+        )
+
     def test_oauth_cache_backend_contract_mismatches_returns_ordered_non_null_errors(self, monkeypatch):
         """Mismatch collector should preserve deterministic ordering of non-null errors."""
         broken_supported = set(cli_module._SUPPORTED_OAUTH_CACHE_BACKENDS)
@@ -14640,6 +14658,23 @@ class TestCLIHelpers:
         assert contract_error is not None
         assert "supported backend set mismatch" in contract_error
         assert "remote loader map mismatch" not in contract_error
+
+    def test_oauth_cache_backend_contract_error_appends_total_mismatch_count(self, monkeypatch):
+        """Contract error should include deterministic total mismatch count when multiple drifts exist."""
+        monkeypatch.setattr(
+            cli_module,
+            "_SUPPORTED_OAUTH_CACHE_BACKENDS",
+            frozenset({cli_module._OAUTH_CACHE_BACKEND_LOCAL}),
+        )
+        broken_loaders = dict(cli_module._OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS)
+        broken_loaders.pop(next(iter(broken_loaders)))
+        monkeypatch.setattr(cli_module, "_OAUTH_REMOTE_PERSISTENT_CACHE_LOADERS", broken_loaders)
+
+        contract_error = cli_module._oauth_cache_backend_contract_error()
+
+        assert contract_error is not None
+        assert "supported backend set mismatch" in contract_error
+        assert "[total_mismatches=" in contract_error
 
     def test_oauth_cache_backend_contract_error_detects_loader_source_mismatch(self, monkeypatch):
         """Backend contract helper should detect map/source drift for loader mapping."""

@@ -2,7 +2,7 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.29` after Sprint 10G provider onboarding closure.
+- Release line is stable at `v1.0.30` after Sprint 10H stabilization hardening closure.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 - Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
@@ -10,13 +10,14 @@
 - Sprint `10C` discovery gate is completed and Sprint `10D` provider target is implemented.
 - Sprint `10E` stabilization-only hardening is implemented with full release closure.
 - Sprint `10F` discovery gate is completed and Sprint `10G` provider target is implemented.
+- Sprint `10H` stabilization-only hardening is implemented with full release closure.
 
 ## Current Target
 
-Sprint 10H Stabilization Target:
-  - no new backend onboarding
-  - preserve runtime contracts (`in-memory -> persistent -> refresh -> primary`, non-fatal bypass, local-only `cache rotate`)
-  - harden contract/CI determinism with behavior-preserving changes only
+Sprint 10I Discovery Gate Target:
+  - no runtime/provider changes (decision-only sprint)
+  - evaluate next provider onboarding candidates with objective fit/risk/dependency criteria
+  - lock one winner provider with decision-complete Sprint 10J implementation scope
   - keep release model patch-only and OIDC publish-safe
 
 ### Sprint 9Z Discovery Matrix (Decision Gate)
@@ -154,6 +155,22 @@ Sprint 10H Stabilization Target:
   - `compare` contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
   - released as `v1.0.29` with full CI/tag publish closure
 
+### Sprint 10H Completed Scope (Stabilization-Only)
+
+- Runtime behavior unchanged:
+  - lookup order and persistent-cache contracts preserved
+  - pre-provisioned-only write model preserved
+  - provider failure paths remain non-fatal bypass
+  - `cache rotate` remains local-only
+- OAuth cache contract hardening:
+  - first-match contract error now includes deterministic total mismatch-count annotation when multiple drift points exist
+  - contract mismatch priority remains fail-closed and deterministic (`set` before `map/source/callable`)
+- Release-consistency hardening:
+  - deterministic `check_start` visibility event emitted before PyPI retry loop with package/version/index/attempt/timeout context
+  - official-index + no-cache visibility semantics unchanged
+- Acceptance (completed):
+  - released as `v1.0.30` with full CI/tag publish closure
+
 ## v1.0 GA Status
 
 - `v1.0.0` GA published successfully.
@@ -164,7 +181,7 @@ Sprint 10H Stabilization Target:
 ## Post-1.0 Backlog
 
 - Sprint 10A onboarding (`openbao_kv`) and Sprint 10D onboarding (`gitea_actions_variables`) are complete.
-- Sprint 10G onboarding (`forgejo_actions_variables`) is complete; next target is Sprint 10H stabilization-only hardening.
+- Sprint 10H stabilization-only hardening is complete; next target is Sprint 10I discovery gate.
 - Additional persistent secret-store providers beyond:
   - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `forgejo_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`
 - Optional report/visual schema improvements that do not break contracts.

@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-10G Implementation State
+# Setup Complete — Sprint 1-10H Implementation State
 
-This file records the actual implementation status after Sprint 10G.
+This file records the actual implementation status after Sprint 10H.
 
 ## Completed Work
 
@@ -1428,6 +1428,19 @@ This file records the actual implementation status after Sprint 10G.
 - Dispatch/contract integration:
   - canonical `supported ↔ spec/load/persist` completeness includes `forgejo_actions_variables`
 - Release finalized as `v1.0.29` with GitHub Release + PyPI visibility verification.
+
+### Sprint 10H (Post-Freeze Stabilization Hardening)
+
+- No new backend added; sprint scope is stabilization-only.
+- OAuth cache contract hardening:
+  - first contract mismatch now carries deterministic total-mismatch annotation when multiple drift points are present
+  - mismatch priority remains deterministic and fail-closed (`set` before `map/source/callable`)
+- Release consistency hardening:
+  - PyPI visibility flow now emits deterministic `check_start` event before retry loop (`package`, `expected`, `index`, `attempts`, `timeout`)
+  - official index + no-cache visibility semantics are unchanged
+- Runtime contracts unchanged:
+  - lookup order, pre-provisioned-only writes, non-fatal provider bypass, and local-only `cache rotate`
+- Release finalized as `v1.0.30` with GitHub Release + PyPI visibility verification.
 
 ## Exit Code Contract (Current)
 
