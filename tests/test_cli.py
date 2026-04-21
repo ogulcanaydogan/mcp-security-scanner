@@ -2112,6 +2112,7 @@ class TestCLICommands:
         monkeypatch.setattr(cli_module, "_build_etcd_http_client", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_postgres_connection", fail_remote_builder)
         monkeypatch.setattr(cli_module, "_build_mysql_connection", fail_remote_builder)
+        monkeypatch.setattr(cli_module, "_build_nats_kv_client", fail_remote_builder)
 
         runner = CliRunner()
         result = runner.invoke(main, ["cache", "rotate"])
@@ -3728,6 +3729,51 @@ class TestCLIHelpers:
         assert settings is not None
         assert settings.sqlite_dsn_env == "SQLITE_DSN"
 
+    def test_coerce_oauth_cache_settings_accepts_nats_backend(self):
+        """OAuth cache settings should accept nats_kv backend with required fields."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "MCP_OAUTH_CACHE",
+                    "nats_kv_key": "mcp/security/oauth/cache",
+                    "nats_servers_env": "NATS_URLS_PROD",
+                    "nats_token_env": "NATS_TOKEN_PROD",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.backend == "nats_kv"
+        assert settings.nats_kv_bucket == "MCP_OAUTH_CACHE"
+        assert settings.nats_kv_key == "mcp/security/oauth/cache"
+        assert settings.nats_servers_env == "NATS_URLS_PROD"
+        assert settings.nats_token_env == "NATS_TOKEN_PROD"
+
+    def test_coerce_oauth_cache_settings_sets_nats_defaults(self):
+        """OAuth cache settings should apply nats_kv optional defaults."""
+        settings, error = cli_module._coerce_oauth_cache_settings(
+            auth_type="oauth_client_credentials",
+            auth_value={
+                "cache": {
+                    "persistent": True,
+                    "namespace": "prod-security",
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "MCP_OAUTH_CACHE",
+                    "nats_kv_key": "mcp/security/oauth/cache",
+                }
+            },
+        )
+
+        assert error is None
+        assert settings is not None
+        assert settings.nats_servers_env == "NATS_SERVERS"
+        assert settings.nats_token_env == "NATS_TOKEN"
+
     def test_coerce_oauth_cache_settings_rejects_backend_contract_drift(self, monkeypatch):
         """OAuth cache settings should fail closed when backend contract maps are inconsistent."""
         monkeypatch.setattr(
@@ -4770,6 +4816,55 @@ class TestCLIHelpers:
             (
                 {"backend": "local", "sqlite_cache_key": "mcp/security/oauth/cache"},
                 "only supported when auth.cache.backend='sqlite_kv'",
+            ),
+            (
+                {"backend": "nats_kv"},
+                "auth.cache.nats_kv_bucket is required",
+            ),
+            (
+                {
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "MCP_OAUTH_CACHE",
+                },
+                "auth.cache.nats_kv_key is required",
+            ),
+            (
+                {
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "invalid bucket",
+                    "nats_kv_key": "mcp/security/oauth/cache",
+                },
+                "auth.cache.nats_kv_bucket must match NATS KV bucket naming rules.",
+            ),
+            (
+                {
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "MCP_OAUTH_CACHE",
+                    "nats_kv_key": "invalid key",
+                },
+                "auth.cache.nats_kv_key must match NATS KV key naming rules.",
+            ),
+            (
+                {
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "MCP_OAUTH_CACHE",
+                    "nats_kv_key": "mcp/security/oauth/cache",
+                    "nats_servers_env": "9INVALID",
+                },
+                "auth.cache.nats_servers_env must be a valid environment variable name.",
+            ),
+            (
+                {
+                    "backend": "nats_kv",
+                    "nats_kv_bucket": "MCP_OAUTH_CACHE",
+                    "nats_kv_key": "mcp/security/oauth/cache",
+                    "nats_token_env": "9INVALID",
+                },
+                "auth.cache.nats_token_env must be a valid environment variable name.",
+            ),
+            (
+                {"backend": "local", "nats_kv_bucket": "MCP_OAUTH_CACHE"},
+                "only supported when auth.cache.backend='nats_kv'",
             ),
         ],
     )
@@ -12668,6 +12763,237 @@ class TestCLIHelpers:
         )
         assert bypass_entries == {}
 
+    def test_build_nats_helpers_resolve_bucket_key_servers_and_token(self, monkeypatch):
+        """NATS helpers should normalize key, resolve defaults, and validate server URL inputs."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="nats-prod",
+            backend="nats_kv",
+            nats_kv_bucket="MCP_OAUTH_CACHE",
+            nats_kv_key="/mcp/security/oauth/cache/",
+            nats_servers_env="NATS_SERVERS",
+            nats_token_env="NATS_TOKEN",
+        )
+
+        assert cli_module._build_nats_kv_bucket(cache_settings=settings) == "MCP_OAUTH_CACHE"
+        assert cli_module._build_nats_kv_key(cache_settings=settings) == "mcp/security/oauth/cache"
+
+        monkeypatch.delenv("NATS_SERVERS", raising=False)
+        assert cli_module._build_nats_server_urls(cache_settings=settings) == ["nats://127.0.0.1:4222"]
+
+        monkeypatch.setenv("NATS_SERVERS", "nats://localhost:4222, tls://nats.example.com:4443")
+        assert cli_module._build_nats_server_urls(cache_settings=settings) == [
+            "nats://localhost:4222",
+            "tls://nats.example.com:4443",
+        ]
+
+        monkeypatch.setenv("NATS_SERVERS", "ftp://invalid")
+        assert cli_module._build_nats_server_urls(cache_settings=settings) is None
+
+        monkeypatch.setenv("NATS_TOKEN", "nats-token-value")
+        assert cli_module._build_nats_token(cache_settings=settings) == "nats-token-value"
+
+    def test_build_nats_client_and_close_guards(self, monkeypatch):
+        """NATS client builder/close helpers should fail closed and close safely."""
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="nats-prod",
+            backend="nats_kv",
+            nats_kv_bucket="MCP_OAUTH_CACHE",
+            nats_kv_key="mcp/security/oauth/cache",
+            nats_servers_env="NATS_SERVERS",
+            nats_token_env="NATS_TOKEN",
+        )
+        original_import_module = cli_module.importlib.import_module
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (
+                (_ for _ in ()).throw(ImportError("missing-nats"))
+                if module_name == "nats"
+                else original_import_module(module_name)
+            ),
+        )
+        assert cli_module._build_nats_kv_client(cache_settings=settings) is None
+
+        class FakeNatsNoConnect:
+            pass
+
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: (FakeNatsNoConnect if module_name == "nats" else original_import_module(module_name)),
+        )
+        assert cli_module._build_nats_kv_client(cache_settings=settings) is None
+
+        connect_calls: list[dict[str, object]] = []
+
+        class FakeNatsClient:
+            def __init__(self) -> None:
+                self.drain_called = 0
+                self.close_called = 0
+
+            async def drain(self) -> None:
+                self.drain_called += 1
+
+            async def close(self) -> None:
+                self.close_called += 1
+
+        class FakeNatsModule:
+            @staticmethod
+            async def connect(**kwargs: object) -> FakeNatsClient:
+                connect_calls.append(dict(kwargs))
+                return FakeNatsClient()
+
+        monkeypatch.setenv("NATS_SERVERS", "nats://localhost:4222")
+        monkeypatch.setenv("NATS_TOKEN", "token-abc")
+        monkeypatch.setattr(
+            cli_module.importlib,
+            "import_module",
+            lambda module_name: FakeNatsModule if module_name == "nats" else original_import_module(module_name),
+        )
+        built_client = cli_module._build_nats_kv_client(cache_settings=settings)
+        assert built_client is not None
+        assert connect_calls == [{"servers": ["nats://localhost:4222"], "token": "token-abc"}]
+
+        cli_module._close_nats_kv_client(built_client)
+        assert built_client.drain_called == 1
+        assert built_client.close_called == 0
+        assert cli_module._close_nats_kv_client(object()) is None
+
+    def test_read_write_nats_payload_paths(self, monkeypatch):
+        """NATS payload helpers should parse envelopes, enforce preflight, and bypass on provider errors."""
+        fake_client = object()
+        close_calls: list[object] = []
+        write_calls: list[dict[str, object]] = []
+
+        monkeypatch.setattr(cli_module, "_build_nats_kv_client", lambda *, cache_settings: fake_client)
+        monkeypatch.setattr(cli_module, "_close_nats_kv_client", lambda client: close_calls.append(client))
+
+        read_responses: list[object] = [
+            json.dumps({"schema_version": "v2", "entries": {"k": {"access_token": "t"}}}),
+            cli_module._NATS_KV_MISSING,
+            None,
+            "{invalid-json",
+        ]
+
+        def fake_read(*, client: object, bucket_name: str, key_name: str) -> object:
+            assert client is fake_client
+            assert bucket_name == "MCP_OAUTH_CACHE"
+            assert key_name == "mcp/security/oauth/cache"
+            return read_responses.pop(0)
+
+        def fake_write(*, client: object, bucket_name: str, key_name: str, raw_value: str) -> bool:
+            assert client is fake_client
+            assert bucket_name == "MCP_OAUTH_CACHE"
+            assert key_name == "mcp/security/oauth/cache"
+            parsed_payload = json.loads(raw_value)
+            write_calls.append(parsed_payload)
+            return len(write_calls) == 1
+
+        monkeypatch.setattr(cli_module, "_read_nats_kv_raw_value", fake_read)
+        monkeypatch.setattr(cli_module, "_write_nats_kv_raw_value", fake_write)
+
+        settings = cli_module.OAuthCacheSettings(
+            persistent=True,
+            namespace="nats-prod",
+            backend="nats_kv",
+            nats_kv_bucket="MCP_OAUTH_CACHE",
+            nats_kv_key="mcp/security/oauth/cache",
+            nats_servers_env="NATS_SERVERS",
+            nats_token_env="NATS_TOKEN",
+        )
+
+        first = cli_module._read_oauth_cache_payload_from_nats(cache_settings=settings)
+        second = cli_module._read_oauth_cache_payload_from_nats(cache_settings=settings)
+        third = cli_module._read_oauth_cache_payload_from_nats(cache_settings=settings)
+        fourth = cli_module._read_oauth_cache_payload_from_nats(cache_settings=settings)
+
+        assert first == {"schema_version": "v2", "entries": {"k": {"access_token": "t"}}}
+        assert second == {"schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2, "entries": {}}
+        assert third is None
+        assert fourth is None
+
+        assert (
+            cli_module._write_oauth_cache_payload_to_nats(cache_settings=settings, entries={"k": {"access_token": "t"}})
+            is True
+        )
+        assert (
+            cli_module._write_oauth_cache_payload_to_nats(
+                cache_settings=settings, entries={"k": {"access_token": "t2"}}
+            )
+            is False
+        )
+        assert write_calls[0]["schema_version"] == cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2
+        assert isinstance(write_calls[0]["updated_at"], str)
+        assert write_calls[0]["entries"] == {"k": {"access_token": "t"}}
+
+        assert len(close_calls) == 6
+
+    def test_nats_persist_and_load_helpers(self, monkeypatch):
+        """NATS loader/persister wrappers should parse entries and drop missing in-memory cache keys."""
+        cli_module._clear_oauth_token_cache()
+        real_load_entries_from_nats = cli_module._load_oauth_persistent_cache_entries_from_nats
+
+        monkeypatch.setattr(
+            cli_module,
+            "_load_oauth_persistent_cache_entries_from_nats",
+            lambda *, cache_settings: {"stale-key": {"access_token": "old-token"}},
+        )
+
+        seen_entries: dict[str, dict[str, object]] = {}
+
+        def fake_write(*, cache_settings: cli_module.OAuthCacheSettings, entries: dict[str, dict[str, object]]) -> bool:
+            del cache_settings
+            seen_entries.update(entries)
+            return True
+
+        monkeypatch.setattr(cli_module, "_write_oauth_cache_payload_to_nats", fake_write)
+
+        cli_module._persist_oauth_cache_entry_nats(
+            cache_key="stale-key",
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="nats-prod",
+                backend="nats_kv",
+                nats_kv_bucket="MCP_OAUTH_CACHE",
+                nats_kv_key="mcp/security/oauth/cache",
+            ),
+        )
+        assert seen_entries == {}
+
+        monkeypatch.setattr(
+            cli_module,
+            "_read_oauth_cache_payload_from_nats",
+            lambda *, cache_settings: {
+                "schema_version": cli_module._OAUTH_CACHE_SCHEMA_VERSION_V2,
+                "entries": {"k": {"access_token": "t"}},
+            },
+        )
+        parsed_entries = real_load_entries_from_nats(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="nats-prod",
+                backend="nats_kv",
+                nats_kv_bucket="MCP_OAUTH_CACHE",
+                nats_kv_key="mcp/security/oauth/cache",
+            )
+        )
+        assert parsed_entries == {"k": {"access_token": "t"}}
+
+        monkeypatch.setattr(cli_module, "_read_oauth_cache_payload_from_nats", lambda *, cache_settings: None)
+        bypass_entries = real_load_entries_from_nats(
+            cache_settings=cli_module.OAuthCacheSettings(
+                persistent=True,
+                namespace="nats-prod",
+                backend="nats_kv",
+                nats_kv_bucket="MCP_OAUTH_CACHE",
+                nats_kv_key="mcp/security/oauth/cache",
+            )
+        )
+        assert bypass_entries == {}
+
     def test_resolve_oauth_cache_key_set_prefers_keyring(self, monkeypatch):
         """Key-set resolver should prefer keyring over fallback key file."""
         keyring_calls = {"value": 0}
@@ -14479,6 +14805,7 @@ class TestCLIHelpers:
             "dynamodb_kv",
             "s3_object_kv",
             "sqlite_kv",
+            "nats_kv",
         }
 
     def test_oauth_cache_remote_expected_handler_maps_are_derived_from_specs(self):
@@ -15552,6 +15879,21 @@ class TestCLIHelpers:
                     backend="sqlite_kv",
                     sqlite_cache_key="mcp/security/oauth/cache",
                     sqlite_dsn_env="SQLITE_DSN",
+                ),
+            ),
+            (
+                "_build_nats_kv_client",
+                None,
+                "_read_oauth_cache_payload_from_nats",
+                "_write_oauth_cache_payload_to_nats",
+                cli_module.OAuthCacheSettings(
+                    persistent=True,
+                    namespace="contract",
+                    backend="nats_kv",
+                    nats_kv_bucket="MCP_OAUTH_CACHE",
+                    nats_kv_key="mcp/security/oauth/cache",
+                    nats_servers_env="NATS_SERVERS",
+                    nats_token_env="NATS_TOKEN",
                 ),
             ),
         ],

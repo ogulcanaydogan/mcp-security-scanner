@@ -84,6 +84,7 @@ _OAUTH_CACHE_BACKEND_MONGO_KV = "mongo_kv"
 _OAUTH_CACHE_BACKEND_DYNAMODB_KV = "dynamodb_kv"
 _OAUTH_CACHE_BACKEND_S3_OBJECT_KV = "s3_object_kv"
 _OAUTH_CACHE_BACKEND_SQLITE_KV = "sqlite_kv"
+_OAUTH_CACHE_BACKEND_NATS_KV = "nats_kv"
 
 
 @dataclass(frozen=True)
@@ -238,6 +239,10 @@ _OAUTH_REMOTE_PERSISTENT_CACHE_BACKEND_SPECS: dict[str, tuple[str, str]] = {
     _OAUTH_CACHE_BACKEND_SQLITE_KV: (
         "_load_oauth_persistent_cache_entries_from_sqlite",
         "_persist_oauth_cache_entry_sqlite",
+    ),
+    _OAUTH_CACHE_BACKEND_NATS_KV: (
+        "_load_oauth_persistent_cache_entries_from_nats",
+        "_persist_oauth_cache_entry_nats",
     ),
 }
 
@@ -491,6 +496,10 @@ _SQLITE_DEFAULT_DSN_ENV = "SQLITE_DSN"
 _SQLITE_OAUTH_CACHE_TABLE = "mcp_oauth_cache_store"
 _SQLITE_OAUTH_CACHE_KEY_COLUMN = "cache_key"
 _SQLITE_OAUTH_CACHE_PAYLOAD_COLUMN = "payload_json"
+_NATS_DEFAULT_SERVERS_ENV = "NATS_SERVERS"
+_NATS_DEFAULT_TOKEN_ENV = "NATS_TOKEN"
+_NATS_DEFAULT_SERVER_URL = "nats://127.0.0.1:4222"
+_NATS_KV_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -585,6 +594,10 @@ class OAuthCacheSettings:
     s3_object_key: str | None = None
     sqlite_cache_key: str | None = None
     sqlite_dsn_env: str | None = None
+    nats_kv_bucket: str | None = None
+    nats_kv_key: str | None = None
+    nats_servers_env: str | None = None
+    nats_token_env: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2780,6 +2793,10 @@ def _coerce_oauth_cache_settings(
             "s3_object_key",
             "sqlite_cache_key",
             "sqlite_dsn_env",
+            "nats_kv_bucket",
+            "nats_kv_key",
+            "nats_servers_env",
+            "nats_token_env",
         }
     ]
     if unknown_fields:
@@ -2807,7 +2824,7 @@ def _coerce_oauth_cache_settings(
             "cf_api_token_env, cf_api_url, etcd_key, etcd_api_url, etcd_token_env, "
             "postgres_cache_key, postgres_dsn_env, mysql_cache_key, mysql_dsn_env, "
             "mongo_cache_key, mongo_dsn_env, dynamodb_cache_key, s3_bucket, s3_object_key, "
-            "sqlite_cache_key, sqlite_dsn_env.",
+            "sqlite_cache_key, sqlite_dsn_env, nats_kv_bucket, nats_kv_key, nats_servers_env, nats_token_env.",
         )
 
     persistent_value = cache_value.get("persistent", False)
@@ -3601,6 +3618,40 @@ def _coerce_oauth_cache_settings(
     if sqlite_dsn_env is not None and not _is_valid_env_var_name(sqlite_dsn_env):
         return None, "auth.cache.sqlite_dsn_env must be a valid environment variable name."
 
+    nats_kv_bucket_value = cache_value.get("nats_kv_bucket")
+    if nats_kv_bucket_value is not None and (
+        not isinstance(nats_kv_bucket_value, str) or not nats_kv_bucket_value.strip()
+    ):
+        return None, "auth.cache.nats_kv_bucket must be a non-empty string when provided."
+    nats_kv_bucket = nats_kv_bucket_value.strip() if isinstance(nats_kv_bucket_value, str) else None
+    if nats_kv_bucket is not None and not _is_valid_nats_kv_bucket(nats_kv_bucket):
+        return None, "auth.cache.nats_kv_bucket must match NATS KV bucket naming rules."
+
+    nats_kv_key_value = cache_value.get("nats_kv_key")
+    if nats_kv_key_value is not None and (not isinstance(nats_kv_key_value, str) or not nats_kv_key_value.strip()):
+        return None, "auth.cache.nats_kv_key must be a non-empty string when provided."
+    nats_kv_key = nats_kv_key_value.strip() if isinstance(nats_kv_key_value, str) else None
+    if nats_kv_key is not None and not _is_valid_nats_kv_key(nats_kv_key):
+        return None, "auth.cache.nats_kv_key must match NATS KV key naming rules."
+
+    nats_servers_env_value = cache_value.get("nats_servers_env")
+    if nats_servers_env_value is not None and (
+        not isinstance(nats_servers_env_value, str) or not nats_servers_env_value.strip()
+    ):
+        return None, "auth.cache.nats_servers_env must be a non-empty string when provided."
+    nats_servers_env = nats_servers_env_value.strip() if isinstance(nats_servers_env_value, str) else None
+    if nats_servers_env is not None and not _is_valid_env_var_name(nats_servers_env):
+        return None, "auth.cache.nats_servers_env must be a valid environment variable name."
+
+    nats_token_env_value = cache_value.get("nats_token_env")
+    if nats_token_env_value is not None and (
+        not isinstance(nats_token_env_value, str) or not nats_token_env_value.strip()
+    ):
+        return None, "auth.cache.nats_token_env must be a non-empty string when provided."
+    nats_token_env = nats_token_env_value.strip() if isinstance(nats_token_env_value, str) else None
+    if nats_token_env is not None and not _is_valid_env_var_name(nats_token_env):
+        return None, "auth.cache.nats_token_env must be a valid environment variable name."
+
     if backend != _OAUTH_CACHE_BACKEND_DOPPLER_SECRETS and (
         doppler_project is not None
         or doppler_config is not None
@@ -4029,6 +4080,27 @@ def _coerce_oauth_cache_settings(
         return (
             None,
             "auth.cache.sqlite_cache_key is required when auth.cache.backend='sqlite_kv'.",
+        )
+    if backend != _OAUTH_CACHE_BACKEND_NATS_KV and (
+        nats_kv_bucket is not None
+        or nats_kv_key is not None
+        or nats_servers_env is not None
+        or nats_token_env is not None
+    ):
+        return (
+            None,
+            "auth.cache.nats_kv_bucket, auth.cache.nats_kv_key, auth.cache.nats_servers_env, and "
+            "auth.cache.nats_token_env are only supported when auth.cache.backend='nats_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_NATS_KV and nats_kv_bucket is None:
+        return (
+            None,
+            "auth.cache.nats_kv_bucket is required when auth.cache.backend='nats_kv'.",
+        )
+    if backend == _OAUTH_CACHE_BACKEND_NATS_KV and nats_kv_key is None:
+        return (
+            None,
+            "auth.cache.nats_kv_key is required when auth.cache.backend='nats_kv'.",
         )
 
     if backend == _OAUTH_CACHE_BACKEND_AWS_SECRETS_MANAGER:
@@ -5077,6 +5149,18 @@ def _coerce_oauth_cache_settings(
                 if sqlite_dsn_env is not None
                 else (_SQLITE_DEFAULT_DSN_ENV if backend == _OAUTH_CACHE_BACKEND_SQLITE_KV else None)
             ),
+            nats_kv_bucket=nats_kv_bucket,
+            nats_kv_key=nats_kv_key,
+            nats_servers_env=(
+                nats_servers_env
+                if nats_servers_env is not None
+                else (_NATS_DEFAULT_SERVERS_ENV if backend == _OAUTH_CACHE_BACKEND_NATS_KV else None)
+            ),
+            nats_token_env=(
+                nats_token_env
+                if nats_token_env is not None
+                else (_NATS_DEFAULT_TOKEN_ENV if backend == _OAUTH_CACHE_BACKEND_NATS_KV else None)
+            ),
         ),
         None,
     )
@@ -5254,6 +5338,22 @@ def _is_valid_dynamodb_cache_key(value: str) -> bool:
 
 def _is_valid_sqlite_cache_key(value: str) -> bool:
     """Validate SQLite cache row key shape."""
+    normalized = value.strip().strip("/")
+    if not normalized:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.:\-/]{1,512}", normalized) is not None
+
+
+def _is_valid_nats_kv_bucket(value: str) -> bool:
+    """Validate NATS JetStream KV bucket naming shape."""
+    normalized = value.strip()
+    if not normalized:
+        return False
+    return re.fullmatch(r"[A-Za-z0-9_.\-]{1,255}", normalized) is not None
+
+
+def _is_valid_nats_kv_key(value: str) -> bool:
+    """Validate NATS JetStream KV key shape."""
     normalized = value.strip().strip("/")
     if not normalized:
         return False
@@ -11570,6 +11670,273 @@ def _write_oauth_cache_payload_to_sqlite(
                 except Exception:
                     pass
         _close_sqlite_connection(connection)
+
+
+def _load_oauth_persistent_cache_entries_from_nats(
+    cache_settings: OAuthCacheSettings,
+) -> dict[str, dict[str, Any]]:
+    """Read persistent OAuth cache entries from NATS KV payload; bypass on provider errors."""
+    payload = _read_oauth_cache_payload_from_nats(cache_settings=cache_settings)
+    if payload is None:
+        return {}
+    entries, _ = _parse_oauth_cache_entries_from_payload(payload)
+    return entries
+
+
+def _persist_oauth_cache_entry_nats(cache_key: str, cache_settings: OAuthCacheSettings) -> None:
+    """Persist one in-memory OAuth cache entry to NATS KV payload; bypass on provider errors."""
+    persistent_entries = _load_oauth_persistent_cache_entries_from_nats(cache_settings=cache_settings)
+    in_memory_entry = _OAUTH_TOKEN_CACHE.get(cache_key)
+    if isinstance(in_memory_entry, dict):
+        persistent_entries[cache_key] = dict(in_memory_entry)
+    else:
+        persistent_entries.pop(cache_key, None)
+
+    _write_oauth_cache_payload_to_nats(cache_settings=cache_settings, entries=persistent_entries)
+
+
+def _build_nats_kv_client(cache_settings: OAuthCacheSettings) -> Any | None:
+    """Create NATS client for OAuth cache backend."""
+    try:
+        nats_module = importlib.import_module("nats")
+    except Exception:
+        return None
+
+    connect_fn = getattr(nats_module, "connect", None)
+    if not callable(connect_fn):
+        return None
+
+    server_urls = _build_nats_server_urls(cache_settings=cache_settings)
+    if not server_urls:
+        return None
+
+    token_value = _build_nats_token(cache_settings=cache_settings)
+
+    async def _connect_client() -> Any:
+        connect_kwargs: dict[str, Any] = {"servers": server_urls}
+        if token_value is not None:
+            connect_kwargs["token"] = token_value
+        return await connect_fn(**connect_kwargs)
+
+    try:
+        return asyncio.run(_connect_client())
+    except Exception:
+        return None
+
+
+def _close_nats_kv_client(client: Any) -> None:
+    """Close NATS client safely while tolerating provider/runtime errors."""
+
+    async def _close_client() -> None:
+        drain_fn = getattr(client, "drain", None)
+        if callable(drain_fn):
+            try:
+                drain_result = drain_fn()
+                if asyncio.iscoroutine(drain_result):
+                    await drain_result
+                return
+            except Exception:
+                pass
+
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn):
+            close_result = close_fn()
+            if asyncio.iscoroutine(close_result):
+                await close_result
+
+    try:
+        asyncio.run(_close_client())
+    except Exception:
+        return None
+
+
+def _build_nats_kv_bucket(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build NATS KV bucket from validated cache settings."""
+    if cache_settings.nats_kv_bucket is None:
+        return None
+    normalized_bucket = cache_settings.nats_kv_bucket.strip()
+    if not normalized_bucket:
+        return None
+    return normalized_bucket
+
+
+def _build_nats_kv_key(cache_settings: OAuthCacheSettings) -> str | None:
+    """Build NATS KV key from validated cache settings."""
+    if cache_settings.nats_kv_key is None:
+        return None
+    normalized_key = cache_settings.nats_kv_key.strip().strip("/")
+    if not normalized_key:
+        return None
+    return normalized_key
+
+
+def _build_nats_server_urls(cache_settings: OAuthCacheSettings) -> list[str] | None:
+    """Build NATS server URL list from env-driven configuration."""
+    env_name = cache_settings.nats_servers_env or _NATS_DEFAULT_SERVERS_ENV
+    raw_value = os.getenv(env_name, "").strip()
+    if not raw_value:
+        return [_NATS_DEFAULT_SERVER_URL]
+
+    candidates = [segment.strip() for segment in re.split(r"[,\s]+", raw_value) if segment.strip()]
+    if not candidates:
+        return [_NATS_DEFAULT_SERVER_URL]
+
+    normalized_urls: list[str] = []
+    for candidate in candidates:
+        value = candidate
+        if "://" not in value:
+            value = f"nats://{value}"
+        parsed = urlparse(value)
+        if parsed.scheme not in {"nats", "tls", "ws", "wss"} or not parsed.netloc:
+            return None
+        normalized_urls.append(
+            urlunparse(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path or "",
+                    "",
+                    "",
+                    "",
+                )
+            )
+        )
+    return normalized_urls
+
+
+def _build_nats_token(cache_settings: OAuthCacheSettings) -> str | None:
+    """Resolve NATS token from configured environment variable."""
+    env_name = cache_settings.nats_token_env or _NATS_DEFAULT_TOKEN_ENV
+    token_value = os.getenv(env_name, "").strip()
+    if not token_value:
+        return None
+    return token_value
+
+
+def _is_nats_kv_not_found_error(error: Exception) -> bool:
+    """Return True when NATS error indicates missing bucket/key in pre-provisioned model."""
+    error_name = error.__class__.__name__.lower()
+    if error_name in {"bucketnotfounderror", "keynotfounderror", "notfounderror"}:
+        return True
+    error_message = str(error).lower()
+    return "not found" in error_message or "does not exist" in error_message
+
+
+def _read_nats_kv_raw_value(client: Any, bucket_name: str, key_name: str) -> str | object | None:
+    """Read raw value from NATS KV; return sentinel when key/bucket is missing."""
+
+    async def _read_raw() -> str | object | None:
+        try:
+            jetstream = client.jetstream()
+            kv_store = await jetstream.key_value(bucket_name)
+            entry = await kv_store.get(key_name)
+        except Exception as exc:
+            if _is_nats_kv_not_found_error(exc):
+                return _NATS_KV_MISSING
+            raise
+
+        entry_value = getattr(entry, "value", None)
+        if isinstance(entry_value, bytes):
+            return entry_value.decode("utf-8", errors="ignore")
+        if isinstance(entry_value, str):
+            return entry_value
+        return None
+
+    try:
+        return asyncio.run(_read_raw())
+    except Exception:
+        return None
+
+
+def _write_nats_kv_raw_value(client: Any, bucket_name: str, key_name: str, raw_value: str) -> bool:
+    """Write raw value to existing NATS KV key; return False when preflight missing/error."""
+
+    async def _write_raw() -> bool:
+        try:
+            jetstream = client.jetstream()
+            kv_store = await jetstream.key_value(bucket_name)
+            try:
+                await kv_store.get(key_name)
+            except Exception as exc:
+                if _is_nats_kv_not_found_error(exc):
+                    return False
+                raise
+
+            await kv_store.put(key_name, raw_value.encode("utf-8"))
+        except Exception:
+            return False
+        return True
+
+    try:
+        return bool(asyncio.run(_write_raw()))
+    except Exception:
+        return False
+
+
+def _read_oauth_cache_payload_from_nats(cache_settings: OAuthCacheSettings) -> dict[str, Any] | None:
+    """Read OAuth cache payload envelope from pre-provisioned NATS KV key."""
+    bucket_name = _build_nats_kv_bucket(cache_settings=cache_settings)
+    key_name = _build_nats_kv_key(cache_settings=cache_settings)
+    if bucket_name is None or key_name is None:
+        return None
+
+    client = _build_nats_kv_client(cache_settings=cache_settings)
+    if client is None:
+        return None
+
+    try:
+        raw_payload = _read_nats_kv_raw_value(client=client, bucket_name=bucket_name, key_name=key_name)
+    finally:
+        _close_nats_kv_client(client)
+
+    if raw_payload is _NATS_KV_MISSING:
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+    if not isinstance(raw_payload, str):
+        return None
+    if not raw_payload.strip():
+        return {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "entries": {},
+        }
+
+    try:
+        envelope = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    return envelope
+
+
+def _write_oauth_cache_payload_to_nats(cache_settings: OAuthCacheSettings, entries: dict[str, dict[str, Any]]) -> bool:
+    """Write OAuth cache payload envelope to existing NATS KV key."""
+    bucket_name = _build_nats_kv_bucket(cache_settings=cache_settings)
+    key_name = _build_nats_kv_key(cache_settings=cache_settings)
+    if bucket_name is None or key_name is None:
+        return False
+
+    client = _build_nats_kv_client(cache_settings=cache_settings)
+    if client is None:
+        return False
+
+    try:
+        payload = {
+            "schema_version": _OAUTH_CACHE_SCHEMA_VERSION_V2,
+            "updated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "entries": entries,
+        }
+        serialized_payload = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return _write_nats_kv_raw_value(
+            client=client,
+            bucket_name=bucket_name,
+            key_name=key_name,
+            raw_value=serialized_payload,
+        )
+    finally:
+        _close_nats_kv_client(client)
 
 
 def _rotate_oauth_persistent_cache_key() -> dict[str, Any]:

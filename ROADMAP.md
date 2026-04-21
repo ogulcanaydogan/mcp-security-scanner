@@ -2,7 +2,7 @@
 
 ## Current State
 
-- Release line is stable at `v1.0.30` after Sprint 10H stabilization hardening closure.
+- Release line is stable at `v1.0.31` after Sprint 10J provider onboarding closure.
 - Sprint `8A..8AC` scope is complete and GA promoted from the `1.0.0rc2` snapshot.
 - Sprint `8AD` feature freeze and contract lock remain the baseline for post-1.0 work.
 - Sprint `9Z` discovery gate completed and Sprint `10A` target is implemented.
@@ -11,15 +11,15 @@
 - Sprint `10E` stabilization-only hardening is implemented with full release closure.
 - Sprint `10F` discovery gate is completed and Sprint `10G` provider target is implemented.
 - Sprint `10H` stabilization-only hardening is implemented with full release closure.
-- Sprint `10I` discovery gate is completed and Sprint `10J` provider target is locked.
+- Sprint `10I` discovery gate is completed and Sprint `10J` provider target is implemented.
 
 ## Current Target
 
-Sprint 10J Provider Onboarding Target:
-  - winner backend: `nats_kv`
-  - minimal v1 model: pre-provisioned-only bucket/key, env-token auth, non-fatal bypass
+Sprint 10K Stabilization Target:
+  - no new backend onboarding
   - preserve runtime contracts (`lookup order`, `cache rotate` local-only, `compare` contract)
-  - target release: `v1.0.31`
+  - focus: deterministic contract drift checks and release verification stability
+  - target release: `v1.0.32`
 
 ### Sprint 9Z Discovery Matrix (Decision Gate)
 
@@ -190,6 +190,20 @@ Sprint 10J Provider Onboarding Target:
   - decision baseline: pre-provisioned-only, env-token auth, no create path, non-fatal bypass preserved.
 - Non-selected candidates remain in deferred provider backlog until the next selection gate.
 
+### Sprint 10J Completed Scope (`nats_kv`)
+
+- Config/API shape:
+  - `auth.cache.backend += nats_kv`
+  - required fields: `nats_kv_bucket`, `nats_kv_key`
+  - optional fields: `nats_servers_env?` (default `NATS_SERVERS`), `nats_token_env?` (default `NATS_TOKEN`)
+- Runtime behavior:
+  - NATS JetStream KV read/write path added via `nats-py`
+  - pre-provisioned-only write model preserved (no create path)
+  - provider/auth/network/parse errors remain non-fatal bypass
+  - lookup order, compare contract, and `cache rotate` local-only invariants unchanged
+- Release closure:
+  - released as `v1.0.31` with CI/tag publish and PyPI visibility verification
+
 ## v1.0 GA Status
 
 - `v1.0.0` GA published successfully.
@@ -199,8 +213,8 @@ Sprint 10J Provider Onboarding Target:
 
 ## Post-1.0 Backlog
 
-- Sprint 10A onboarding (`openbao_kv`) and Sprint 10D onboarding (`gitea_actions_variables`) are complete.
-- Sprint 10I discovery gate is complete; next target is Sprint 10J provider onboarding (`nats_kv`).
+- Sprint 10A onboarding (`openbao_kv`), Sprint 10D onboarding (`gitea_actions_variables`), Sprint 10G onboarding (`forgejo_actions_variables`), and Sprint 10J onboarding (`nats_kv`) are complete.
+- Current target is Sprint 10K stabilization hardening (no new backend).
 - Additional persistent secret-store providers beyond:
-  - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `forgejo_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`
+  - `local`, `aws_secrets_manager`, `aws_ssm_parameter_store`, `gcp_secret_manager`, `azure_key_vault`, `hashicorp_vault`, `openbao_kv`, `kubernetes_secrets`, `oci_vault`, `doppler_secrets`, `onepassword_connect`, `bitwarden_secrets`, `infisical_secrets`, `akeyless_secrets`, `gitlab_variables`, `gitlab_group_variables`, `gitlab_instance_variables`, `github_actions_variables`, `github_environment_variables`, `github_organization_variables`, `gitea_actions_variables`, `forgejo_actions_variables`, `consul_kv`, `redis_kv`, `cloudflare_kv`, `etcd_kv`, `postgres_kv`, `mysql_kv`, `mongo_kv`, `dynamodb_kv`, `s3_object_kv`, `sqlite_kv`, `nats_kv`
 - Optional report/visual schema improvements that do not break contracts.
