@@ -296,9 +296,17 @@ def _format_oauth_backend_source_delta(
     for backend in sorted(expected):
         expected_symbol = expected[backend]
         actual_symbol = actual.get(backend)
+        actual_symbol_display = _normalize_oauth_backend_symbol(actual_symbol)
         if actual_symbol != expected_symbol:
-            deltas.append(f"backend={backend}, expected={expected_symbol}, actual={actual_symbol}")
+            deltas.append(f"backend={backend}, expected={expected_symbol}, actual={actual_symbol_display}")
     return "; ".join(deltas)
+
+
+def _normalize_oauth_backend_symbol(symbol: str | None) -> str:
+    """Normalize backend symbol diagnostics for deterministic mismatch messages."""
+    if isinstance(symbol, str) and symbol:
+        return symbol
+    return "<missing>"
 
 
 def _oauth_cache_backend_set_mismatch_error(
@@ -340,10 +348,11 @@ def _oauth_cache_backend_callable_mismatch_error(
         actual_symbol = actual[backend]
         if callable(globals().get(actual_symbol)):
             continue
-        expected_symbol = expected.get(backend, "<missing>")
+        expected_symbol = _normalize_oauth_backend_symbol(expected.get(backend))
+        actual_symbol_display = _normalize_oauth_backend_symbol(actual_symbol)
         return (
             "auth.cache backend contract is inconsistent "
-            f"({mismatch_label}: backend={backend}, expected={expected_symbol}, actual={actual_symbol})."
+            f"({mismatch_label}: backend={backend}, expected={expected_symbol}, actual={actual_symbol_display})."
         )
     return None
 

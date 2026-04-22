@@ -1,6 +1,6 @@
-# Setup Complete — Sprint 1-10J Implementation State
+# Setup Complete — Sprint 1-10K Implementation State
 
-This file records the actual implementation status after Sprint 10J.
+This file records the actual implementation status after Sprint 10K.
 
 ## Completed Work
 
@@ -1472,6 +1472,24 @@ This file records the actual implementation status after Sprint 10J.
   - `cache rotate` remains local-only
   - compare mutation contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
 - Release finalized as `v1.0.31` with GitHub Release + PyPI visibility verification.
+
+### Sprint 10K (Post-Freeze Stabilization Hardening)
+
+- No new backend added; sprint scope stayed stabilization-only.
+- OAuth backend-contract diagnostics were hardened without runtime behavior changes:
+  - missing source/callable symbols now render as deterministic `<missing>` placeholders
+  - mismatch ordering remains deterministic and fail-closed
+- Release-consistency checks were hardened without semantic changes:
+  - PyPI visibility parser now strips ANSI fragments before normalization
+  - `Available versions:` extraction tolerates whitespace/ANSI variations and logs deterministic fallback context when missing
+  - official index + no-cache visibility semantics are unchanged
+- Runtime contracts preserved:
+  - lookup order unchanged (`in-memory -> persistent -> refresh -> primary`)
+  - pre-provisioned-only writes preserved
+  - non-fatal provider bypass preserved
+  - `cache rotate` remains local-only
+  - compare mutation contract unchanged (`tool_added/tool_removed/tool_changed`, `LLM05`)
+- Release finalized as `v1.0.32` with GitHub Release + PyPI visibility verification.
 
 ## Exit Code Contract (Current)
 

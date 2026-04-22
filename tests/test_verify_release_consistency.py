@@ -23,6 +23,13 @@ def test_normalize_retry_output_returns_empty_marker():
     assert module._normalize_retry_output("   \n\t  ") == "<empty>"
 
 
+def test_strip_ansi_sequences_removes_terminal_codes():
+    module = _load_release_consistency_module()
+
+    raw = "\x1b[31mERROR\x1b[0m plain-text"
+    assert module._strip_ansi_sequences(raw) == "ERROR plain-text"
+
+
 def test_normalize_retry_output_masks_hex_addresses():
     module = _load_release_consistency_module()
 
@@ -38,6 +45,14 @@ def test_normalize_retry_output_truncates_deterministically():
 
     normalized = module._normalize_retry_output("x" * 32, limit=10)
     assert normalized == "xxxxxxxxxx...<truncated>"
+
+
+def test_extract_available_versions_line_strips_ansi_and_whitespace():
+    module = _load_release_consistency_module()
+
+    pip_output = "\n demo-pkg (1.0.21)\n  \x1b[32mAvailable versions: 1.0.21, 1.0.20\x1b[0m\n"
+    line = module._extract_available_versions_line(pip_output)
+    assert line == "Available versions: 1.0.21, 1.0.20"
 
 
 def test_build_pypi_visibility_pip_command_uses_official_index_no_cache():
@@ -240,3 +255,30 @@ def test_verify_pypi_visibility_logs_version_not_visible_then_failure(monkeypatc
         in output
     )
     assert sleep_calls == [3]
+
+
+def test_verify_pypi_visibility_missing_versions_line_logs_normalized_output(monkeypatch, capsys):
+    module = _load_release_consistency_module()
+
+    response = subprocess.CompletedProcess(
+        args=["pip", "index", "versions"],
+        returncode=0,
+        stdout="\x1b[33mdemo-pkg (1.0.21)\x1b[0m\nNo versions found output",
+        stderr="",
+    )
+
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: response)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+    with pytest.raises(module.ReleaseValidationError):
+        module._verify_pypi_version_visibility(
+            package_name="demo-pkg",
+            expected_version="1.0.21",
+            index_url="https://pypi.org/simple",
+            attempts=1,
+            sleep_seconds=1,
+            pip_timeout_seconds=15,
+        )
+
+    output = capsys.readouterr().out
+    assert "<missing versions line> output=demo-pkg (1.0.21) No versions found output" in output

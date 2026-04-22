@@ -110,6 +110,7 @@ flowchart LR
 - Post-freeze stabilization hardening (Sprint 10H): deterministic contract mismatch-count annotation and deterministic PyPI visibility check-start diagnostics (runtime behavior unchanged)
 - Post-freeze provider discovery gate (Sprint 10I): shortlist locked and next sprint target selected (`nats_kv` for Sprint 10J)
 - Post-freeze provider expansion (Sprint 10J): added `nats_kv` backend (`nats-py` JetStream KV, env-token auth, pre-provisioned bucket/key model)
+- Post-freeze stabilization hardening (Sprint 10K): deterministic backend symbol mismatch placeholders (`<missing>`) and ANSI-tolerant PyPI visibility parsing/log normalization in shared release-consistency checks (runtime behavior unchanged)
 - Baseline mutation detection (`added` / `removed` / `changed`) with deterministic hashes
 - Severity threshold filtering and documented exit-code contract
 
@@ -1040,8 +1041,8 @@ Current quality gate:
 ## Roadmap (Post v1.0.0 GA)
 
 Current release target:
-- latest published line is `1.0.31` (Sprint 10J provider onboarding complete).
-- next target is Sprint 10K stabilization hardening (no new backend).
+- latest published line is `1.0.32` (Sprint 10K stabilization closure complete).
+- next target is Sprint 10L discovery gate (decision lock for Sprint 10M onboarding).
 - runtime, CLI, auth-cache behavior, exit-code/report/analyzer contracts remain unchanged.
 
 Deferred (post-1.0):

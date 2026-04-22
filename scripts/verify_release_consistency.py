@@ -19,17 +19,23 @@ class ReleaseValidationError(RuntimeError):
 
 
 _HEX_ADDRESS_PATTERN = re.compile(r"0x[0-9a-fA-F]+")
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
 
 def _normalize_retry_output(raw_text: str, *, limit: int = 500) -> str:
     """Normalize retry diagnostics to single-line deterministic output."""
-    normalized = " ".join(raw_text.split())
+    normalized = " ".join(_strip_ansi_sequences(raw_text).split())
     if not normalized:
         return "<empty>"
     normalized = _HEX_ADDRESS_PATTERN.sub("0xADDR", normalized)
     if len(normalized) <= limit:
         return normalized
     return f"{normalized[:limit]}...<truncated>"
+
+
+def _strip_ansi_sequences(raw_text: str) -> str:
+    """Strip ANSI terminal escape codes from command output."""
+    return _ANSI_ESCAPE_PATTERN.sub("", raw_text)
 
 
 def _emit_pypi_visibility_event(
@@ -112,6 +118,16 @@ def _build_pypi_visibility_pip_env(index_url: str) -> dict[str, str]:
     pip_env["PIP_NO_CACHE_DIR"] = "1"
     pip_env["PIP_INDEX_URL"] = index_url
     return pip_env
+
+
+def _extract_available_versions_line(output: str) -> str:
+    """Extract normalized 'Available versions' line from pip index output."""
+    cleaned_output = _strip_ansi_sequences(output)
+    for line in cleaned_output.splitlines():
+        stripped_line = line.strip()
+        if stripped_line.startswith("Available versions:"):
+            return stripped_line
+    return ""
 
 
 def _normalize_tag_version(raw_tag_version: str) -> str:
@@ -325,10 +341,7 @@ def _verify_pypi_version_visibility(
                 )
                 time.sleep(sleep_seconds)
             continue
-        versions_line = next(
-            (line for line in output.splitlines() if line.startswith("Available versions:")),
-            "",
-        )
+        versions_line = _extract_available_versions_line(output)
         if re.search(rf"(^|[, ]){re.escape(expected_version)}([, ]|$)", versions_line):
             _emit_pypi_visibility_event(
                 attempt=attempt,
@@ -337,7 +350,12 @@ def _verify_pypi_version_visibility(
                 message=f"package={package_name} version={expected_version}",
             )
             return
-        available_versions_display = _normalize_retry_output(versions_line or "<missing versions line>")
+        if versions_line:
+            available_versions_display = _normalize_retry_output(versions_line)
+        else:
+            available_versions_display = _normalize_retry_output(
+                f"<missing versions line> output={output or '<empty>'}"
+            )
         last_status = "version_not_visible"
         _emit_pypi_visibility_event(
             attempt=attempt,

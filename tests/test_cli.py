@@ -14848,6 +14848,20 @@ class TestCLIHelpers:
             "backend=zeta_backend, expected=_load_expected_zeta, actual=_load_actual_zeta"
         )
 
+    def test_normalize_oauth_backend_symbol_returns_missing_marker_for_empty_values(self):
+        """Backend symbol normalizer should produce deterministic placeholder for missing values."""
+        assert cli_module._normalize_oauth_backend_symbol(None) == "<missing>"
+        assert cli_module._normalize_oauth_backend_symbol("") == "<missing>"
+        assert cli_module._normalize_oauth_backend_symbol("_load_alpha") == "_load_alpha"
+
+    def test_oauth_cache_backend_source_delta_marks_missing_actual_symbol(self):
+        """Source delta formatter should emit <missing> for absent actual symbols."""
+        delta = cli_module._format_oauth_backend_source_delta(
+            expected={"alpha_backend": "_load_expected_alpha"},
+            actual={},
+        )
+        assert delta == "backend=alpha_backend, expected=_load_expected_alpha, actual=<missing>"
+
     def test_oauth_cache_backend_set_mismatch_error_returns_none_when_sets_match(self):
         """Set mismatch helper should return None when canonical sets are aligned."""
         mismatch_error = cli_module._oauth_cache_backend_set_mismatch_error(
@@ -14865,6 +14879,17 @@ class TestCLIHelpers:
             actual={"alpha_backend": "_load_alpha"},
         )
         assert mismatch_error is None
+
+    def test_oauth_cache_backend_callable_mismatch_error_marks_missing_expected_symbol(self):
+        """Callable mismatch helper should render missing expected symbols deterministically."""
+        mismatch_error = cli_module._oauth_cache_backend_callable_mismatch_error(
+            mismatch_label="remote loader callable mismatch",
+            expected={},
+            actual={"alpha_backend": "_not_callable_symbol"},
+        )
+        assert mismatch_error is not None
+        assert "expected=<missing>" in mismatch_error
+        assert "actual=_not_callable_symbol" in mismatch_error
 
     def test_oauth_cache_remote_handler_maps_cover_all_non_local_backends(self):
         """Remote backend spec should be the single source of truth for load/persist handler maps."""
